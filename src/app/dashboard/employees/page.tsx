@@ -3,20 +3,21 @@
 import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, SalaryRecord } from '@/types/database';
-import { fmtZAR } from '@/lib/utils';
+import { fmtZAR, fmtCurrency } from '@/lib/utils';
 import Link from 'next/link';
-import { Search, SlidersHorizontal, X, Calculator, CheckCircle } from 'lucide-react';
+import { Search, SlidersHorizontal, X, Calculator, CheckCircle, Download } from 'lucide-react';
 import { calculateBurden } from '@/lib/payroll-calc';
+import { buildEmployeeCsv } from '@/lib/employee-csv';
 
 // ── Column definitions ────────────────────────────────────────────────────────
 
 type ColId =
-  | 'surname' | 'name' | 'hotel' | 'department' | 'title' | 'status'
+  | 'surname' | 'name' | 'hotel' | 'department' | 'title'
   | 'employment_date' | 'years_service'
   | 'structure' | 'basic' | 'gross_salary' | 'ctc'
   | 'uif_emp' | 'medical_emp' | 'provident_emp'
   | 'uif_co' | 'medical_co' | 'provident_co' | 'sdl' | 'wca'
-  | 'staff_meals' | 'bonus_provision' | 'incentive' | 'leave_provision'
+  | 'staff_meals' | 'bonus_provision' | 'incentive' | 'gratuity' | 'severance'
   | 'leave_accrual' | 'bonus_accrual_dec' | 'mgmt_incentive';
 
 interface ColDef {
@@ -34,11 +35,10 @@ const ALL_COLUMNS: ColDef[] = [
   { id: 'hotel',           label: 'Hotel',             group: 'Employee',    defaultVisible: true },
   { id: 'department',      label: 'Department',        group: 'Employee',    defaultVisible: true },
   { id: 'title',           label: 'Job Title',         group: 'Employee',    defaultVisible: true },
-  { id: 'status',          label: 'Status',            group: 'Employee',    defaultVisible: true },
   { id: 'employment_date', label: 'Start Date',        group: 'Employee',    defaultVisible: false },
   { id: 'years_service',   label: 'Yrs Service',       group: 'Employee',    defaultVisible: false, align: 'right' },
   // Core salary
-  { id: 'structure',       label: 'Structure',         group: 'Salary',      defaultVisible: true },
+  { id: 'structure',       label: 'Grade',             group: 'Salary',      defaultVisible: true },
   { id: 'basic',           label: 'Basic Salary',      group: 'Salary',      defaultVisible: true,  align: 'right' },
   { id: 'gross_salary',    label: 'Gross Salary',      group: 'Salary',      defaultVisible: true,  align: 'right' },
   { id: 'ctc',             label: 'CTC',               group: 'Salary',      defaultVisible: true,  align: 'right' },
@@ -56,7 +56,8 @@ const ALL_COLUMNS: ColDef[] = [
   { id: 'staff_meals',     label: 'Staff Meals',       group: 'Provisions',  defaultVisible: false, align: 'right' },
   { id: 'bonus_provision', label: 'Bonus',             group: 'Provisions',  defaultVisible: false, align: 'right' },
   { id: 'incentive',       label: 'Incentive',         group: 'Provisions',  defaultVisible: false, align: 'right' },
-  { id: 'leave_provision', label: 'Leave',             group: 'Provisions',  defaultVisible: false, align: 'right' },
+  { id: 'gratuity',        label: 'Gratuity',          group: 'Provisions',  defaultVisible: false, align: 'right' },
+  { id: 'severance',       label: 'Severance',         group: 'Provisions',  defaultVisible: false, align: 'right' },
   // Accruals
   { id: 'leave_accrual',   label: 'Leave Accrual',     group: 'Accruals',    defaultVisible: false, align: 'right' },
   { id: 'bonus_accrual_dec', label: 'Bonus Dec',       group: 'Accruals',    defaultVisible: false, align: 'right' },
@@ -64,10 +65,9 @@ const ALL_COLUMNS: ColDef[] = [
 ];
 
 
-type CategoryView = 'all' | 'Deductions' | 'Contributions' | 'Provisions' | 'Accruals';
-const ANCHOR_COLS: ColId[] = ['surname', 'name', 'hotel'];
 
-const STORAGE_KEY = 'ihg-salary-emp-cols';
+const STORAGE_KEY        = 'ihg-salary-emp-cols';
+const HOTEL_FILTER_KEY   = 'ihg-salary-emp-hotel';
 const DEFAULT_VISIBLE = new Set(ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.id));
 
 function loadVisibleCols(): Set<ColId> {
@@ -101,7 +101,8 @@ function numericValue(col: ColId, e: Employee, sal: SalaryRecord | undefined): n
     case 'staff_meals':       return sal?.staff_meals ?? null;
     case 'bonus_provision':   return sal?.bonus_provision ?? null;
     case 'incentive':         return sal?.incentive ?? null;
-    case 'leave_provision':   return sal?.leave_provision ?? null;
+    case 'gratuity':          return sal?.gratuity ?? null;
+    case 'severance':         return sal?.severance ?? null;
     case 'leave_accrual':     return sal?.leave_accrual ?? null;
     case 'bonus_accrual_dec': return sal?.bonus_accrual_dec ?? null;
     case 'mgmt_incentive':    return sal?.mgmt_incentive ?? null;
@@ -125,12 +126,30 @@ export default function EmployeesPage() {
   const [visibleCols, setVisibleCols] = useState<Set<ColId>>(DEFAULT_VISIBLE);
   const [draftCols,   setDraftCols]   = useState<Set<ColId>>(DEFAULT_VISIBLE);
   const [showColPicker, setShowColPicker] = useState(false);
-  const [categoryView, setCategoryView] = useState<CategoryView>('all');
   const [calculating, setCalculating] = useState(false);
   const [calcDone, setCalcDone] = useState(false);
+  const [exportHotel, setExportHotel] = useState('');
 
-  // Load persisted column selection after mount (localStorage not available on server)
-  useEffect(() => { setVisibleCols(loadVisibleCols()); }, []);
+  // Load persisted values after mount (localStorage not available on server)
+  useEffect(() => {
+    setVisibleCols(loadVisibleCols());
+    try {
+      const saved = localStorage.getItem(HOTEL_FILTER_KEY);
+      if (saved) setHotelFilter(saved);
+    } catch {}
+  }, []);
+
+  // Default export hotel to current filter when hotels load
+  useEffect(() => {
+    if (hotels.length && !exportHotel) {
+      setExportHotel(hotelFilter !== 'all' ? hotelFilter : hotels[0].id);
+    }
+  }, [hotels, hotelFilter, exportHotel]);
+
+  // Persist hotel filter selection
+  useEffect(() => {
+    try { localStorage.setItem(HOTEL_FILTER_KEY, hotelFilter); } catch {}
+  }, [hotelFilter]);
 
   async function load() {
     const [{ data: h }, { data: e }, { data: s }] = await Promise.all([
@@ -194,6 +213,26 @@ export default function EmployeesPage() {
     localStorage.removeItem(STORAGE_KEY);
   }
 
+  function handleExportCSV() {
+    const hotel = hotelMap.get(exportHotel);
+    if (!hotel) return;
+    const hotelEmployees = employees.filter(e => e.hotel_id === exportHotel);
+    const csv = buildEmployeeCsv(hotelEmployees, latestSalary);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const firstSal = hotelEmployees.map(e => latestSalary.get(e.id)).find(Boolean);
+    const ym = firstSal
+      ? `${firstSal.period_year}${String(firstSal.period_month).padStart(2, '0')}`
+      : new Date().toISOString().slice(0, 7).replace('-', '');
+    a.href = url;
+    a.download = `${hotel.short_code}_employees_${ym}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   async function runCalculateBurden() {
     if (!filtered.length) return;
     const confirmed = window.confirm(
@@ -209,22 +248,46 @@ export default function EmployeesPage() {
         if (!hotel || !sal) return;
 
         const burden = calculateBurden({
-          basic:              sal.basic_salary,
-          totalEarnings:      sal.total_earnings,
-          jobTitle:           emp.job_title,
-          country:            hotel.country,
-          wcaRate:            hotel.wca_rate ?? 0,
+          basic:               sal.basic_salary,
+          totalEarnings:       sal.total_earnings,
+          jobTitle:            emp.job_title,
+          country:             hotel.country,
+          wcaRate:             hotel.wca_rate ?? 0,
+          hotelShortCode:      hotel.short_code,
+          yearsOfService:      yearsOfService(emp.employment_date) ?? 0,
+          severanceApplicable:  emp.severance_applicable,
+          incentiveApplicable:  emp.incentive_applicable,
+          incentiveMultiplier:  emp.incentive_multiplier,
+          gratuityApplicable:   emp.gratuity_applicable,
+          gratuityRate:         emp.gratuity_rate,
           taxPaye:            sal.tax_paye,
           medicalEmployee:    sal.medical_employee,
           medicalCompany:     sal.medical_company,
           ancillaEmployee:    sal.ancilla_employee,
           ancillaCompany:     sal.ancilla_company,
-          bonusProvision:     sal.bonus_provision,
           leaveProvision:     sal.leave_provision,
           otherCompanyContrib:sal.other_company_contrib,
           mgmtIncentive:      sal.mgmt_incentive,
           bonusAccrualDec:    sal.bonus_accrual_dec,
           bonusAccrualJuly:   sal.bonus_accrual_july,
+          // Configurable rates from hotel methods
+          providentEeRate:       hotel.provident_ee_rate        ?? undefined,
+          providentErRate:       hotel.provident_er_rate        ?? undefined,
+          providentErRateSenior: hotel.provident_er_rate_senior ?? undefined,
+          uifRate:               hotel.uif_rate                 ?? undefined,
+          uifCap:                hotel.uif_cap                  ?? undefined,
+          sdlRate:               hotel.sdl_rate                 ?? undefined,
+          mealsStandard:         hotel.meals_standard           ?? undefined,
+          mealsManager:          hotel.meals_manager            ?? undefined,
+          leaveDays:             hotel.leave_days               ?? undefined,
+          bonusDays:             hotel.bonus_days               ?? undefined,
+          ctcProvidentEr:        hotel.ctc_provident_er         ?? undefined,
+          ctcUifEr:              hotel.ctc_uif_er               ?? undefined,
+          ctcSdl:                hotel.ctc_sdl                  ?? undefined,
+          ctcWca:                hotel.ctc_wca                  ?? undefined,
+          ctcMeals:              hotel.ctc_meals                ?? undefined,
+          ctcLeaveAccrual:       hotel.ctc_leave_accrual        ?? undefined,
+          ctcBonus:              hotel.ctc_bonus                ?? undefined,
         });
 
         await sb.from('salary_records').update({
@@ -237,11 +300,16 @@ export default function EmployeesPage() {
           sdl_company:          burden.sdl_company,
           wca_company:          burden.wca_company,
           staff_meals:          burden.staff_meals,
+          bonus_provision:      burden.bonus_provision,
           leave_days:           burden.leave_days,
           leave_accrual:        burden.leave_accrual,
+          severance:            burden.severance,
+          incentive:            burden.incentive,
+          gratuity:             burden.gratuity,
           total_company_contrib:burden.total_company_contrib,
           total_payroll_burden: burden.total_payroll_burden,
           total_cost:           burden.total_cost,
+          ctc:                  burden.ctc,
         }).eq('id', sal.id);
       })
     );
@@ -252,63 +320,42 @@ export default function EmployeesPage() {
     setTimeout(() => setCalcDone(false), 3000);
   }
 
-  const visibleDefs = useMemo(() => {
-    if (categoryView === 'all') return ALL_COLUMNS.filter(c => visibleCols.has(c.id));
-    const anchorDefs = ALL_COLUMNS.filter(c => ANCHOR_COLS.includes(c.id));
-    const catDefs = ALL_COLUMNS.filter(c => c.group === categoryView);
-    return [...anchorDefs, ...catDefs];
-  }, [categoryView, visibleCols]);
-
-  const totals = useMemo(() => {
-    const map: Partial<Record<ColId, number>> = {};
-    for (const col of visibleDefs) {
-      if (col.align !== 'right') continue;
-      let sum = 0;
-      for (const emp of filtered) {
-        const sal = latestSalary.get(emp.id);
-        const v = numericValue(col.id, emp, sal);
-        if (v != null) sum += v;
-      }
-      map[col.id] = sum;
-    }
-    return map;
-  }, [filtered, visibleDefs, latestSalary]);
+  const visibleDefs = useMemo(() => ALL_COLUMNS.filter(c => visibleCols.has(c.id)), [visibleCols]);
 
   // Cell renderer per column
   function cellValue(col: ColId, e: Employee, sal: SalaryRecord | undefined): React.ReactNode {
-    const yrs = yearsOfService(e.employment_date);
+    const yrs     = yearsOfService(e.employment_date);
+    const country = hotelMap.get(e.hotel_id)?.country ?? '';
+    const fmt     = (n: number) => fmtCurrency(n, country);
     switch (col) {
       case 'surname':         return <span className="font-medium">{e.surname}</span>;
       case 'name':            return e.first_name;
       case 'hotel':           return hotelMap.get(e.hotel_id)?.short_code ?? '—';
       case 'department':      return e.department_code ?? '—';
       case 'title':           return e.job_title ?? '—';
-      case 'status':          return (
-        <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${e.status === 'active' ? 'bg-green-50 text-green-700' : e.status === 'terminated' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>
-          {e.status}
-        </span>);
       case 'employment_date': return e.employment_date ? new Date(e.employment_date).toLocaleDateString('en-ZA') : '—';
       case 'years_service':   return yrs != null ? `${yrs}` : '—';
       // Salary fields
       case 'structure':       return e.grade_label ?? '—';
-      case 'basic':           return sal ? fmtZAR(sal.basic_salary) : '—';
-      case 'gross_salary':    return sal ? fmtZAR(sal.total_earnings) : '—';
-      case 'ctc':             return sal ? fmtZAR(sal.ctc) : '—';
-      case 'uif_emp':         return sal ? fmtZAR(sal.uif_employee) : '—';
-      case 'medical_emp':     return sal ? fmtZAR(sal.medical_employee) : '—';
-      case 'provident_emp':   return sal ? fmtZAR(sal.provident_employee) : '—';
-      case 'uif_co':          return sal ? fmtZAR(sal.uif_company) : '—';
-      case 'medical_co':      return sal ? fmtZAR(sal.medical_company) : '—';
-      case 'provident_co':    return sal ? fmtZAR(sal.provident_company) : '—';
-      case 'sdl':             return sal ? fmtZAR(sal.sdl_company) : '—';
-      case 'wca':             return sal ? fmtZAR(sal.wca_company) : '—';
-      case 'staff_meals':     return sal ? fmtZAR(sal.staff_meals) : '—';
-      case 'bonus_provision': return sal ? fmtZAR(sal.bonus_provision) : '—';
-      case 'incentive':       return sal ? fmtZAR(sal.incentive) : '—';
-      case 'leave_provision': return sal ? fmtZAR(sal.leave_provision) : '—';
-      case 'leave_accrual':   return sal ? fmtZAR(sal.leave_accrual) : '—';
-      case 'bonus_accrual_dec': return sal ? fmtZAR(sal.bonus_accrual_dec) : '—';
-      case 'mgmt_incentive':  return sal ? fmtZAR(sal.mgmt_incentive) : '—';
+      case 'basic':           return sal ? fmt(sal.basic_salary) : '—';
+      case 'gross_salary':    return sal ? fmt(sal.total_earnings) : '—';
+      case 'ctc':             return sal ? fmt(sal.ctc) : '—';
+      case 'uif_emp':         return sal ? fmt(sal.uif_employee) : '—';
+      case 'medical_emp':     return sal ? fmt(sal.medical_employee) : '—';
+      case 'provident_emp':   return sal ? fmt(sal.provident_employee) : '—';
+      case 'uif_co':          return sal ? fmt(sal.uif_company) : '—';
+      case 'medical_co':      return sal ? fmt(sal.medical_company) : '—';
+      case 'provident_co':    return sal ? fmt(sal.provident_company) : '—';
+      case 'sdl':             return sal ? fmt(sal.sdl_company) : '—';
+      case 'wca':             return sal ? fmt(sal.wca_company) : '—';
+      case 'staff_meals':     return sal ? fmt(sal.staff_meals) : '—';
+      case 'bonus_provision': return sal ? fmt(sal.bonus_provision) : '—';
+      case 'incentive':       return sal?.incentive ? fmt(sal.incentive) : '—';
+      case 'gratuity':        return sal?.gratuity  ? fmt(sal.gratuity)  : '—';
+      case 'severance':       return sal?.severance ? fmt(sal.severance) : '—';
+      case 'leave_accrual':   return sal ? fmt(sal.leave_accrual) : '—';
+      case 'bonus_accrual_dec': return sal ? fmt(sal.bonus_accrual_dec) : '—';
+      case 'mgmt_incentive':  return sal ? fmt(sal.mgmt_incentive) : '—';
     }
   }
 
@@ -316,22 +363,44 @@ export default function EmployeesPage() {
 
   return (
     <div className="p-8">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold">Employees</h1>
           <p className="text-muted-foreground text-sm mt-1">{filtered.length} records</p>
         </div>
-        <button
-          onClick={runCalculateBurden}
-          disabled={calculating || loading || filtered.length === 0}
-          className="flex items-center gap-2 rounded-md border border-input bg-white px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
-        >
-          {calcDone
-            ? <><CheckCircle className="h-4 w-4 text-green-500" /> Done</>
-            : calculating
-            ? <><Calculator className="h-4 w-4 animate-pulse" /> Calculating…</>
-            : <><Calculator className="h-4 w-4" /> Calculate Burden</>}
-        </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Export CSV */}
+          <div className="flex items-center gap-1.5">
+            <select
+              value={exportHotel}
+              onChange={e => setExportHotel(e.target.value)}
+              className="rounded-md border border-input px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
+            >
+              {hotels.map(h => <option key={h.id} value={h.id}>{h.short_code}</option>)}
+            </select>
+            <button
+              onClick={handleExportCSV}
+              disabled={loading || !exportHotel}
+              className="flex items-center gap-2 rounded-md border border-input bg-white px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+              title="Export all employees for the selected hotel as a CSV that can be edited and re-imported"
+            >
+              <Download className="h-4 w-4" />
+              Export CSV
+            </button>
+          </div>
+          {/* Calculate Burden */}
+          <button
+            onClick={runCalculateBurden}
+            disabled={calculating || loading || filtered.length === 0}
+            className="flex items-center gap-2 rounded-md border border-input bg-white px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+          >
+            {calcDone
+              ? <><CheckCircle className="h-4 w-4 text-green-500" /> Done</>
+              : calculating
+              ? <><Calculator className="h-4 w-4 animate-pulse" /> Calculating…</>
+              : <><Calculator className="h-4 w-4" /> Calculate Burden</>}
+          </button>
+        </div>
       </div>
 
       {/* Filters + column picker */}
@@ -364,19 +433,6 @@ export default function EmployeesPage() {
           <option value="active">Active</option>
           <option value="terminated">Terminated</option>
           <option value="on_leave">On Leave</option>
-        </select>
-
-        {/* Category sum view */}
-        <select
-          value={categoryView}
-          onChange={e => setCategoryView(e.target.value as CategoryView)}
-          className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
-        >
-          <option value="all">All Columns</option>
-          <option value="Deductions">Sum: Deductions</option>
-          <option value="Contributions">Sum: Contributions</option>
-          <option value="Provisions">Sum: Provisions</option>
-          <option value="Accruals">Sum: Accruals</option>
         </select>
 
         {/* Column picker trigger */}
@@ -472,18 +528,6 @@ export default function EmployeesPage() {
               })
             )}
           </tbody>
-          {categoryView !== 'all' && filtered.length > 0 && (
-            <tfoot>
-              <tr className="border-t-2 border-border bg-muted/40 font-semibold">
-                {visibleDefs.map((col, i) => (
-                  <td key={col.id} className={`px-4 py-2.5 text-sm ${col.align === 'right' ? 'text-right font-mono' : ''}`}>
-                    {i === 0 ? `Total (${filtered.length})` : col.align === 'right' ? fmtZAR(totals[col.id] ?? 0) : ''}
-                  </td>
-                ))}
-                <td className="px-4 py-2.5" />
-              </tr>
-            </tfoot>
-          )}
         </table>
       </div>
     </div>

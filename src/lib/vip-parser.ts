@@ -192,45 +192,128 @@ export interface TSVEmployee {
   jobTitle: string;
   employmentDate: string | null;  // ISO date string
   grossSalary: number;
+  gradeLabel: string | null;
+  medicalCompany: number;
 }
 
 function parseTSVDate(s: string): string | null {
-  const m = s.trim().match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
-  if (!m) return null;
-  const month = TSV_MONTH_MAP[m[2].toLowerCase()];
-  if (!month) return null;
-  return `${m[3]}-${String(month).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+  const t = s.trim();
+  // "DD Mon YYYY" — original space-separated 4-digit-year format
+  let m = t.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})$/);
+  if (m) {
+    const month = TSV_MONTH_MAP[m[2].toLowerCase()];
+    if (!month) return null;
+    return `${m[3]}-${String(month).padStart(2, '0')}-${String(parseInt(m[1])).padStart(2, '0')}`;
+  }
+  // "DD-Mon-YY" or "DD-Mon-YYYY" — Excel short date with dashes
+  m = t.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  if (m) {
+    const month = TSV_MONTH_MAP[m[2].toLowerCase()];
+    if (!month) return null;
+    const yr = parseInt(m[3]);
+    const year = yr < 100 ? (yr >= 50 ? 1900 + yr : 2000 + yr) : yr;
+    return `${year}-${String(month).padStart(2, '0')}-${String(parseInt(m[1])).padStart(2, '0')}`;
+  }
+  // "DD.MM.YYYY" — dot-separated numeric (strip stray spaces first)
+  m = t.replace(/\s/g, '').match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (m) {
+    return `${m[3]}-${String(parseInt(m[2])).padStart(2, '0')}-${String(parseInt(m[1])).padStart(2, '0')}`;
+  }
+  // "D/M/YYYY" or "DD/MM/YYYY" — slash-separated numeric
+  m = t.replace(/\s/g, '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    return `${m[3]}-${String(parseInt(m[2])).padStart(2, '0')}-${String(parseInt(m[1])).padStart(2, '0')}`;
+  }
+  return null;
 }
 
-// Detect whether a tabular employee file is TSV or CSV
-function detectDelimiter(firstLine: string): '\t' | ',' {
-  const tabs   = (firstLine.match(/\t/g)  ?? []).length;
-  const commas = (firstLine.match(/,/g) ?? []).length;
-  return tabs >= commas ? '\t' : ',';
+// Detect delimiter — supports tab, comma, or semicolon (common in African/European Excel locales)
+function detectDelimiter(firstLine: string): '\t' | ',' | ';' {
+  const tabs      = (firstLine.match(/\t/g)  ?? []).length;
+  const commas    = (firstLine.match(/,/g)   ?? []).length;
+  const semis     = (firstLine.match(/;/g)   ?? []).length;
+  if (tabs >= commas && tabs >= semis) return '\t';
+  if (semis > commas) return ';';
+  return ',';
 }
 
-// Split a CSV line correctly (handles quoted fields with commas inside)
-function splitCSVLine(line: string, delim: '\t' | ','): string[] {
+// Split a delimited line (handles quoted fields)
+function splitCSVLine(line: string, delim: '\t' | ',' | ';'): string[] {
   if (delim === '\t') return line.split('\t');
   const cols: string[] = [];
   let cur = '', inQuote = false;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') { inQuote = !inQuote; continue; }
-    if (ch === ',' && !inQuote) { cols.push(cur); cur = ''; continue; }
+    if (ch === delim && !inQuote) { cols.push(cur); cur = ''; continue; }
     cur += ch;
   }
   cols.push(cur);
   return cols;
 }
 
+export function isMedicalAidFile(firstLine: string): boolean {
+  const l = firstLine.trim().toLowerCase().replace(/"/g, '');
+  const hasName    = l.includes('surname') || l.includes('first name') || l.includes('firstname') || l.includes('name');
+  const hasMedical = l.includes('medical');
+  const hasGross   = l.includes('gross') || l.includes('salary');
+  return hasName && hasMedical && !hasGross;
+}
+
+export interface MedicalAidEntry {
+  firstName: string;
+  surname: string;
+  medicalCompany: number;
+}
+
+export function parseMedicalAidFile(text: string): { employees: MedicalAidEntry[]; errors: string[] } {
+  const lines = text.split('\n').map(l => l.trimEnd()).filter(Boolean);
+  const delim = detectDelimiter(lines[0] ?? '');
+  const header = splitCSVLine(lines[0], delim).map(h => h.trim().replace(/"/g, '').toLowerCase());
+
+  const idx = {
+    firstName: header.findIndex(h => h === 'name' || h === 'first name' || h === 'firstname'),
+    surname:   header.findIndex(h => h === 'surname' || h === 'surnmae' || h === 'last name' || h === 'lastname'),
+    medical:   header.findIndex(h => h.includes('medical')),
+  };
+
+  const employees: MedicalAidEntry[] = [];
+  const errors: string[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i], delim).map(c => c.trim().replace(/^"|"$/g, ''));
+    if (cols.every(c => !c)) continue;
+    const get = (k: keyof typeof idx) => idx[k] >= 0 ? cols[idx[k]] ?? '' : '';
+    const firstName = get('firstName');
+    const surname   = get('surname');
+    if (!firstName && !surname) continue;
+    employees.push({ firstName, surname, medicalCompany: parseTabularAmount(get('medical')) });
+  }
+  return { employees, errors };
+}
+
 export function isTabularEmployeeFile(firstLine: string): boolean {
-  const l = firstLine.toLowerCase().replace(/"/g, '');
-  return l.startsWith('surname') && (l.includes('gross') || l.includes('salary'));
+  const l = firstLine.trim().toLowerCase().replace(/"/g, '');
+  const hasName   = l.includes('surname') || l.includes('first name') || l.includes('firstname');
+  const hasSalary = l.includes('gross')   || l.includes('salary');
+  return hasName && hasSalary;
 }
 
 // Keep old export name for compatibility
 export const isTSVEmployeeFile = isTabularEmployeeFile;
+
+// Parse a monetary amount that may use either comma-as-decimal (European: "652,5")
+// or comma-as-thousands-separator (standard: "1,234"). Strips currency symbols and spaces.
+function parseTabularAmount(s: string): number {
+  const clean = s.replace(/[\s R]/g, '');
+  if (!clean || clean === '-') return 0;
+  // European decimal comma: comma present, no period → replace comma with dot
+  if (clean.includes(',') && !clean.includes('.')) {
+    return parseFloat(clean.replace(',', '.')) || 0;
+  }
+  // Standard: comma is thousands separator → strip it
+  return parseFloat(clean.replace(/,/g, '')) || 0;
+}
 
 export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; errors: string[] } {
   const lines = text.split('\n').map(l => l.trimEnd()).filter(Boolean);
@@ -241,12 +324,14 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
   // Find column indices from header (flexible — column order may vary)
   const header = splitCSVLine(lines[0], delim).map(h => h.trim().replace(/"/g, '').toLowerCase());
   const idx = {
-    surname:   header.findIndex(h => h === 'surname'),
+    surname:   header.findIndex(h => h === 'surname' || h === 'surnmae' || h === 'last name' || h === 'lastname'),
     firstName: header.findIndex(h => h === 'name' || h === 'first name' || h === 'firstname'),
     department:header.findIndex(h => h.includes('department') || h.includes('dept')),
     jobTitle:  header.findIndex(h => h.includes('title') || h.includes('position')),
     startDate: header.findIndex(h => h.includes('start') || h.includes('date') || h.includes('commencement')),
     gross:     header.findIndex(h => h.includes('gross') || (h.includes('salary') && !h.includes('net'))),
+    grade:     header.findIndex(h => h === 'grade' || h === 'grade label' || h === 'gradelabel'),
+    medical:   header.findIndex(h => h.includes('medical')),
   };
 
   for (let i = 1; i < lines.length; i++) {
@@ -261,7 +346,9 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
       department:     get('department'),
       jobTitle:       get('jobTitle'),
       employmentDate: parseTSVDate(get('startDate')),
-      grossSalary:    parseFloat(get('gross').replace(/[\s,R]/g, '')) || 0,
+      grossSalary:    parseTabularAmount(get('gross')),
+      gradeLabel:     get('grade') || null,
+      medicalCompany: parseTabularAmount(get('medical')),
     });
   }
   return { employees, errors };

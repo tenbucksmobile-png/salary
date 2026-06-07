@@ -1,7 +1,8 @@
 import { createClient } from '@/lib/supabase/server';
 import { Hotel, SalaryRecord, Employee, PayrollImport } from '@/types/database';
-import { fmtZAR, MONTH_NAMES } from '@/lib/utils';
-import { Users, DollarSign, TrendingUp, Calendar } from 'lucide-react';
+import { fmtCurrency, MONTH_NAMES } from '@/lib/utils';
+import { Calendar } from 'lucide-react';
+import SalarySummaryTable from './SalarySummaryTable';
 
 async function getHotelStats() {
   const sb = await createClient();
@@ -57,56 +58,25 @@ async function getHotelStats() {
 export default async function DashboardPage() {
   const stats = await getHotelStats();
 
-  const totals = {
-    headcount: stats.reduce((s, h) => s + h.headcount, 0),
-    total_basic: stats.reduce((s, h) => s + h.total_basic, 0),
-    total_ctc: stats.reduce((s, h) => s + h.total_ctc, 0),
-  };
-
   return (
     <div className="p-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold">Dashboard</h1>
-        <p className="text-muted-foreground text-sm mt-1">CFE Group — salary overview across all properties</p>
       </div>
 
-      {/* Group totals */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
-        <StatCard icon={Users} label="Total Headcount" value={totals.headcount.toString()} sub="All active employees" />
-        <StatCard icon={DollarSign} label="Group Basic Payroll" value={fmtZAR(totals.total_basic)} sub="Per month" />
-        <StatCard icon={TrendingUp} label="Group CTC" value={fmtZAR(totals.total_ctc)} sub="Per month" />
-      </div>
-
-      {/* Per-hotel cards */}
-      <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">Properties</h2>
       <div className="grid grid-cols-1 gap-4">
         {stats.map(s => (
           <HotelCard key={s.hotel.id} stats={s} />
         ))}
       </div>
-    </div>
-  );
-}
 
-function StatCard({ icon: Icon, label, value, sub }: {
-  icon: React.ElementType; label: string; value: string; sub: string;
-}) {
-  return (
-    <div className="bg-white rounded-xl border p-5">
-      <div className="flex items-center gap-2 mb-3">
-        <div className="h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
-          <Icon className="h-4 w-4 text-primary" />
-        </div>
-        <span className="text-sm text-muted-foreground">{label}</span>
-      </div>
-      <p className="text-2xl font-bold">{value}</p>
-      <p className="text-xs text-muted-foreground mt-1">{sub}</p>
+      <SalarySummaryTable />
     </div>
   );
 }
 
 function HotelCard({ stats: s }: { stats: Awaited<ReturnType<typeof getHotelStats>>[0] }) {
-  const gradeOrder = ['ANO', 'Front Line', 'Supervisory', 'Middle Management', 'Management', 'Exec', 'Unclassified'];
+  const gradeOrder = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Unclassified'];
   const grades = Object.entries(s.by_grade).sort(
     ([a], [b]) => (gradeOrder.indexOf(a) ?? 99) - (gradeOrder.indexOf(b) ?? 99),
   );
@@ -126,9 +96,9 @@ function HotelCard({ stats: s }: { stats: Awaited<ReturnType<typeof getHotelStat
 
       <div className="grid grid-cols-4 gap-4 mb-4">
         <Metric label="Headcount" value={s.headcount.toString()} />
-        <Metric label="Basic Payroll" value={s.headcount > 0 ? fmtZAR(s.total_basic) : '—'} />
-        <Metric label="Total CTC" value={s.headcount > 0 ? fmtZAR(s.total_ctc) : '—'} />
-        <Metric label="Avg Basic" value={s.headcount > 0 ? fmtZAR(s.total_basic / s.headcount) : '—'} />
+        <Metric label="Basic Payroll" value={s.headcount > 0 ? fmtCurrency(s.total_basic, s.hotel.country) : '—'} />
+        <Metric label="Total CTC" value={s.headcount > 0 ? fmtCurrency(s.total_ctc, s.hotel.country) : '—'} />
+        <Metric label="Avg Basic" value={s.headcount > 0 ? fmtCurrency(s.total_basic / s.headcount, s.hotel.country) : '—'} />
       </div>
 
       {grades.length > 0 && (

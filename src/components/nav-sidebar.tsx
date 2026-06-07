@@ -10,7 +10,7 @@ const nav = [
   { label: 'Employees',      href: '/dashboard/employees',     icon: Users },
   { label: 'Import Payroll', href: '/dashboard/import',        icon: Upload },
   { label: 'Salary Review',  href: '/dashboard/salary-review', icon: TrendingUp },
-  { label: 'Settings',       href: '/dashboard/settings',      icon: Settings },
+  { label: 'Methods',         href: '/dashboard/methods',        icon: Settings },
 ];
 
 export function NavSidebar() {

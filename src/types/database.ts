@@ -4,6 +4,24 @@ export interface Hotel {
   short_code: string;
   country: string;
   wca_rate: number;
+  // Configurable method rates (added in 009_hotel_methods migration; null if migration not yet applied)
+  provident_ee_rate?: number | null;
+  provident_er_rate?: number | null;
+  provident_er_rate_senior?: number | null;
+  uif_rate?: number | null;
+  uif_cap?: number | null;
+  sdl_rate?: number | null;
+  meals_standard?: number | null;
+  meals_manager?: number | null;
+  leave_days?: number | null;
+  bonus_days?: number | null;
+  ctc_provident_er?: boolean | null;
+  ctc_uif_er?: boolean | null;
+  ctc_sdl?: boolean | null;
+  ctc_wca?: boolean | null;
+  ctc_meals?: boolean | null;
+  ctc_leave_accrual?: boolean | null;
+  ctc_bonus?: boolean | null;
   created_at: string;
 }
 
@@ -25,6 +43,11 @@ export interface Employee {
   status: 'active' | 'terminated' | 'on_leave';
   comments: string | null;
   nmw_applicable: boolean;
+  severance_applicable: boolean;
+  incentive_applicable: boolean;
+  incentive_multiplier: number;
+  gratuity_applicable: boolean;
+  gratuity_rate: number;
   created_at: string;
   updated_at: string;
 }
@@ -69,6 +92,9 @@ export interface SalaryRecord {
   bonus_accrual_dec: number;
   bonus_accrual_july: number;
   mgmt_incentive: number;
+  // Provisions (Botswana / CFEM)
+  severance: number;
+  gratuity: number;
   // Increase scenario fields
   increase_amount: number;
   adjustment: number;
@@ -99,9 +125,12 @@ export interface IncreaseScenario {
   name: string;
   description: string | null;
   effective_date: string;
-  status: 'draft' | 'committed';
+  status: 'draft' | 'approved' | 'applied' | 'committed';
   created_at: string;
   committed_at: string | null;
+  effective_month: number | null;
+  effective_year: number | null;
+  applied_at: string | null;
 }
 
 export interface ScenarioLine {

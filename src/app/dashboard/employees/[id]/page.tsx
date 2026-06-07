@@ -4,11 +4,12 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, SalaryRecord } from '@/types/database';
-import { fmtZAR, MONTH_NAMES } from '@/lib/utils';
+import { fmtCurrency, MONTH_NAMES } from '@/lib/utils';
 import { ArrowLeft, Save } from 'lucide-react';
 import Link from 'next/link';
+import { isBotswana } from '@/lib/payroll-calc';
 
-const GRADE_OPTIONS = ['ANO', 'Front Line', 'Supervisory', 'Middle Management', 'Management', 'Exec'];
+const GRADE_OPTIONS = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive'];
 const STATUS_OPTIONS = ['active', 'terminated', 'on_leave'] as const;
 
 export default function EmployeeDetailPage() {
@@ -32,6 +33,11 @@ export default function EmployeeDetailPage() {
     aka: '',
     comments: '',
     nmw_applicable: false,
+    severance_applicable: false,
+    incentive_applicable: false,
+    incentive_multiplier: 2,
+    gratuity_applicable: false,
+    gratuity_rate: 0,
   });
 
   useEffect(() => {
@@ -53,6 +59,11 @@ export default function EmployeeDetailPage() {
           aka: e.aka ?? '',
           comments: e.comments ?? '',
           nmw_applicable: e.nmw_applicable ?? false,
+          severance_applicable: (e as any).severance_applicable ?? false,
+          incentive_applicable: (e as any).incentive_applicable ?? false,
+          incentive_multiplier: (e as any).incentive_multiplier ?? 2,
+          gratuity_applicable:  (e as any).gratuity_applicable  ?? false,
+          gratuity_rate:        (e as any).gratuity_rate        ?? 0,
         });
       }
     }
@@ -63,11 +74,11 @@ export default function EmployeeDetailPage() {
     setSaving(true);
     await sb.from('employees').update({
       ...form,
-      grade_label: form.grade_label || null,
+      grade_label:     form.grade_label || null,
       employment_date: form.employment_date || null,
-      aka: form.aka || null,
-      comments: form.comments || null,
-      updated_at: new Date().toISOString(),
+      aka:             form.aka || null,
+      comments:        form.comments || null,
+      updated_at:      new Date().toISOString(),
     }).eq('id', id);
     setSaving(false);
     setSaved(true);
@@ -77,6 +88,7 @@ export default function EmployeeDetailPage() {
   if (!emp) return <div className="p-8 text-muted-foreground">Loading…</div>;
 
   const latestSal = salaries[0];
+  const fmt = (n: number) => fmtCurrency(n, hotel?.country ?? '');
 
   return (
     <div className="p-8 max-w-4xl">
@@ -167,6 +179,71 @@ export default function EmployeeDetailPage() {
             <span>National Minimum Wage (NMW) applicable</span>
           </label>
 
+          {hotel && isBotswana(hotel.country) && (
+            <label className="flex items-center gap-2 cursor-pointer text-sm">
+              <input
+                type="checkbox"
+                checked={form.severance_applicable}
+                onChange={e => setForm(f => ({ ...f, severance_applicable: e.target.checked }))}
+                className="rounded"
+              />
+              <span>Calculate severance accrual</span>
+            </label>
+          )}
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer text-sm">
+              <input
+                type="checkbox"
+                checked={form.incentive_applicable}
+                onChange={e => setForm(f => ({ ...f, incentive_applicable: e.target.checked }))}
+                className="rounded"
+              />
+              <span>Incentive applicable</span>
+            </label>
+            {form.incentive_applicable && (
+              <div className="ml-6">
+                <label className="text-xs font-medium text-muted-foreground block mb-1">Incentive multiplier</label>
+                <select
+                  value={form.incentive_multiplier}
+                  onChange={e => setForm(f => ({ ...f, incentive_multiplier: Number(e.target.value) }))}
+                  className="rounded-md border border-input px-3 py-1.5 text-sm bg-white outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value={2}>Gross × 2</option>
+                  <option value={3}>Gross × 3</option>
+                  <option value={4}>Gross × 4</option>
+                </select>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer text-sm">
+              <input
+                type="checkbox"
+                checked={form.gratuity_applicable}
+                onChange={e => setForm(f => ({ ...f, gratuity_applicable: e.target.checked }))}
+                className="rounded"
+              />
+              <span>Gratuity applicable</span>
+            </label>
+            {form.gratuity_applicable && (
+              <div className="ml-6 flex items-center gap-2">
+                <label className="text-xs font-medium text-muted-foreground">Rate</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="100"
+                  value={form.gratuity_rate}
+                  onChange={e => setForm(f => ({ ...f, gratuity_rate: parseFloat(e.target.value) || 0 }))}
+                  className="w-24 rounded-md border border-input px-3 py-1.5 text-sm text-right font-mono outline-none focus:ring-2 focus:ring-ring"
+                />
+                <span className="text-sm text-muted-foreground">%</span>
+              </div>
+            )}
+          </div>
+
           <button
             onClick={save}
             disabled={saving}
@@ -196,21 +273,21 @@ export default function EmployeeDetailPage() {
                 Latest Salary — {MONTH_NAMES[latestSal.period_month - 1]} {latestSal.period_year}
               </h2>
               <dl className="space-y-2 text-sm">
-                <Row label="Basic Salary" value={fmtZAR(latestSal.basic_salary)} bold />
-                <Row label="Total Earnings" value={fmtZAR(latestSal.total_earnings)} />
-                <Row label="CTC" value={fmtZAR(latestSal.ctc)} bold />
+                <Row label="Basic Salary" value={fmt(latestSal.basic_salary)} bold />
+                <Row label="Total Earnings" value={fmt(latestSal.total_earnings)} />
+                <Row label="CTC" value={fmt(latestSal.ctc)} bold />
                 <div className="border-t my-2" />
-                <Row label="PAYE" value={fmtZAR(latestSal.tax_paye)} />
-                <Row label="UIF (Emp)" value={fmtZAR(latestSal.uif_employee)} />
-                <Row label="Medical (Emp)" value={fmtZAR(latestSal.medical_employee)} />
-                <Row label="Provident (Emp)" value={fmtZAR(latestSal.provident_employee)} />
+                <Row label="PAYE" value={fmt(latestSal.tax_paye)} />
+                <Row label="UIF (Emp)" value={fmt(latestSal.uif_employee)} />
+                <Row label="Medical (Emp)" value={fmt(latestSal.medical_employee)} />
+                <Row label="Provident (Emp)" value={fmt(latestSal.provident_employee)} />
                 <div className="border-t my-2" />
-                <Row label="Medical (Co)" value={fmtZAR(latestSal.medical_company)} />
-                <Row label="Provident (Co)" value={fmtZAR(latestSal.provident_company)} />
-                <Row label="SDL" value={fmtZAR(latestSal.sdl_company)} />
-                <Row label="UIF (Co)" value={fmtZAR(latestSal.uif_company)} />
+                <Row label="Medical (Co)" value={fmt(latestSal.medical_company)} />
+                <Row label="Provident (Co)" value={fmt(latestSal.provident_company)} />
+                <Row label="SDL" value={fmt(latestSal.sdl_company)} />
+                <Row label="UIF (Co)" value={fmt(latestSal.uif_company)} />
                 <div className="border-t my-2" />
-                <Row label="Net Salary" value={fmtZAR(latestSal.net_salary)} bold />
+                <Row label="Net Salary" value={fmt(latestSal.net_salary)} bold />
               </dl>
             </div>
           )}
@@ -234,9 +311,9 @@ export default function EmployeeDetailPage() {
               {salaries.map(s => (
                 <tr key={s.id} className="border-b last:border-0">
                   <td className="py-2">{MONTH_NAMES[s.period_month - 1]} {s.period_year}</td>
-                  <td className="py-2 text-right font-mono">{fmtZAR(s.basic_salary)}</td>
-                  <td className="py-2 text-right font-mono">{fmtZAR(s.ctc)}</td>
-                  <td className="py-2 text-right font-mono">{fmtZAR(s.net_salary)}</td>
+                  <td className="py-2 text-right font-mono">{fmt(s.basic_salary)}</td>
+                  <td className="py-2 text-right font-mono">{fmt(s.ctc)}</td>
+                  <td className="py-2 text-right font-mono">{fmt(s.net_salary)}</td>
                 </tr>
               ))}
             </tbody>

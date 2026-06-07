@@ -9,6 +9,13 @@ export function fmtZAR(n: number): string {
   return new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR', maximumFractionDigits: 0 }).format(n);
 }
 
+const _numFmt = new Intl.NumberFormat('en-ZA', { maximumFractionDigits: 0 });
+
+export function fmtCurrency(n: number, country: string): string {
+  const bw = country.toLowerCase().includes('botswana');
+  return bw ? `P ${_numFmt.format(n)}` : fmtZAR(n);
+}
+
 export function fmtNumber(n: number): string {
   return new Intl.NumberFormat('en-ZA').format(n);
 }
