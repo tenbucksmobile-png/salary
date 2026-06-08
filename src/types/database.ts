@@ -22,6 +22,8 @@ export interface Hotel {
   ctc_meals?: boolean | null;
   ctc_leave_accrual?: boolean | null;
   ctc_bonus?: boolean | null;
+  leave_accrual_pct?: number | null;
+  bonus_provision_pct?: number | null;
   created_at: string;
 }
 

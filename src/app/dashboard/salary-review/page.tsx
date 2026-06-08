@@ -108,6 +108,8 @@ function computeRows(
         ctcMeals:              hotel.ctc_meals                ?? undefined,
         ctcLeaveAccrual:       hotel.ctc_leave_accrual        ?? undefined,
         ctcBonus:              hotel.ctc_bonus                ?? undefined,
+        leaveAccrualPct:       hotel.leave_accrual_pct        ?? undefined,
+        bonusProvisionPct:     hotel.bonus_provision_pct      ?? undefined,
       });
 
       return {

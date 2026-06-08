@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, SalaryRecord } from '@/types/database';
 import { fmtZAR, fmtCurrency } from '@/lib/utils';
 import Link from 'next/link';
-import { Search, SlidersHorizontal, X, Calculator, CheckCircle, Download } from 'lucide-react';
+import { Search, SlidersHorizontal, X, Calculator, CheckCircle, Download, Trash2 } from 'lucide-react';
 import { calculateBurden } from '@/lib/payroll-calc';
 import { buildEmployeeCsv } from '@/lib/employee-csv';
 
@@ -120,7 +120,6 @@ export default function EmployeesPage() {
   const [loading, setLoading] = useState(true);
 
   const [hotelFilter,  setHotelFilter]  = useState('');
-  const [statusFilter, setStatusFilter] = useState('active');
   const [search,       setSearch]       = useState('');
 
   const [visibleCols, setVisibleCols] = useState<Set<ColId>>(DEFAULT_VISIBLE);
@@ -129,6 +128,7 @@ export default function EmployeesPage() {
   const [calculating, setCalculating] = useState(false);
   const [calcDone, setCalcDone] = useState(false);
   const [exportHotel, setExportHotel] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Load persisted column visibility after mount
   useEffect(() => { setVisibleCols(loadVisibleCols()); }, []);
@@ -188,9 +188,74 @@ export default function EmployeesPage() {
 
   const filtered = useMemo(() => employees
     .filter(e => !hotelFilter || e.hotel_id === hotelFilter)
-    .filter(e => statusFilter === 'all' || e.status === statusFilter)
     .filter(e => !search || `${e.surname} ${e.first_name} ${e.employee_code} ${e.job_title ?? ''}`.toLowerCase().includes(search.toLowerCase())),
-    [employees, hotelFilter, statusFilter, search]);
+    [employees, hotelFilter, search]);
+
+  useEffect(() => { setSelected(new Set()); }, [hotelFilter, search]);
+
+  function toggleSelect(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelected(prev =>
+      prev.size === filtered.length ? new Set() : new Set(filtered.map(e => e.id))
+    );
+  }
+
+  const [codingDone, setCodingDone] = useState(false);
+
+  async function generateEmployeeCodes() {
+    const excluded = new Set(['CSL', 'NL']);
+    const eligible = employees.filter(e => {
+      const h = hotelMap.get(e.hotel_id);
+      return h && !excluded.has(h.short_code.toUpperCase());
+    });
+    if (!eligible.length) return;
+
+    // Sort by surname then first name so numbering is deterministic
+    const sorted = [...eligible].sort((a, b) =>
+      a.surname.localeCompare(b.surname) || a.first_name.localeCompare(b.first_name)
+    );
+
+    // Assign codes: per hotel, per 3-letter prefix, sequential 001, 002…
+    const counters = new Map<string, number>();
+    const updates: { id: string; code: string }[] = [];
+    for (const emp of sorted) {
+      const prefix = emp.surname.replace(/[^a-zA-Z]/g, '').slice(0, 3).toUpperCase().padEnd(3, 'X');
+      const key = `${emp.hotel_id}::${prefix}`;
+      const n = (counters.get(key) ?? 0) + 1;
+      counters.set(key, n);
+      updates.push({ id: emp.id, code: `${prefix}${String(n).padStart(3, '0')}` });
+    }
+
+    await Promise.all(updates.map(u => sb.from('employees').update({ employee_code: u.code }).eq('id', u.id)));
+    setEmployees(prev => prev.map(e => {
+      const u = updates.find(u => u.id === e.id);
+      return u ? { ...e, employee_code: u.code } : e;
+    }));
+    setCodingDone(true);
+    setTimeout(() => setCodingDone(false), 3000);
+  }
+
+  async function deleteSelected() {
+    const ids = [...selected];
+    if (!ids.length) return;
+    const names = employees
+      .filter(e => ids.includes(e.id))
+      .map(e => `${e.first_name} ${e.surname}`)
+      .join(', ');
+    if (!window.confirm(`Delete ${ids.length} employee${ids.length > 1 ? 's' : ''} (${names})?\n\nThis will permanently remove them and all their salary records.`)) return;
+    await Promise.all(ids.map(id => sb.from('salary_records').delete().eq('employee_id', id)));
+    await sb.from('employees').delete().in('id', ids);
+    setEmployees(prev => prev.filter(e => !ids.includes(e.id)));
+    setSalaries(prev => prev.filter(s => !ids.includes(s.employee_id)));
+    setSelected(new Set());
+  }
 
   function openColPicker() {
     setDraftCols(new Set(visibleCols));
@@ -242,11 +307,6 @@ export default function EmployeesPage() {
 
   async function runCalculateBurden() {
     if (!filtered.length) return;
-    const confirmed = window.confirm(
-      `Calculate burden for ${filtered.length} employee${filtered.length === 1 ? '' : 's'}?\n\nThis will update: Provident Fund (EE + ER), UIF, SDL, WCA, Staff Meals, and Leave Accrual for the latest salary period of each employee.`
-    );
-    if (!confirmed) return;
-
     setCalculating(true);
     await Promise.all(
       filtered.map(async emp => {
@@ -295,6 +355,8 @@ export default function EmployeesPage() {
           ctcMeals:              hotel.ctc_meals                ?? undefined,
           ctcLeaveAccrual:       hotel.ctc_leave_accrual        ?? undefined,
           ctcBonus:              hotel.ctc_bonus                ?? undefined,
+          leaveAccrualPct:       hotel.leave_accrual_pct        ?? undefined,
+          bonusProvisionPct:     hotel.bonus_provision_pct      ?? undefined,
         });
 
         await sb.from('salary_records').update({
@@ -376,6 +438,16 @@ export default function EmployeesPage() {
           <p className="text-muted-foreground text-sm mt-1">{filtered.length} records</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
+          {/* Batch delete */}
+          {selected.size > 0 && (
+            <button
+              onClick={deleteSelected}
+              className="flex items-center gap-2 rounded-md bg-red-500 text-white px-4 py-2 text-sm font-medium hover:bg-red-600 transition-colors"
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete {selected.size} selected
+            </button>
+          )}
           {/* Export CSV */}
           <div className="flex items-center gap-1.5">
             <select
@@ -395,6 +467,16 @@ export default function EmployeesPage() {
               Export CSV
             </button>
           </div>
+          {/* Generate employee codes */}
+          <button
+            onClick={generateEmployeeCodes}
+            disabled={loading}
+            className="flex items-center gap-2 rounded-md border border-input bg-white px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+          >
+            {codingDone
+              ? <><CheckCircle className="h-4 w-4 text-green-500" /> Codes applied</>
+              : 'Generate Codes'}
+          </button>
           {/* Calculate Burden */}
           <button
             onClick={runCalculateBurden}
@@ -428,17 +510,6 @@ export default function EmployeesPage() {
           className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
         >
           {hotels.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
-        </select>
-
-        <select
-          value={statusFilter}
-          onChange={e => setStatusFilter(e.target.value)}
-          className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
-        >
-          <option value="all">All Statuses</option>
-          <option value="active">Active</option>
-          <option value="terminated">Terminated</option>
-          <option value="on_leave">On Leave</option>
         </select>
 
         {/* Column picker trigger */}
@@ -503,6 +574,14 @@ export default function EmployeesPage() {
         <table className="w-full text-sm whitespace-nowrap">
           <thead>
             <tr className="border-b bg-muted/40">
+              <th className="px-4 py-3 w-8">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-input accent-primary cursor-pointer"
+                  checked={filtered.length > 0 && selected.size === filtered.length}
+                  onChange={toggleSelectAll}
+                />
+              </th>
               {visibleDefs.map(col => (
                 <th key={col.id} className={`px-4 py-3 font-medium text-muted-foreground ${col.align === 'right' ? 'text-right' : 'text-left'}`}>
                   {col.label}
@@ -513,14 +592,23 @@ export default function EmployeesPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={visibleDefs.length + 1} className="text-center py-12 text-muted-foreground">Loading…</td></tr>
+              <tr><td colSpan={visibleDefs.length + 2} className="text-center py-12 text-muted-foreground">Loading…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={visibleDefs.length + 1} className="text-center py-12 text-muted-foreground">No employees found. Import a payroll file to get started.</td></tr>
+              <tr><td colSpan={visibleDefs.length + 2} className="text-center py-12 text-muted-foreground">No employees found. Import a payroll file to get started.</td></tr>
             ) : (
               filtered.map((e, i) => {
                 const sal = latestSalary.get(e.id);
+                const isSelected = selected.has(e.id);
                 return (
-                  <tr key={e.id} className={`border-b last:border-0 hover:bg-muted/20 transition-colors ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
+                  <tr key={e.id} className={`border-b last:border-0 hover:bg-muted/20 transition-colors ${isSelected ? 'bg-red-50/60' : i % 2 === 1 ? 'bg-muted/10' : ''}`}>
+                    <td className="px-4 py-2.5">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-input accent-primary cursor-pointer"
+                        checked={isSelected}
+                        onChange={() => toggleSelect(e.id)}
+                      />
+                    </td>
                     {visibleDefs.map(col => (
                       <td key={col.id} className={`px-4 py-2.5 text-sm ${col.align === 'right' ? 'text-right font-mono' : ''}`}>
                         {cellValue(col.id, e, sal)}

@@ -114,6 +114,9 @@ export interface BurdenInput {
   ctcMeals?: boolean;
   ctcLeaveAccrual?: boolean;
   ctcBonus?: boolean;
+  // Percentage multipliers: (basic × days/365) × pct = monthly accrual; default 1.0 = 100%
+  leaveAccrualPct?: number;
+  bonusProvisionPct?: number;
 }
 
 export function calculateBurden(input: BurdenInput): BurdenResult {
@@ -135,13 +138,15 @@ export function calculateBurden(input: BurdenInput): BurdenResult {
   // ── Provident Fund ───────────────────────────────────────────────────────
   // SA: EE = ER = configurable (default 7%). Botswana: EE 5%, ER junior/senior split.
   // APA Director override: ER = gross_earnings * 14% (EE unchanged).
+  // Botswana rule: severance_applicable employees have PF EE + ER = 0.
   const isApaDirector = input.hotelShortCode?.toUpperCase() === 'APA' && isDirector(input.jobTitle);
+  const bwSeveranceNoPf = bw && !!input.severanceApplicable;
   const pfEeRate = pfEeRate_;
   const pfErRate = bw
     ? ((input.yearsOfService ?? 0) >= 5 ? pfErRateSenior_ : pfErRateJunior_)
     : pfErRateJunior_;
-  const provident_employee = r2(input.basic * pfEeRate);
-  const provident_company  = isApaDirector
+  const provident_employee = bwSeveranceNoPf ? 0 : r2(input.basic * pfEeRate);
+  const provident_company  = bwSeveranceNoPf ? 0 : isApaDirector
     ? r2(input.totalEarnings * PF_ER_APA_DIRECTOR)
     : r2(input.basic * pfErRate);
 
@@ -158,14 +163,15 @@ export function calculateBurden(input: BurdenInput): BurdenResult {
   const staff_meals = manager ? mealsMgr_ : mealsStd_;
 
   // ── Leave accrual ────────────────────────────────────────────────────────
+  // Formula: basic × (days / 365) × pct
   const leave_days    = r2(leaveDaysPA_ / 12);
-  const leave_accrual = r2(input.basic * leaveDaysPA_ / CALENDAR_DAYS_PA);
+  const leave_accrual = r2(input.basic * leaveDaysPA_ / CALENDAR_DAYS_PA * (input.leaveAccrualPct ?? 1));
 
   // ── Bonus provision (13th cheque monthly accrual) ────────────────────────
-  // Skipped when incentive_applicable = true (incentive replaces bonus)
+  // Formula: gross × (days / 365) × pct; skipped when incentive_applicable = true
   const bonus_provision = input.incentiveApplicable
     ? 0
-    : r2(input.totalEarnings * bonusDaysPA_ / CALENDAR_DAYS_PA);
+    : r2(input.totalEarnings * bonusDaysPA_ / CALENDAR_DAYS_PA * (input.bonusProvisionPct ?? 1));
 
   // ── Severance accrual (Botswana, per-employee flag) ───────────────────────
   // < 5 yrs: 1 day/month = basic/26; >= 5 yrs: 2 days/month = (basic/26)*2

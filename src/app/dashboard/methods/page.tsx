@@ -27,6 +27,8 @@ type HotelConfig = {
   ctcMeals: boolean;
   ctcLeaveAccrual: boolean;
   ctcBonus: boolean;
+  leaveAccrualPct: string;
+  bonusProvisionPct: string;
 };
 
 function fmtRate(decimal: number): string {
@@ -54,6 +56,8 @@ function hotelToConfig(h: Hotel): HotelConfig {
     ctcMeals:              h.ctc_meals         ?? false,
     ctcLeaveAccrual:       h.ctc_leave_accrual ?? false,
     ctcBonus:              h.ctc_bonus         ?? false,
+    leaveAccrualPct:       String((h.leave_accrual_pct   ?? 1) * 100),
+    bonusProvisionPct:     String((h.bonus_provision_pct ?? 1) * 100),
   };
 }
 
@@ -123,6 +127,8 @@ export default function MethodsPage() {
       ctc_meals:                cfg.ctcMeals,
       ctc_leave_accrual:        cfg.ctcLeaveAccrual,
       ctc_bonus:                cfg.ctcBonus,
+      leave_accrual_pct:        parseFloat(cfg.leaveAccrualPct) / 100,
+      bonus_provision_pct:      parseFloat(cfg.bonusProvisionPct) / 100,
     }).eq('id', hotel.id);
 
     // Load active employees for this hotel
@@ -174,6 +180,8 @@ export default function MethodsPage() {
       ctcMeals:              cfg.ctcMeals,
       ctcLeaveAccrual:       cfg.ctcLeaveAccrual,
       ctcBonus:              cfg.ctcBonus,
+      leaveAccrualPct:       parseFloat(cfg.leaveAccrualPct) / 100,
+      bonusProvisionPct:     parseFloat(cfg.bonusProvisionPct) / 100,
     };
 
     let updated = 0;
@@ -505,14 +513,26 @@ export default function MethodsPage() {
                 <tr>
                   <td className="px-5 py-3">Leave Accrual</td>
                   <td className="px-5 py-3">
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="number" step="1" min="0"
-                        value={cfg.leaveDays}
-                        onChange={e => patch('leaveDays', e.target.value)}
-                        className={inputCls}
-                      />
-                      <span className="text-sm text-muted-foreground">days / year</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number" step="1" min="0"
+                          value={cfg.leaveDays}
+                          onChange={e => patch('leaveDays', e.target.value)}
+                          className={inputCls}
+                        />
+                        <span className="text-sm text-muted-foreground">days / 365</span>
+                      </div>
+                      <span className="text-sm text-muted-foreground">×</span>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number" step="1" min="0" max="100"
+                          value={cfg.leaveAccrualPct ?? '100'}
+                          onChange={e => patch('leaveAccrualPct', e.target.value)}
+                          className={inputCls}
+                        />
+                        <span className="text-sm text-muted-foreground">%</span>
+                      </div>
                     </div>
                   </td>
                   <CbCell field="ctcLeaveAccrual" />
@@ -521,14 +541,26 @@ export default function MethodsPage() {
                 <tr>
                   <td className="px-5 py-3">Bonus Provision</td>
                   <td className="px-5 py-3">
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="number" step="0.01" min="0"
-                        value={cfg.bonusDays}
-                        onChange={e => patch('bonusDays', e.target.value)}
-                        className={inputCls}
-                      />
-                      <span className="text-sm text-muted-foreground">days / year</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number" step="0.01" min="0"
+                          value={cfg.bonusDays}
+                          onChange={e => patch('bonusDays', e.target.value)}
+                          className={inputCls}
+                        />
+                        <span className="text-sm text-muted-foreground">days / 365</span>
+                      </div>
+                      <span className="text-sm text-muted-foreground">×</span>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number" step="1" min="0" max="100"
+                          value={cfg.bonusProvisionPct ?? '100'}
+                          onChange={e => patch('bonusProvisionPct', e.target.value)}
+                          className={inputCls}
+                        />
+                        <span className="text-sm text-muted-foreground">%</span>
+                      </div>
                     </div>
                   </td>
                   <CbCell field="ctcBonus" />
