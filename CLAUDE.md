@@ -289,6 +289,8 @@ Persisted in `localStorage` under key `'ihg-salary-emp-cols'`. The picker uses a
 
 **Generate Codes button** — assigns `SUR001` format employee codes (`first 3 letters of surname + 3-digit sequence`) to all employees except those at CSL and NL. Sequential numbers (001, 002…) within each hotel per surname prefix. Uses `hotel.short_code` to exclude CSL/NL.
 
+Default visible columns: Emp Code, Surname, First Name, Hotel, Department, Job Title, Grade, Basic Salary, Gross Salary, CTC.
+
 Column groups: Employee · Salary · Deductions · Contributions · Provisions · Accruals
 
 **Category sum view** — a select dropdown overrides the column picker to show only anchor columns + the chosen group, with a totals row at the bottom.
