@@ -116,12 +116,13 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `007_incentive_gratuity.sql` | `incentive_applicable`, `incentive_multiplier`, `gratuity_applicable`, `gratuity_rate` on `employees`; `incentive`, `gratuity` on `salary_records` |
 | `008_scenario_workflow.sql` | `effective_month`, `effective_year`, `applied_at` on `increase_scenarios`; migrates `committed` → `applied` |
 | `009_hotel_methods.sql` | Configurable rate columns + CTC flags on `hotels` (see Methods section) |
+| `010_accrual_pct.sql` | `leave_accrual_pct` + `bonus_provision_pct` decimal columns on `hotels` (default 1.0 = 100%) |
 
 ### `hotels` configurable method columns (from migration 009)
 
 All rates stored as decimals (e.g. 0.07 = 7%). All displayed as percentages in the Methods UI.
 
-`provident_ee_rate`, `provident_er_rate`, `provident_er_rate_senior` (BW tenure split), `uif_rate`, `uif_cap` (R amount), `sdl_rate`, `meals_standard`, `meals_manager`, `leave_days`, `bonus_days`
+`provident_ee_rate`, `provident_er_rate`, `provident_er_rate_senior` (BW tenure split), `uif_rate`, `uif_cap` (R amount), `sdl_rate`, `meals_standard`, `meals_manager`, `leave_days`, `bonus_days`, `leave_accrual_pct`, `bonus_provision_pct`
 
 CTC inclusion flags (boolean, default false for provisions): `ctc_provident_er`, `ctc_uif_er`, `ctc_sdl`, `ctc_wca`, `ctc_meals`, `ctc_leave_accrual`, `ctc_bonus`
 
@@ -155,8 +156,8 @@ All rates have fallback constants used when the hotel hasn't had migration 009 a
 | WCA | 0.50% × Gross | SA only; from `hotels.wca_rate` |
 | Staff Meals — Manager | R380 | title contains manager/mngr/mgr |
 | Staff Meals — Standard | R330 | all others |
-| Leave Accrual | SA 24 days, BW 21 days | × Basic / 365 |
-| Bonus Provision | SA 30.42 days, BW 26 days | × Gross / 365; 0 when `incentive_applicable` |
+| Leave Accrual | SA 24 days, BW 21 days | `basic × (days / 365) × leave_accrual_pct` |
+| Bonus Provision | SA 30.42 days, BW 26 days | `gross × (days / 365) × bonus_provision_pct`; 0 when `incentive_applicable` |
 
 ### `BurdenResult.ctc`
 
@@ -165,7 +166,7 @@ All rates have fallback constants used when the hotel hasn't had migration 009 a
 ### Per-employee flags
 
 - `incentiveApplicable` — sets `incentive = gross × multiplier / 12`; skips `bonus_provision`
-- `severanceApplicable` (BW) — `severance = basic/26 × (1 or 2 days/month based on tenure)`
+- `severanceApplicable` (BW) — `severance = basic/26 × (1 or 2 days/month based on tenure)`; also sets `provident_employee` and `provident_company` to 0 (BW rule: severance employees have no PF contributions)
 - `gratuityApplicable` — `gratuity = gross × rate%`
 
 ### APA Director override
@@ -264,7 +265,7 @@ src/
 
 **Contributions section**: PF EE, PF ER (single rate for SA; junior/senior split for BW), UIF + cap, SDL, WCA — all with "Include in CTC" checkbox. Botswana rows for UIF/SDL/WCA are shown greyed with "Exempt" label.
 
-**Provisions section**: Staff Meals standard/manager, Leave Accrual days/year, Bonus Provision days/year — each with "Include in CTC" checkbox.
+**Provisions section**: Staff Meals standard/manager, Leave Accrual (`days / 365 × %`), Bonus Provision (`days / 365 × %`) — each with "Include in CTC" checkbox. The `%` multiplier (stored as `leave_accrual_pct` / `bonus_provision_pct` on `hotels`) is applied after the days/365 factor: `basic × (days/365) × pct`.
 
 **Save & Update All [Hotel] Employees** — saves rates to `hotels` table, then recalculates and updates the latest salary record for every active employee in the hotel. Employees with `incentive_applicable` keep their incentive and receive no `bonus_provision` (this is handled inside `calculateBurden`, not special-cased here).
 
@@ -283,6 +284,10 @@ Re-import: via Import page — select the same hotel, upload the CSV. Format is 
 Persisted in `localStorage` under key `'ihg-salary-emp-cols'`. The picker uses a **draft pattern** — selections stage inside the dropdown and only apply when the user clicks **OK**. Hotel filter persisted under `'ihg-salary-emp-hotel'`.
 
 **Hotel filter has no "All Hotels" option** — always shows one hotel. On mount the hotel is resolved inside `load()` after the hotel list arrives: validates the localStorage value against live hotel IDs, falls back to first hotel if missing or stale. The employee detail page writes the employee's hotel ID to the same key so "Back to Employees" always lands on the correct hotel.
+
+**Batch delete** — checkbox on each row (header checkbox selects all visible). A red "Delete X selected" button appears in the toolbar when rows are ticked; confirms then deletes employees + all their salary records in one operation. Selection clears on hotel/search filter change.
+
+**Generate Codes button** — assigns `SUR001` format employee codes (`first 3 letters of surname + 3-digit sequence`) to all employees except those at CSL and NL. Sequential numbers (001, 002…) within each hotel per surname prefix. Uses `hotel.short_code` to exclude CSL/NL.
 
 Column groups: Employee · Salary · Deductions · Contributions · Provisions · Accruals
 
