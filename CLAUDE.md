@@ -78,7 +78,7 @@ COOKIE_SECRET=<32+ char random>   # used for HMAC cookie signing
 
 ## Architecture Notes
 
-**All dashboard pages are `'use client'`** — the entire dashboard fetches data directly from Supabase using the browser client (`src/lib/supabase/client.ts`). There are no React Server Components in the dashboard; `src/lib/supabase/server.ts` is not currently used.
+**Server vs client split**: `src/app/dashboard/page.tsx` (the main dashboard) is a **React Server Component** — it uses `src/lib/supabase/server.ts` and fetches data server-side. All other dashboard sub-pages (`employees/`, `import/`, `methods/`, `salary-review/`) are `'use client'` and query Supabase directly via `src/lib/supabase/client.ts`.
 
 **`latest_salary` DB view** — this view exists in the database but is not queried by the app. All pages compute the latest salary record client-side by sorting `salary_records` by `period_year` desc / `period_month` desc and taking the first match per `employee_id`.
 
@@ -168,6 +168,10 @@ All rates have fallback constants used when the hotel hasn't had migration 009 a
 - `severanceApplicable` (BW) — `severance = basic/26 × (1 or 2 days/month based on tenure)`
 - `gratuityApplicable` — `gratuity = gross × rate%`
 
+### APA Director override
+
+`isDirector()` (exported from `payroll-calc.ts`) detects `"director"` in job title. When `hotelShortCode === 'APA'` and `isDirector()` is true, ER provident fund is calculated as `gross × 14%` (`PF_ER_APA_DIRECTOR`) instead of the standard rate. APA is not a live hotel but the constant is retained.
+
 ---
 
 ## Import Formats
@@ -197,7 +201,8 @@ Detection order: round-trip CSV → medical aid → employee details → VIP 710
 ### Employee CSV Round-trip (exported from Employees page)
 
 - Parser: `src/lib/employee-csv.ts` → `parseEmployeeCsvExport()`
-- Detected: first line starts with `employee_code,` and contains `period_month`
+- Detected: first line starts with `employee_code,` **or** `employee_code;` and contains `period_month`
+- Delimiter auto-detected (comma vs semicolon) — Excel on SA/EU locales saves CSVs with `;`
 - Matches by `employee_code` within the selected hotel; updates all employee fields + upserts the full salary record
 - After import, run Calculate Burden or Methods → Save & Update to recalculate contributions
 
@@ -276,6 +281,8 @@ Re-import: via Import page — select the same hotel, upload the CSV. Format is 
 ## Column Visibility (Employees page)
 
 Persisted in `localStorage` under key `'ihg-salary-emp-cols'`. The picker uses a **draft pattern** — selections stage inside the dropdown and only apply when the user clicks **OK**. Hotel filter persisted under `'ihg-salary-emp-hotel'`.
+
+**Hotel filter has no "All Hotels" option** — always shows one hotel. On mount the hotel is resolved inside `load()` after the hotel list arrives: validates the localStorage value against live hotel IDs, falls back to first hotel if missing or stale. The employee detail page writes the employee's hotel ID to the same key so "Back to Employees" always lands on the correct hotel.
 
 Column groups: Employee · Salary · Deductions · Contributions · Provisions · Accruals
 
