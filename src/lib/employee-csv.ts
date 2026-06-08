@@ -165,10 +165,17 @@ export function buildEmployeeCsv(
 
 export function isEmployeeCsvExport(firstLine: string): boolean {
   const l = firstLine.trimStart();
-  return l.startsWith('employee_code,') && l.includes('period_month');
+  return (l.startsWith('employee_code,') || l.startsWith('employee_code;')) && l.includes('period_month');
 }
 
-function parseCSVLine(line: string): string[] {
+function detectDelimiter(headerLine: string): ',' | ';' {
+  // Count occurrences; whichever appears more is the delimiter
+  const commas     = (headerLine.match(/,/g)   ?? []).length;
+  const semicolons = (headerLine.match(/;/g)   ?? []).length;
+  return semicolons > commas ? ';' : ',';
+}
+
+function parseCSVLine(line: string, delim: ',' | ';' = ','): string[] {
   const result: string[] = [];
   let i = 0;
   while (i <= line.length) {
@@ -182,9 +189,9 @@ function parseCSVLine(line: string): string[] {
         else                                          { field += line[i++]; }
       }
       result.push(field);
-      if (line[i] === ',') i++;
+      if (line[i] === delim) i++;
     } else {
-      const end = line.indexOf(',', i);
+      const end = line.indexOf(delim, i);
       if (end === -1) { result.push(line.slice(i)); break; }
       result.push(line.slice(i, end));
       i = end + 1;
@@ -205,7 +212,8 @@ export function parseEmployeeCsvExport(
   const nonEmpty = lines.filter(l => l.trim());
   if (nonEmpty.length < 2) return { rows: [], errors: ['File appears empty'] };
 
-  const headers = parseCSVLine(nonEmpty[0]);
+  const delim = detectDelimiter(nonEmpty[0]);
+  const headers = parseCSVLine(nonEmpty[0], delim);
   const idx = (col: string) => headers.indexOf(col);
   const get = (cols: string[], col: string) => cols[idx(col)] ?? '';
 
@@ -214,7 +222,7 @@ export function parseEmployeeCsvExport(
   const errors: string[] = [];
 
   for (let i = 1; i < nonEmpty.length; i++) {
-    const cols = parseCSVLine(nonEmpty[i]);
+    const cols = parseCSVLine(nonEmpty[i], delim);
     const empCode = str(get(cols, 'employee_code'));
     if (!empCode) { errors.push(`Row ${i + 1}: missing employee_code — skipped`); continue; }
 

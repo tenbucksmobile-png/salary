@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, SalaryRecord } from '@/types/database';
 import { fmtCurrency, MONTH_NAMES } from '@/lib/utils';
@@ -12,9 +12,10 @@ import { isBotswana } from '@/lib/payroll-calc';
 const GRADE_OPTIONS = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive'];
 const STATUS_OPTIONS = ['active', 'terminated', 'on_leave'] as const;
 
+const now = new Date();
+
 export default function EmployeeDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const router = useRouter();
   const sb = createClient();
 
   const [emp, setEmp] = useState<Employee | null>(null);
@@ -22,9 +23,12 @@ export default function EmployeeDetailPage() {
   const [salaries, setSalaries] = useState<SalaryRecord[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [savingSal, setSavingSal] = useState(false);
+  const [savedSal, setSavedSal] = useState(false);
 
-  // Editable fields
   const [form, setForm] = useState({
+    surname: '',
+    first_name: '',
     job_title: '',
     department_code: '',
     grade_label: '',
@@ -40,6 +44,13 @@ export default function EmployeeDetailPage() {
     gratuity_rate: 0,
   });
 
+  const [salForm, setSalForm] = useState({
+    basic_salary: 0,
+    total_earnings: 0,
+    period_month: now.getMonth() + 1,
+    period_year: now.getFullYear(),
+  });
+
   useEffect(() => {
     async function load() {
       const [{ data: e }, { data: sals }] = await Promise.all([
@@ -48,9 +59,15 @@ export default function EmployeeDetailPage() {
       ]);
       if (e) {
         setEmp(e as any);
-        setHotel((e as any).hotels as Hotel);
-        setSalaries((sals ?? []) as SalaryRecord[]);
+        const hotelObj = (e as any).hotels as Hotel;
+        setHotel(hotelObj);
+        // Pre-set the hotel filter so "Back to Employees" lands on this hotel
+        try { localStorage.setItem('ihg-salary-emp-hotel', hotelObj.id); } catch {}
+        const salList = (sals ?? []) as SalaryRecord[];
+        setSalaries(salList);
         setForm({
+          surname: e.surname ?? '',
+          first_name: e.first_name ?? '',
           job_title: e.job_title ?? '',
           department_code: e.department_code ?? '',
           grade_label: e.grade_label ?? '',
@@ -65,6 +82,15 @@ export default function EmployeeDetailPage() {
           gratuity_applicable:  (e as any).gratuity_applicable  ?? false,
           gratuity_rate:        (e as any).gratuity_rate        ?? 0,
         });
+        if (salList.length > 0) {
+          setSalForm(f => ({
+            ...f,
+            basic_salary: salList[0].basic_salary,
+            total_earnings: salList[0].total_earnings,
+            period_month: salList[0].period_month,
+            period_year: salList[0].period_year,
+          }));
+        }
       }
     }
     load();
@@ -80,9 +106,57 @@ export default function EmployeeDetailPage() {
       comments:        form.comments || null,
       updated_at:      new Date().toISOString(),
     }).eq('id', id);
+    setEmp(prev => prev ? { ...prev, surname: form.surname, first_name: form.first_name } : prev);
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  }
+
+  async function saveSalary() {
+    setSavingSal(true);
+    const existing = salaries[0];
+
+    if (existing) {
+      // Update the latest record's basic and gross
+      await sb.from('salary_records').update({
+        basic_salary: salForm.basic_salary,
+        total_earnings: salForm.total_earnings,
+      }).eq('id', existing.id);
+      setSalaries(prev => prev.map(s =>
+        s.id === existing.id
+          ? { ...s, basic_salary: salForm.basic_salary, total_earnings: salForm.total_earnings }
+          : s
+      ));
+    } else {
+      // No record yet — insert a minimal one
+      const { data: inserted } = await sb.from('salary_records').insert({
+        employee_id: id,
+        period_month: salForm.period_month,
+        period_year: salForm.period_year,
+        basic_salary: salForm.basic_salary,
+        total_earnings: salForm.total_earnings,
+        allowances: {},
+        tax_paye: 0, uif_employee: 0, medical_employee: 0,
+        ancilla_employee: 0, provident_employee: 0, total_deductions: 0,
+        uif_company: 0, medical_company: 0, provident_company: 0,
+        sdl_company: 0, ancilla_company: 0, total_company_contrib: 0,
+        wca_company: 0, staff_meals: 0, bonus_provision: 0,
+        incentive: 0, leave_provision: 0, other_company_contrib: 0,
+        total_payroll_burden: 0, total_cost: salForm.total_earnings,
+        leave_days: 0, leave_accrual: 0, bonus_payout_factor: 0,
+        bonus_accrual_dec: 0, bonus_accrual_july: 0, mgmt_incentive: 0,
+        severance: 0, gratuity: 0,
+        increase_amount: 0, adjustment: 0, increase_pct: 0,
+        new_basic: 0, new_ctc: 0,
+        net_salary: salForm.total_earnings,
+        ctc: salForm.total_earnings,
+      }).select().single();
+      if (inserted) setSalaries([inserted as SalaryRecord]);
+    }
+
+    setSavingSal(false);
+    setSavedSal(true);
+    setTimeout(() => setSavedSal(false), 2000);
   }
 
   if (!emp) return <div className="p-8 text-muted-foreground">Loading…</div>;
@@ -97,14 +171,30 @@ export default function EmployeeDetailPage() {
       </Link>
 
       <div className="mb-6">
-        <h1 className="text-2xl font-bold">{emp.surname}, {emp.first_name}</h1>
+        <h1 className="text-2xl font-bold">{form.surname || emp.surname}, {form.first_name || emp.first_name}</h1>
         <p className="text-muted-foreground text-sm">{emp.employee_code} · {hotel?.name}</p>
       </div>
 
       <div className="grid grid-cols-2 gap-6">
-        {/* Edit form */}
+        {/* Left — employee details */}
         <div className="bg-white rounded-xl border p-6 space-y-4">
           <h2 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground">Employee Details</h2>
+
+          <Field label="Surname">
+            <input
+              value={form.surname}
+              onChange={e => setForm(f => ({ ...f, surname: e.target.value }))}
+              className="w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+          </Field>
+
+          <Field label="First Name">
+            <input
+              value={form.first_name}
+              onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))}
+              className="w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+          </Field>
 
           <Field label="Job Title">
             <input
@@ -254,7 +344,7 @@ export default function EmployeeDetailPage() {
           </button>
         </div>
 
-        {/* Read-only info */}
+        {/* Right column */}
         <div className="space-y-6">
           <div className="bg-white rounded-xl border p-6">
             <h2 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground mb-4">VIP Info</h2>
@@ -267,30 +357,93 @@ export default function EmployeeDetailPage() {
             </dl>
           </div>
 
-          {latestSal && (
-            <div className="bg-white rounded-xl border p-6">
-              <h2 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground mb-4">
-                Latest Salary — {MONTH_NAMES[latestSal.period_month - 1]} {latestSal.period_year}
-              </h2>
-              <dl className="space-y-2 text-sm">
-                <Row label="Basic Salary" value={fmt(latestSal.basic_salary)} bold />
-                <Row label="Total Earnings" value={fmt(latestSal.total_earnings)} />
-                <Row label="CTC" value={fmt(latestSal.ctc)} bold />
-                <div className="border-t my-2" />
-                <Row label="PAYE" value={fmt(latestSal.tax_paye)} />
-                <Row label="UIF (Emp)" value={fmt(latestSal.uif_employee)} />
-                <Row label="Medical (Emp)" value={fmt(latestSal.medical_employee)} />
-                <Row label="Provident (Emp)" value={fmt(latestSal.provident_employee)} />
-                <div className="border-t my-2" />
-                <Row label="Medical (Co)" value={fmt(latestSal.medical_company)} />
-                <Row label="Provident (Co)" value={fmt(latestSal.provident_company)} />
-                <Row label="SDL" value={fmt(latestSal.sdl_company)} />
-                <Row label="UIF (Co)" value={fmt(latestSal.uif_company)} />
-                <div className="border-t my-2" />
-                <Row label="Net Salary" value={fmt(latestSal.net_salary)} bold />
-              </dl>
+          {/* Salary — always visible */}
+          <div className="bg-white rounded-xl border p-6">
+            <h2 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground mb-1">
+              {latestSal
+                ? `Latest Salary — ${MONTH_NAMES[latestSal.period_month - 1]} ${latestSal.period_year}`
+                : 'Salary'}
+            </h2>
+            {!latestSal && (
+              <p className="text-xs text-muted-foreground mb-4">No salary record yet. Enter values and save to create one.</p>
+            )}
+
+            <div className="space-y-3 text-sm mt-4">
+              {/* Period selector — only shown when creating a new record */}
+              {!latestSal && (
+                <div className="flex items-center gap-3">
+                  <span className="text-muted-foreground w-32 shrink-0">Period</span>
+                  <select
+                    value={salForm.period_month}
+                    onChange={e => setSalForm(f => ({ ...f, period_month: Number(e.target.value) }))}
+                    className="rounded-md border border-input px-2 py-1 text-sm bg-white outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+                  </select>
+                  <input
+                    type="number"
+                    value={salForm.period_year}
+                    onChange={e => setSalForm(f => ({ ...f, period_year: Number(e.target.value) }))}
+                    className="w-24 rounded-md border border-input px-2 py-1 text-sm text-right font-mono outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+              )}
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground shrink-0">Basic Salary</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={salForm.basic_salary}
+                  onChange={e => setSalForm(f => ({ ...f, basic_salary: parseFloat(e.target.value) || 0 }))}
+                  className="w-36 rounded-md border border-input px-2 py-1 text-sm text-right font-mono outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground shrink-0">Gross Salary</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={salForm.total_earnings}
+                  onChange={e => setSalForm(f => ({ ...f, total_earnings: parseFloat(e.target.value) || 0 }))}
+                  className="w-36 rounded-md border border-input px-2 py-1 text-sm text-right font-mono outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+
+              {latestSal && (
+                <>
+                  <Row label="CTC" value={fmt(latestSal.ctc)} bold />
+                  <div className="border-t my-2" />
+                  <Row label="PAYE" value={fmt(latestSal.tax_paye)} />
+                  <Row label="UIF (Emp)" value={fmt(latestSal.uif_employee)} />
+                  <Row label="Medical (Emp)" value={fmt(latestSal.medical_employee)} />
+                  <Row label="Provident (Emp)" value={fmt(latestSal.provident_employee)} />
+                  <div className="border-t my-2" />
+                  <Row label="Medical (Co)" value={fmt(latestSal.medical_company)} />
+                  <Row label="Provident (Co)" value={fmt(latestSal.provident_company)} />
+                  <Row label="SDL" value={fmt(latestSal.sdl_company)} />
+                  <Row label="UIF (Co)" value={fmt(latestSal.uif_company)} />
+                  <div className="border-t my-2" />
+                  <Row label="Net Salary" value={fmt(latestSal.net_salary)} bold />
+                </>
+              )}
             </div>
-          )}
+
+            <div className="mt-4 space-y-2">
+              <button
+                onClick={saveSalary}
+                disabled={savingSal}
+                className="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                <Save className="h-4 w-4" />
+                {savedSal ? 'Saved!' : savingSal ? 'Saving…' : latestSal ? 'Save Salary' : 'Create Salary Record'}
+              </button>
+              <p className="text-xs text-muted-foreground">After saving, run Calculate Burden to recalculate contributions.</p>
+            </div>
+          </div>
         </div>
       </div>
 

@@ -119,7 +119,7 @@ export default function EmployeesPage() {
   const [salaries, setSalaries]   = useState<SalaryRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [hotelFilter,  setHotelFilter]  = useState('all');
+  const [hotelFilter,  setHotelFilter]  = useState('');
   const [statusFilter, setStatusFilter] = useState('active');
   const [search,       setSearch]       = useState('');
 
@@ -130,25 +130,19 @@ export default function EmployeesPage() {
   const [calcDone, setCalcDone] = useState(false);
   const [exportHotel, setExportHotel] = useState('');
 
-  // Load persisted values after mount (localStorage not available on server)
-  useEffect(() => {
-    setVisibleCols(loadVisibleCols());
-    try {
-      const saved = localStorage.getItem(HOTEL_FILTER_KEY);
-      if (saved) setHotelFilter(saved);
-    } catch {}
-  }, []);
+  // Load persisted column visibility after mount
+  useEffect(() => { setVisibleCols(loadVisibleCols()); }, []);
 
-  // Default export hotel to current filter when hotels load
+  // Keep export hotel in sync with filter hotel
   useEffect(() => {
-    if (hotels.length && !exportHotel) {
-      setExportHotel(hotelFilter !== 'all' ? hotelFilter : hotels[0].id);
-    }
-  }, [hotels, hotelFilter, exportHotel]);
+    if (hotelFilter) setExportHotel(hotelFilter);
+  }, [hotelFilter]);
 
   // Persist hotel filter selection
   useEffect(() => {
-    try { localStorage.setItem(HOTEL_FILTER_KEY, hotelFilter); } catch {}
+    if (hotelFilter) {
+      try { localStorage.setItem(HOTEL_FILTER_KEY, hotelFilter); } catch {}
+    }
   }, [hotelFilter]);
 
   async function load() {
@@ -157,9 +151,22 @@ export default function EmployeesPage() {
       sb.from('employees').select('*').order('surname'),
       sb.from('salary_records').select('*'),
     ]);
-    setHotels((h ?? []) as Hotel[]);
+    const hotelList = (h ?? []) as Hotel[];
+    setHotels(hotelList);
     setEmployees((e ?? []) as Employee[]);
     setSalaries((s ?? []) as SalaryRecord[]);
+    // Resolve hotel filter: prefer localStorage value if it matches a real hotel,
+    // otherwise fall back to the first hotel in the list.
+    if (hotelList.length > 0) {
+      setHotelFilter(prev => {
+        if (prev && hotelList.some(h => h.id === prev)) return prev;
+        try {
+          const saved = localStorage.getItem(HOTEL_FILTER_KEY);
+          if (saved && saved !== 'all' && hotelList.some(h => h.id === saved)) return saved;
+        } catch {}
+        return hotelList[0].id;
+      });
+    }
     setLoading(false);
   }
 
@@ -180,7 +187,7 @@ export default function EmployeesPage() {
   }, [salaries]);
 
   const filtered = useMemo(() => employees
-    .filter(e => hotelFilter === 'all' || e.hotel_id === hotelFilter)
+    .filter(e => !hotelFilter || e.hotel_id === hotelFilter)
     .filter(e => statusFilter === 'all' || e.status === statusFilter)
     .filter(e => !search || `${e.surname} ${e.first_name} ${e.employee_code} ${e.job_title ?? ''}`.toLowerCase().includes(search.toLowerCase())),
     [employees, hotelFilter, statusFilter, search]);
@@ -420,7 +427,6 @@ export default function EmployeesPage() {
           onChange={e => setHotelFilter(e.target.value)}
           className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
         >
-          <option value="all">All Hotels</option>
           {hotels.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
         </select>
 

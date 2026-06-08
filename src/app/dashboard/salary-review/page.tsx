@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { fmtZAR, fmtCurrency, MONTH_NAMES } from '@/lib/utils';
@@ -148,11 +148,15 @@ export default function SalaryReviewPage() {
   const [saveFlash,  setSaveFlash]  = useState(false);
   const [committing, setCommitting] = useState(false);
   const [committed,  setCommitted]  = useState(false);
-  const [commitMonth, setCommitMonth] = useState(new Date().getMonth() + 1);
-  const [commitYear,  setCommitYear]  = useState(new Date().getFullYear());
+  const [commitMonth, setCommitMonth] = useState(1);
+  const [commitYear,  setCommitYear]  = useState(2026);
   const [exporting,  setExporting]  = useState(false);
 
   useEffect(() => {
+    const d = new Date();
+    setCommitMonth(d.getMonth() + 1);
+    setCommitYear(d.getFullYear());
+
     async function load() {
       const [{ data: h }, { data: e }, { data: s }] = await Promise.all([
         sb.from('hotels').select('*').order('name'),
@@ -613,9 +617,8 @@ export default function SalaryReviewPage() {
               </thead>
               <tbody>
                 {forecastRows.map((r, i) => (
-                  <>
+                  <React.Fragment key={r.employee.id}>
                     <tr
-                      key={r.employee.id}
                       className={`border-b ${r.isExcluded ? 'opacity-45' : editingId === r.employee.id ? 'bg-amber-50' : i % 2 === 1 ? 'bg-muted/10' : ''}`}
                     >
                       {/* Exclude checkbox */}
@@ -734,7 +737,7 @@ export default function SalaryReviewPage() {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </React.Fragment>
                 ))}
               </tbody>
               <tfoot>
