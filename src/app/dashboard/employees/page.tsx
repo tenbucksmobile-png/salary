@@ -12,7 +12,7 @@ import { buildEmployeeCsv } from '@/lib/employee-csv';
 // ── Column definitions ────────────────────────────────────────────────────────
 
 type ColId =
-  | 'surname' | 'name' | 'hotel' | 'department' | 'title'
+  | 'employee_code' | 'surname' | 'name' | 'hotel' | 'department' | 'title'
   | 'employment_date' | 'years_service'
   | 'structure' | 'basic' | 'gross_salary' | 'ctc'
   | 'uif_emp' | 'medical_emp' | 'provident_emp'
@@ -30,6 +30,7 @@ interface ColDef {
 
 const ALL_COLUMNS: ColDef[] = [
   // Employee info
+  { id: 'employee_code',   label: 'Emp Code',          group: 'Employee',    defaultVisible: true },
   { id: 'surname',         label: 'Surname',           group: 'Employee',    defaultVisible: true },
   { id: 'name',            label: 'First Name',        group: 'Employee',    defaultVisible: true },
   { id: 'hotel',           label: 'Hotel',             group: 'Employee',    defaultVisible: true },
@@ -397,6 +398,7 @@ export default function EmployeesPage() {
     const country = hotelMap.get(e.hotel_id)?.country ?? '';
     const fmt     = (n: number) => fmtCurrency(n, country);
     switch (col) {
+      case 'employee_code':   return <span className="font-mono text-muted-foreground">{e.employee_code}</span>;
       case 'surname':         return <span className="font-medium">{e.surname}</span>;
       case 'name':            return e.first_name;
       case 'hotel':           return hotelMap.get(e.hotel_id)?.short_code ?? '—';
