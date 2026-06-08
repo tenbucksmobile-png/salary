@@ -93,6 +93,8 @@ export default function ImportPage() {
   const [periodMonth, setPeriodMonth] = useState(new Date().getMonth() + 1);
   const [periodYear,  setPeriodYear]  = useState(new Date().getFullYear());
   const [roundtripRows, setRoundtripRows] = useState<RoundtripRow[]>([]);
+  const [importMode, setImportMode] = useState<'update' | 'new'>('new');
+  const [existingEmpData, setExistingEmpData] = useState<Map<string, Record<string, any>>>(new Map());
   const [loading,   setLoading]   = useState(false);
   const [importing, setImporting] = useState(false);
   const [result, setResult]       = useState({ added: 0, updated: 0 });
@@ -116,10 +118,12 @@ export default function ImportPage() {
     if (isRoundtrip) {
       // ── Employee CSV round-trip re-import ─────────────────────────────────
       const { data: existing } = await sb
-        .from('employees').select('id, employee_code').eq('hotel_id', hotelId);
+        .from('employees').select('*').eq('hotel_id', hotelId);
+      const existingList = (existing ?? []) as Record<string, any>[];
+      setExistingEmpData(new Map(existingList.map(e => [e.id as string, e])));
       const { rows, errors: parseErrors } = parseEmployeeCsvExport(
         text,
-        (existing ?? []) as { id: string; employee_code: string }[],
+        existingList as { id: string; employee_code: string }[],
       );
       setRoundtripRows(rows);
       setErrors(parseErrors);
@@ -351,29 +355,54 @@ export default function ImportPage() {
         employeeId = (newEmp as any)?.id;
         added++;
       } else {
-        await sb2.from('employees').update({
-          surname:         row.surname,
-          first_name:      row.firstName,
-          aka:             row.aka || null,
-          job_title:       row.jobTitle || null,
-          department_code: row.department || null,
-          grade_label:     row.gradeLabel || null,
-          status:          row.status || 'active',
-          nmw_applicable:        row.nmwApplicable,
-          severance_applicable:  row.severanceApplicable,
-          incentive_applicable:  row.incentiveApplicable,
-          incentive_multiplier:  row.incentiveMultiplier,
-          gratuity_applicable:   row.gratuityApplicable,
-          gratuity_rate:         row.gratuityRate,
-          comments:              row.comments || null,
-          ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
-          updated_at: new Date().toISOString(),
-        }).eq('id', employeeId!);
+        if (importMode === 'update') {
+          // Only patch fields that are currently null/empty in the DB
+          const ex = existingEmpData.get(employeeId!) ?? {};
+          const patch: Record<string, any> = {};
+          if (!ex.surname       && row.surname)    patch.surname         = row.surname;
+          if (!ex.first_name    && row.firstName)  patch.first_name      = row.firstName;
+          if (!ex.aka           && row.aka)         patch.aka             = row.aka;
+          if (!ex.job_title     && row.jobTitle)   patch.job_title       = row.jobTitle;
+          if (!ex.department_code && row.department) patch.department_code = row.department;
+          if (!ex.grade_label   && row.gradeLabel) patch.grade_label     = row.gradeLabel;
+          if (!ex.status        && row.status)     patch.status          = row.status;
+          if (ex.nmw_applicable        == null)    patch.nmw_applicable        = row.nmwApplicable;
+          if (ex.severance_applicable  == null)    patch.severance_applicable  = row.severanceApplicable;
+          if (ex.incentive_applicable  == null)    patch.incentive_applicable  = row.incentiveApplicable;
+          if (!ex.incentive_multiplier)            patch.incentive_multiplier  = row.incentiveMultiplier;
+          if (ex.gratuity_applicable   == null)    patch.gratuity_applicable   = row.gratuityApplicable;
+          if (!ex.gratuity_rate)                   patch.gratuity_rate         = row.gratuityRate;
+          if (!ex.comments      && row.comments)   patch.comments        = row.comments;
+          if (!ex.employment_date && row.employmentDate) patch.employment_date = row.employmentDate;
+          if (Object.keys(patch).length > 0) {
+            patch.updated_at = new Date().toISOString();
+            await sb2.from('employees').update(patch).eq('id', employeeId!);
+          }
+        } else {
+          await sb2.from('employees').update({
+            surname:         row.surname,
+            first_name:      row.firstName,
+            aka:             row.aka || null,
+            job_title:       row.jobTitle || null,
+            department_code: row.department || null,
+            grade_label:     row.gradeLabel || null,
+            status:          row.status || 'active',
+            nmw_applicable:        row.nmwApplicable,
+            severance_applicable:  row.severanceApplicable,
+            incentive_applicable:  row.incentiveApplicable,
+            incentive_multiplier:  row.incentiveMultiplier,
+            gratuity_applicable:   row.gratuityApplicable,
+            gratuity_rate:         row.gratuityRate,
+            comments:              row.comments || null,
+            ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
+            updated_at: new Date().toISOString(),
+          }).eq('id', employeeId!);
+        }
         updated++;
       }
 
       if (employeeId && row.periodMonth && row.periodYear) {
-        await sb2.from('salary_records').upsert({
+        const salaryPayload = {
           employee_id:           employeeId,
           import_id:             importId,
           period_month:          row.periodMonth,
@@ -411,7 +440,12 @@ export default function ImportPage() {
           gratuity:              row.gratuity,
           net_salary:            row.netSalary,
           ctc:                   row.ctc,
-        }, { onConflict: 'employee_id,period_year,period_month' });
+        };
+        // Update mode: ignoreDuplicates=true means existing salary records are never overwritten
+        await sb2.from('salary_records').upsert(salaryPayload, {
+          onConflict: 'employee_id,period_year,period_month',
+          ignoreDuplicates: importMode === 'update',
+        });
       }
     }
 
@@ -511,6 +545,8 @@ export default function ImportPage() {
     setMedicalRows([]);
     setRoundtripRows([]);
     setErrors([]);
+    setImportMode('new');
+    setExistingEmpData(new Map());
     if (fileRef.current) fileRef.current.value = '';
   }
 
@@ -690,6 +726,19 @@ export default function ImportPage() {
                 {errors.length} warnings
               </span>
             )}
+          </div>
+
+          {/* Import mode toggle */}
+          <div className="flex flex-wrap items-center gap-6 p-3 bg-muted/30 rounded-lg border text-sm">
+            <span className="font-medium">Import mode:</span>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="importMode" value="update" checked={importMode === 'update'} onChange={() => setImportMode('update')} className="accent-primary" />
+              <span><strong>Update</strong> — fill missing fields only, don&apos;t overwrite existing data or salary records</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="radio" name="importMode" value="new" checked={importMode === 'new'} onChange={() => setImportMode('new')} className="accent-primary" />
+              <span><strong>New</strong> — override all employee data and salary records</span>
+            </label>
           </div>
 
           <div className="bg-white rounded-xl border overflow-x-auto">
