@@ -41,6 +41,7 @@ interface ForecastRow {
   effectiveFlat: number;
   hasOverride: boolean;
   isExcluded: boolean;
+  inLower: boolean | null;
   burden: BurdenResult;
 }
 
@@ -71,14 +72,14 @@ function computeRows(
       const isExcluded   = settings.excluded.has(e.id) || settings.excludedGrades.has(e.grade_label ?? '');
       const ov           = settings.overrides.get(e.id);
 
-      // Base rate: threshold bands take priority over global pct/flat for non-override employees
+      // Threshold bands; global pct/flat serve as fallback when band fields are empty
       const inLower  = hasThreshold && currentBasic < thresh;
-      const basePct  = hasThreshold
-        ? (inLower ? (parseFloat(settings.belowPct)  / 100 || 0) : (parseFloat(settings.abovePct)  / 100 || 0))
-        : (hasGlobalPct ? gPct : 0);
-      const baseFlat = hasThreshold
-        ? (inLower ? (parseFloat(settings.belowFlat) || 0) : (parseFloat(settings.aboveFlat) || 0))
-        : gFlat;
+      const belowPctVal  = settings.belowPct  !== '' ? parseFloat(settings.belowPct)  / 100 || 0 : (hasGlobalPct ? gPct : 0);
+      const belowFlatVal = settings.belowFlat !== '' ? parseFloat(settings.belowFlat) || 0        : gFlat;
+      const abovePctVal  = settings.abovePct  !== '' ? parseFloat(settings.abovePct)  / 100 || 0 : (hasGlobalPct ? gPct : 0);
+      const aboveFlatVal = settings.aboveFlat !== '' ? parseFloat(settings.aboveFlat) || 0        : gFlat;
+      const basePct  = hasThreshold ? (inLower ? belowPctVal  : abovePctVal)  : (hasGlobalPct ? gPct : 0);
+      const baseFlat = hasThreshold ? (inLower ? belowFlatVal : aboveFlatVal) : gFlat;
 
       const effectivePct  = isExcluded ? 0 : (ov && ov.pct  !== '' ? (parseFloat(ov.pct)  || 0) / 100 : basePct);
       const effectiveFlat = isExcluded ? 0 : (ov && ov.flat !== '' ? (parseFloat(ov.flat) || 0)        : baseFlat);
@@ -130,7 +131,9 @@ function computeRows(
         employee: e, hotel, currentBasic, newBasic, newTotalEarnings,
         increaseAmount: newBasic - currentBasic, currentCtc,
         newCtc: burden.ctc,
-        effectivePct, effectiveFlat, hasOverride: !!ov && !isExcluded, isExcluded, burden,
+        effectivePct, effectiveFlat, hasOverride: !!ov && !isExcluded, isExcluded,
+        inLower: hasThreshold ? inLower : null,
+        burden,
       };
     })
     .filter((r): r is ForecastRow => r !== null && r.currentBasic > 0);
@@ -830,13 +833,19 @@ export default function SalaryReviewPage() {
           )}
         </div>
 
-        {threshold && (belowPct || belowFlat || abovePct || aboveFlat) && (
+        {threshold && (
           <p className="mt-3 text-xs text-muted-foreground">
             Threshold rule:
             <span className="font-mono ml-1 text-foreground">
-              Basic &lt; {threshold} → {belowPct ? `${belowPct}%` : '—'}{belowFlat ? ` + ${belowFlat} flat` : ''}
-              {' · '}
-              Basic ≥ {threshold} → {abovePct ? `${abovePct}%` : '—'}{aboveFlat ? ` + ${aboveFlat} flat` : ''}
+              ↓ Basic &lt; {threshold} →{' '}
+              {belowPct || (!belowPct && pct) ? `${belowPct || pct}%` : '—'}
+              {(belowFlat || (!belowFlat && flat)) ? ` + ${belowFlat || flat} flat` : ''}
+              {!belowPct && !belowFlat && pct && <span className="text-muted-foreground"> (global fallback)</span>}
+              {'  ·  '}
+              ↑ Basic ≥ {threshold} →{' '}
+              {abovePct || (!abovePct && pct) ? `${abovePct || pct}%` : '—'}
+              {(aboveFlat || (!aboveFlat && flat)) ? ` + ${aboveFlat || flat} flat` : ''}
+              {!abovePct && !aboveFlat && pct && <span className="text-muted-foreground"> (global fallback)</span>}
             </span>
           </p>
         )}
@@ -930,7 +939,16 @@ export default function SalaryReviewPage() {
                         </div>
                       </td>
                       <td className="px-4 py-2.5 text-muted-foreground">{r.employee.grade_label ?? '—'}</td>
-                      <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentBasic, r.hotel.country)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {r.inLower !== null && (
+                            <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${r.inLower ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
+                              {r.inLower ? '↓' : '↑'}
+                            </span>
+                          )}
+                          {fmtCurrency(r.currentBasic, r.hotel.country)}
+                        </div>
+                      </td>
                       <td className="px-4 py-2.5 text-right font-mono text-green-700">
                         {r.isExcluded ? <span className="text-muted-foreground">—</span> : `${(r.effectivePct * 100).toFixed(1)}%`}
                       </td>

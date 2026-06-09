@@ -373,8 +373,8 @@ export default function EmployeesPage() {
       case 'employment_date': return e.employment_date ? new Date(e.employment_date).toLocaleDateString('en-ZA') : '—';
       case 'years_service':   return yrs != null ? `${yrs}` : '—';
       // Salary fields
-      case 'structure':
-      case 'structure_sal':   return e.grade_label ?? '—';
+      case 'structure':       return e.grade_label ?? '—';
+      case 'structure_sal':   return '—';
       case 'basic':           return sal?.basic_salary    ? fmt(sal.basic_salary)    : '—';
       case 'gross_salary':    return sal?.total_earnings  ? fmt(sal.total_earnings)  : '—';
       case 'ctc':             return sal?.ctc             ? fmt(sal.ctc)             : '—';
