@@ -5,26 +5,28 @@ import { useRouter } from 'next/navigation';
 import { Eye, EyeOff, Building2 } from 'lucide-react';
 
 export default function LoginPage() {
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [show, setShow] = useState(false);
+  const [error,    setError]    = useState('');
+  const [loading,  setLoading]  = useState(false);
+  const [show,     setShow]     = useState(false);
   const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!password) return;
+    if (!username || !password) return;
     setLoading(true);
     setError('');
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
     if (res.ok) {
       router.push('/dashboard');
     } else {
-      setError('Incorrect password');
+      const data = await res.json().catch(() => ({}));
+      setError(data.error ?? 'Incorrect credentials');
       setLoading(false);
     }
   };
@@ -45,6 +47,20 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
+              <label htmlFor="username" className="text-sm font-medium">Username</label>
+              <input
+                id="username"
+                type="text"
+                value={username}
+                onChange={e => { setUsername(e.target.value); setError(''); }}
+                placeholder="Enter username"
+                autoFocus
+                autoComplete="username"
+                className={`mt-1 w-full rounded-md border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring ${error ? 'border-red-400' : 'border-input'}`}
+              />
+            </div>
+
+            <div>
               <label htmlFor="password" className="text-sm font-medium">Password</label>
               <div className="relative mt-1">
                 <input
@@ -53,7 +69,6 @@ export default function LoginPage() {
                   value={password}
                   onChange={e => { setPassword(e.target.value); setError(''); }}
                   placeholder="Enter password"
-                  autoFocus
                   autoComplete="current-password"
                   className={`w-full rounded-md border px-3 py-2 text-sm pr-10 outline-none focus:ring-2 focus:ring-ring ${error ? 'border-red-400' : 'border-input'}`}
                 />
@@ -68,9 +83,10 @@ export default function LoginPage() {
               </div>
               {error && <p className="text-xs text-red-600 mt-1.5">{error}</p>}
             </div>
+
             <button
               type="submit"
-              disabled={loading || !password}
+              disabled={loading || !username || !password}
               className="w-full rounded-md bg-primary text-primary-foreground py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
             >
               {loading ? 'Verifying…' : 'Sign in'}

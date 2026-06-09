@@ -23,3 +23,15 @@ export function fmtNumber(n: number): string {
 export const MONTH_NAMES = [
   'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec',
 ];
+
+const HOTEL_ORDER = ['african', 'indaba hotel', 'richards bay', 'gaborone', 'cfe', 'chobe', 'nata'];
+
+export function hotelSortIndex(name: string): number {
+  const lower = name.toLowerCase();
+  const idx = HOTEL_ORDER.findIndex(kw => lower.includes(kw));
+  return idx === -1 ? HOTEL_ORDER.length : idx;
+}
+
+export function sortHotels<T extends { name: string }>(hotels: T[]): T[] {
+  return [...hotels].sort((a, b) => hotelSortIndex(a.name) - hotelSortIndex(b.name));
+}

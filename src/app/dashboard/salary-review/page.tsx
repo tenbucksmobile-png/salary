@@ -3,8 +3,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord } from '@/types/database';
-import { fmtZAR, fmtCurrency, MONTH_NAMES } from '@/lib/utils';
-import { TrendingUp, CheckCircle, Pencil, X, Check, Download, Save } from 'lucide-react';
+import { fmtZAR, fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
+import { TrendingUp, CheckCircle, Pencil, X, Check, Download, Save, Trash2 } from 'lucide-react';
 import { calculateBurden, BurdenResult } from '@/lib/payroll-calc';
 import { exportSalaryReview, ExportHotel } from '@/lib/excel-export';
 
@@ -20,7 +20,7 @@ interface HotelSettings {
   flat: string;
   grade: string;
   overrides: Map<string, Override>;
-  excluded: Set<string>; // employee IDs excluded from the increase
+  excluded: Set<string>;
 }
 
 interface ForecastRow {
@@ -64,7 +64,6 @@ function computeRows(
       const currentCtc   = sal.ctc;
       const isExcluded    = settings.excluded.has(e.id);
       const ov            = settings.overrides.get(e.id);
-      // Excluded employees receive no increase
       const effectivePct  = isExcluded ? 0 : (ov && ov.pct  !== '' ? (parseFloat(ov.pct)  || 0) / 100 : (hasGlobalPct ? gPct : 0));
       const effectiveFlat = isExcluded ? 0 : (ov && ov.flat !== '' ? (parseFloat(ov.flat) || 0)        : gFlat);
 
@@ -90,7 +89,6 @@ function computeRows(
         ancillaCompany: sal.ancilla_company, leaveProvision: sal.leave_provision,
         otherCompanyContrib: sal.other_company_contrib, mgmtIncentive: sal.mgmt_incentive,
         bonusAccrualDec: sal.bonus_accrual_dec, bonusAccrualJuly: sal.bonus_accrual_july,
-        // Configurable rates from hotel methods
         providentEeRate:       hotel.provident_ee_rate        ?? undefined,
         providentErRate:       hotel.provident_er_rate        ?? undefined,
         providentErRateSenior: hotel.provident_er_rate_senior ?? undefined,
@@ -129,10 +127,8 @@ export default function SalaryReviewPage() {
   const [employees, setEmployees]       = useState<Employee[]>([]);
   const [latestSalary, setLatestSalary] = useState<Map<string, SalaryRecord>>(new Map());
 
-  // Current hotel being edited
   const [hotelFilter, setHotelFilter] = useState('');
 
-  // Live (unsaved) values for the currently selected hotel
   const [pct,       setPct]       = useState('');
   const [flat,      setFlat]      = useState('');
   const [grade,     setGrade]     = useState('All Grades');
@@ -142,11 +138,14 @@ export default function SalaryReviewPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<Override>({ pct: '', flat: '' });
 
-  // Per-hotel saved settings
   const [hotelSettings, setHotelSettings] = useState<Map<string, HotelSettings>>(new Map());
-  // Use a ref so the hotelFilter-change effect can read the latest settings without being a dep
   const hotelSettingsRef = useRef<Map<string, HotelSettings>>(new Map());
 
+  // Per-hotel draft scenario IDs (from DB)
+  const [hotelDraftIds, setHotelDraftIds] = useState<Map<string, string>>(new Map());
+  const hotelDraftIdsRef = useRef<Map<string, string>>(new Map());
+
+  const [saving,     setSaving]     = useState(false);
   const [saveFlash,  setSaveFlash]  = useState(false);
   const [committing, setCommitting] = useState(false);
   const [committed,  setCommitted]  = useState(false);
@@ -160,12 +159,13 @@ export default function SalaryReviewPage() {
     setCommitYear(d.getFullYear());
 
     async function load() {
-      const [{ data: h }, { data: e }, { data: s }] = await Promise.all([
-        sb.from('hotels').select('*').order('name'),
+      const [{ data: h }, { data: e }, { data: s }, { data: drafts }] = await Promise.all([
+        sb.from('hotels').select('*'),
         sb.from('employees').select('*').eq('status', 'active'),
         sb.from('salary_records').select('*'),
+        sb.from('increase_scenarios').select('id, hotel_id, settings_json').eq('status', 'draft'),
       ]);
-      const hotelList = (h ?? []) as Hotel[];
+      const hotelList = sortHotels((h ?? []) as Hotel[]);
       const empList   = (e ?? []) as Employee[];
       const salList   = (s ?? []) as SalaryRecord[];
 
@@ -178,9 +178,31 @@ export default function SalaryReviewPage() {
         }
       }
 
+      // Reconstruct per-hotel settings from drafts
+      const settingsMap = new Map<string, HotelSettings>();
+      const draftIds    = new Map<string, string>();
+      for (const draft of (drafts ?? [])) {
+        if (!draft.hotel_id || !draft.settings_json) continue;
+        const s2 = draft.settings_json as Record<string, unknown>;
+        settingsMap.set(draft.hotel_id, {
+          pct:       (s2.pct  as string)  ?? '',
+          flat:      (s2.flat as string)  ?? '',
+          grade:     (s2.grade as string) ?? 'All Grades',
+          overrides: new Map(Object.entries((s2.overrides as Record<string, Override>) ?? {})),
+          excluded:  new Set<string>((s2.excluded as string[]) ?? []),
+        });
+        draftIds.set(draft.hotel_id, draft.id as string);
+      }
+
+      // Set refs before any state setter so the hotelFilter effect sees populated refs
+      hotelSettingsRef.current = settingsMap;
+      hotelDraftIdsRef.current = draftIds;
+
       setHotels(hotelList);
       setEmployees(empList);
       setLatestSalary(salMap);
+      setHotelSettings(settingsMap);
+      setHotelDraftIds(draftIds);
       if (hotelList.length > 0) setHotelFilter(prev => prev || hotelList[0].id);
     }
     load();
@@ -201,7 +223,6 @@ export default function SalaryReviewPage() {
 
   const hotelMap = useMemo(() => new Map(hotels.map(h => [h.id, h])), [hotels]);
 
-  // Forecast for the currently selected hotel using live (unsaved) inputs
   const forecastRows = useMemo((): ForecastRow[] => {
     if (!hotelFilter) return [];
     const liveSetting: HotelSettings = { pct, flat, grade, overrides, excluded };
@@ -218,7 +239,6 @@ export default function SalaryReviewPage() {
     count:          forecastRows.length,
   }), [forecastRows]);
 
-  // Saved-settings summary rows (one per hotel that has been saved)
   const savedSummary = useMemo(() =>
     hotels
       .filter(h => hotelSettings.has(h.id))
@@ -260,16 +280,98 @@ export default function SalaryReviewPage() {
     setEditingId(null);
   }
 
-  // ── Save current hotel's settings ─────────────────────────────────────────
+  // ── Save current hotel's settings to DB ───────────────────────────────────
 
-  function saveHotelSettings() {
+  async function saveHotelSettings() {
     if (!hotelFilter) return;
-    const entry: HotelSettings = { pct, flat, grade, overrides: new Map(overrides), excluded: new Set(excluded) };
-    const next = new Map(hotelSettingsRef.current).set(hotelFilter, entry);
-    hotelSettingsRef.current = next;
-    setHotelSettings(next);
-    setSaveFlash(true);
-    setTimeout(() => setSaveFlash(false), 2000);
+    setSaving(true);
+    try {
+      const hotel = hotelMap.get(hotelFilter)!;
+      const entry: HotelSettings = { pct, flat, grade, overrides: new Map(overrides), excluded: new Set(excluded) };
+
+      const settingsJson = {
+        pct, flat, grade,
+        overrides: Object.fromEntries([...overrides.entries()]),
+        excluded:  [...excluded],
+      };
+
+      const rows = computeRows(hotelFilter, entry, employees, hotelMap, latestSalary);
+      let scenarioId: string = hotelDraftIdsRef.current.get(hotelFilter) ?? '';
+
+      if (scenarioId) {
+        // Update existing draft
+        await sb.from('increase_scenarios').update({
+          name:           `Draft — ${hotel.name}`,
+          settings_json:  settingsJson,
+          effective_date: new Date().toISOString().split('T')[0],
+        }).eq('id', scenarioId);
+        await sb.from('scenario_lines').delete().eq('scenario_id', scenarioId);
+      } else {
+        // Create new draft for this hotel
+        const { data: newScenario } = await sb.from('increase_scenarios').insert({
+          name:           `Draft — ${hotel.name}`,
+          hotel_id:       hotelFilter,
+          status:         'draft',
+          effective_date: new Date().toISOString().split('T')[0],
+          settings_json:  settingsJson,
+        }).select('id').single();
+        scenarioId = (newScenario as { id: string }).id;
+      }
+
+      // Insert scenario_lines for non-excluded employees
+      const lines = rows.filter(r => !r.isExcluded).map(r => ({
+        scenario_id:     scenarioId,
+        employee_id:     r.employee.id,
+        hotel_id:        hotelFilter,
+        increase_pct:    r.effectivePct,
+        current_basic:   r.currentBasic,
+        new_basic:       r.newBasic,
+        increase_amount: r.increaseAmount,
+        current_ctc:     r.currentCtc,
+        new_ctc:         r.newCtc,
+      }));
+      if (lines.length > 0) await sb.from('scenario_lines').insert(lines);
+
+      // Update in-memory state
+      const nextSettings = new Map(hotelSettingsRef.current).set(hotelFilter, entry);
+      hotelSettingsRef.current = nextSettings;
+      setHotelSettings(nextSettings);
+
+      const nextDraftIds = new Map(hotelDraftIdsRef.current).set(hotelFilter, scenarioId);
+      hotelDraftIdsRef.current = nextDraftIds;
+      setHotelDraftIds(nextDraftIds);
+
+      setSaveFlash(true);
+      setTimeout(() => setSaveFlash(false), 2000);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ── Delete a hotel's draft from DB ────────────────────────────────────────
+
+  async function deleteDraft(hotelId: string) {
+    const scenarioId = hotelDraftIdsRef.current.get(hotelId);
+    if (!scenarioId) return;
+
+    await sb.from('scenario_lines').delete().eq('scenario_id', scenarioId);
+    await sb.from('increase_scenarios').delete().eq('id', scenarioId);
+
+    const nextSettings = new Map(hotelSettingsRef.current);
+    nextSettings.delete(hotelId);
+    hotelSettingsRef.current = nextSettings;
+    setHotelSettings(nextSettings);
+
+    const nextDraftIds = new Map(hotelDraftIdsRef.current);
+    nextDraftIds.delete(hotelId);
+    hotelDraftIdsRef.current = nextDraftIds;
+    setHotelDraftIds(nextDraftIds);
+
+    // If we're on this hotel's tab, clear the form
+    if (hotelFilter === hotelId) {
+      setPct(''); setFlat(''); setGrade('All Grades');
+      setOverrides(new Map()); setExcluded(new Set());
+    }
   }
 
   // ── Commit all saved hotels to payroll ────────────────────────────────────
@@ -279,88 +381,76 @@ export default function SalaryReviewPage() {
     setCommitting(true);
     const now = new Date();
 
-    const allRows: { row: ForecastRow; sal: SalaryRecord }[] = [];
     for (const [hotelId, settings] of hotelSettings) {
-      const rows = computeRows(hotelId, settings, employees, hotelMap, latestSalary);
+      const hotel = hotelMap.get(hotelId);
+      const rows  = computeRows(hotelId, settings, employees, hotelMap, latestSalary);
+
       for (const r of rows) {
         if (r.isExcluded) continue;
         const sal = latestSalary.get(r.employee.id);
-        if (sal) allRows.push({ row: r, sal });
+        if (!sal) continue;
+
+        await sb.from('salary_records').upsert({
+          employee_id:           r.employee.id,
+          import_id:             null,
+          period_month:          commitMonth,
+          period_year:           commitYear,
+          basic_salary:          r.newBasic,
+          allowances:            sal.allowances,
+          total_earnings:        r.newTotalEarnings,
+          tax_paye:              sal.tax_paye,
+          uif_employee:          sal.uif_employee,
+          provident_employee:    sal.provident_employee,
+          medical_employee:      sal.medical_employee,
+          ancilla_employee:      sal.ancilla_employee,
+          total_deductions:      sal.total_deductions,
+          net_salary:            r.newTotalEarnings - sal.total_deductions,
+          uif_company:           r.burden.uif_company,
+          provident_company:     r.burden.provident_company,
+          sdl_company:           r.burden.sdl_company,
+          wca_company:           r.burden.wca_company,
+          staff_meals:           r.burden.staff_meals,
+          leave_days:            r.burden.leave_days,
+          leave_accrual:         r.burden.leave_accrual,
+          total_company_contrib: r.burden.total_company_contrib,
+          total_payroll_burden:  r.burden.total_payroll_burden,
+          total_cost:            r.burden.total_cost,
+          medical_company:       sal.medical_company,
+          ancilla_company:       sal.ancilla_company,
+          other_company_contrib: sal.other_company_contrib,
+          bonus_provision:       r.burden.bonus_provision,
+          leave_provision:       sal.leave_provision,
+          mgmt_incentive:        sal.mgmt_incentive,
+          bonus_accrual_dec:     sal.bonus_accrual_dec,
+          bonus_accrual_july:    sal.bonus_accrual_july,
+          ctc:                   r.newCtc,
+          increase_pct:          r.effectivePct * 100,
+          increase_amount:       r.increaseAmount,
+          adjustment:            r.effectiveFlat,
+          new_basic:             r.newBasic,
+          new_ctc:               r.newCtc,
+        }, { onConflict: 'employee_id,period_year,period_month' });
+      }
+
+      // Promote the draft scenario to committed
+      const scenarioId = hotelDraftIdsRef.current.get(hotelId);
+      if (scenarioId) {
+        await sb.from('increase_scenarios').update({
+          status:          'committed',
+          committed_at:    now.toISOString(),
+          effective_month: commitMonth,
+          effective_year:  commitYear,
+          applied_at:      now.toISOString(),
+          name:            `Salary Review — ${hotel?.name ?? ''} — ${MONTH_NAMES[commitMonth - 1]} ${commitYear}`,
+        }).eq('id', scenarioId);
       }
     }
 
-    const hotelName = hotelSettings.size === 1
-      ? hotels.find(h => h.id === [...hotelSettings.keys()][0])?.name ?? ''
-      : 'All Hotels';
-    const { data: scenario } = await sb.from('increase_scenarios').insert({
-      name:           `Salary Review — ${hotelName}`,
-      effective_date: now.toISOString().split('T')[0],
-      status:         'applied',
-      committed_at:   now.toISOString(),
-      effective_month: commitMonth,
-      effective_year:  commitYear,
-      applied_at:     now.toISOString(),
-    }).select().single();
-
-    const scenarioId = (scenario as any)?.id;
-    if (scenarioId) {
-      await sb.from('scenario_lines').insert(
-        allRows.map(({ row: r }) => ({
-          scenario_id:     scenarioId,
-          employee_id:     r.employee.id,
-          hotel_id:        r.employee.hotel_id,
-          increase_pct:    r.effectivePct,
-          current_basic:   r.currentBasic,
-          new_basic:       r.newBasic,
-          increase_amount: r.increaseAmount,
-          current_ctc:     r.currentCtc,
-          new_ctc:         r.newCtc,
-        }))
-      );
-    }
-
-    for (const { row: r, sal } of allRows) {
-      await sb.from('salary_records').upsert({
-        employee_id:           r.employee.id,
-        import_id:             null,
-        period_month:          commitMonth,
-        period_year:           commitYear,
-        basic_salary:          r.newBasic,
-        allowances:            sal.allowances,
-        total_earnings:        r.newTotalEarnings,
-        tax_paye:              sal.tax_paye,
-        uif_employee:          sal.uif_employee,
-        provident_employee:    sal.provident_employee,
-        medical_employee:      sal.medical_employee,
-        ancilla_employee:      sal.ancilla_employee,
-        total_deductions:      sal.total_deductions,
-        net_salary:            r.newTotalEarnings - sal.total_deductions,
-        uif_company:           r.burden.uif_company,
-        provident_company:     r.burden.provident_company,
-        sdl_company:           r.burden.sdl_company,
-        wca_company:           r.burden.wca_company,
-        staff_meals:           r.burden.staff_meals,
-        leave_days:            r.burden.leave_days,
-        leave_accrual:         r.burden.leave_accrual,
-        total_company_contrib: r.burden.total_company_contrib,
-        total_payroll_burden:  r.burden.total_payroll_burden,
-        total_cost:            r.burden.total_cost,
-        medical_company:       sal.medical_company,
-        ancilla_company:       sal.ancilla_company,
-        other_company_contrib: sal.other_company_contrib,
-        bonus_provision:       r.burden.bonus_provision,
-        leave_provision:       sal.leave_provision,
-        mgmt_incentive:        sal.mgmt_incentive,
-        bonus_accrual_dec:     sal.bonus_accrual_dec,
-        bonus_accrual_july:    sal.bonus_accrual_july,
-        ctc:                   r.newCtc,
-        increase_pct:          r.effectivePct * 100,
-        increase_amount:       r.increaseAmount,
-        adjustment:            r.effectiveFlat,
-        new_basic:             r.newBasic,
-        new_ctc:               r.newCtc,
-      }, { onConflict: 'employee_id,period_year,period_month' });
-    }
+    // Clear all draft state after commit
+    hotelSettingsRef.current = new Map();
+    setHotelSettings(new Map());
+    hotelDraftIdsRef.current = new Map();
+    setHotelDraftIds(new Map());
 
     setCommitting(false);
     setCommitted(true);
@@ -373,7 +463,6 @@ export default function SalaryReviewPage() {
     try {
       const activeHotelIds = new Set(employees.map(e => e.hotel_id));
 
-      // Build per-hotel rows — use saved settings where available, else 0% for preview
       const exportHotels: ExportHotel[] = hotels
         .filter(h => activeHotelIds.has(h.id))
         .map(h => {
@@ -458,7 +547,7 @@ export default function SalaryReviewPage() {
                 <th className="text-right py-2 font-medium text-muted-foreground">Employees</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Monthly Increase</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Annual Increase</th>
-                <th className="py-2 w-16" />
+                <th className="py-2 w-24" />
               </tr>
             </thead>
             <tbody>
@@ -479,12 +568,25 @@ export default function SalaryReviewPage() {
                     {s.increaseAmount > 0 ? `+${fmtCurrency(s.increaseAmount * 12, s.hotel.country)}` : '—'}
                   </td>
                   <td className="py-2 text-center">
-                    <button
-                      onClick={() => setHotelFilter(s.hotel.id)}
-                      className="text-xs text-primary hover:underline"
-                    >
-                      Edit
-                    </button>
+                    <div className="flex items-center justify-center gap-3">
+                      <button
+                        onClick={() => setHotelFilter(s.hotel.id)}
+                        className="text-xs text-primary hover:underline"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Delete saved increase for ${s.hotel.name}? This cannot be undone.`)) {
+                            deleteDraft(s.hotel.id);
+                          }
+                        }}
+                        title="Delete this hotel's saved increase"
+                        className="text-destructive hover:opacity-70 transition-opacity"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -557,11 +659,11 @@ export default function SalaryReviewPage() {
 
           <button
             onClick={saveHotelSettings}
-            disabled={!hotelFilter}
+            disabled={!hotelFilter || saving}
             className="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors self-end"
           >
             <Save className="h-4 w-4" />
-            {saveFlash ? 'Saved ✓' : `Save${currentHotel ? ` — ${currentHotel.short_code ?? currentHotel.name}` : ''}`}
+            {saving ? 'Saving…' : saveFlash ? 'Saved ✓' : `Save${currentHotel ? ` — ${currentHotel.short_code ?? currentHotel.name}` : ''}`}
           </button>
 
         </div>
@@ -623,7 +725,6 @@ export default function SalaryReviewPage() {
                     <tr
                       className={`border-b ${r.isExcluded ? 'opacity-45' : editingId === r.employee.id ? 'bg-amber-50' : i % 2 === 1 ? 'bg-muted/10' : ''}`}
                     >
-                      {/* Exclude checkbox */}
                       <td className="px-4 py-2.5 text-center">
                         <input
                           type="checkbox"
@@ -765,7 +866,7 @@ export default function SalaryReviewPage() {
         </p>
       )}
 
-      {!hasAnyInput && (
+      {!hasAnyInput && !isSaved && (
         <p className="text-muted-foreground text-sm mb-6">
           Enter a % increase and/or flat adjustment above to see the forecast for this hotel.
         </p>

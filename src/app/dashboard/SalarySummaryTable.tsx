@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord, ScenarioLine } from '@/types/database';
-import { fmtZAR, fmtCurrency } from '@/lib/utils';
+import { fmtZAR, fmtCurrency, sortHotels } from '@/lib/utils';
 
 const GRADE_OPTIONS = [
   'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive',
@@ -36,12 +36,12 @@ export default function SalarySummaryTable() {
   useEffect(() => {
     async function load() {
       const [{ data: h }, { data: e }, { data: s }] = await Promise.all([
-        sb.from('hotels').select('*').order('name'),
+        sb.from('hotels').select('*'),
         sb.from('employees').select('*').eq('status', 'active'),
         sb.from('salary_records').select('*'),
       ]);
 
-      const hotelList = (h ?? []) as Hotel[];
+      const hotelList = sortHotels((h ?? []) as Hotel[]);
       const empList   = (e ?? []) as Employee[];
       const salList   = (s ?? []) as SalaryRecord[];
 
@@ -54,25 +54,45 @@ export default function SalarySummaryTable() {
         }
       }
 
-      // Most recent approved/applied/committed scenario → before/after comparison
-      const { data: latestScenario } = await sb
+      // Load all draft scenarios (one per hotel) — these take priority for display
+      const { data: draftScenarios } = await sb
         .from('increase_scenarios')
-        .select('id, name, status')
-        .in('status', ['approved', 'applied', 'committed'])
-        .order('committed_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .select('id, hotel_id')
+        .eq('status', 'draft');
 
       let scenarioLineMap = new Map<string, ScenarioLine>();
-      if (latestScenario) {
-        const statusLabel = latestScenario.status === 'approved' ? 'approved' : 'applied';
-        setScenarioName(`${latestScenario.name} [${statusLabel}]`);
-        const { data: lines } = await sb
+      let displayName: string | null = null;
+
+      if ((draftScenarios ?? []).length > 0) {
+        const ids = draftScenarios!.map(s => s.id);
+        const { data: draftLines } = await sb
           .from('scenario_lines')
           .select('*')
-          .eq('scenario_id', latestScenario.id);
-        scenarioLineMap = new Map((lines ?? []).map(l => [l.employee_id, l as ScenarioLine]));
+          .in('scenario_id', ids);
+        scenarioLineMap = new Map((draftLines ?? []).map(l => [l.employee_id, l as ScenarioLine]));
+        const count = draftScenarios!.length;
+        displayName = `Draft increases — ${count} hotel${count !== 1 ? 's' : ''} pending commit`;
+      } else {
+        // Fallback: most recent committed scenario
+        const { data: latestScenario } = await sb
+          .from('increase_scenarios')
+          .select('id, name, status')
+          .in('status', ['approved', 'applied', 'committed'])
+          .order('committed_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestScenario) {
+          displayName = latestScenario.name;
+          const { data: lines } = await sb
+            .from('scenario_lines')
+            .select('*')
+            .eq('scenario_id', latestScenario.id);
+          scenarioLineMap = new Map((lines ?? []).map(l => [l.employee_id, l as ScenarioLine]));
+        }
       }
+
+      setScenarioName(displayName);
 
       setHotels(hotelList);
       setEmployees(empList);

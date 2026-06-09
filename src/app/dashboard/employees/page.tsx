@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, SalaryRecord } from '@/types/database';
-import { fmtZAR, fmtCurrency } from '@/lib/utils';
+import { fmtZAR, fmtCurrency, sortHotels } from '@/lib/utils';
 import Link from 'next/link';
 import { Search, SlidersHorizontal, X, Calculator, CheckCircle, Download, Trash2 } from 'lucide-react';
 import { calculateBurden } from '@/lib/payroll-calc';
@@ -18,7 +18,7 @@ type ColId =
   | 'uif_emp' | 'medical_emp' | 'provident_emp'
   | 'uif_co' | 'medical_co' | 'provident_co' | 'sdl' | 'wca'
   | 'staff_meals' | 'bonus_provision' | 'incentive' | 'gratuity' | 'severance'
-  | 'leave_accrual' | 'bonus_accrual_dec' | 'mgmt_incentive';
+  | 'leave_accrual';
 
 interface ColDef {
   id: ColId;
@@ -60,20 +60,21 @@ const ALL_COLUMNS: ColDef[] = [
   { id: 'gratuity',        label: 'Gratuity',          group: 'Provisions',  defaultVisible: false, align: 'right' },
   { id: 'severance',       label: 'Severance',         group: 'Provisions',  defaultVisible: false, align: 'right' },
   // Accruals
-  { id: 'leave_accrual',   label: 'Leave Accrual',     group: 'Accruals',    defaultVisible: false, align: 'right' },
-  { id: 'bonus_accrual_dec', label: 'Bonus Dec',       group: 'Accruals',    defaultVisible: false, align: 'right' },
-  { id: 'mgmt_incentive',  label: 'Mgmt Incentive',    group: 'Accruals',    defaultVisible: false, align: 'right' },
+  { id: 'leave_accrual',   label: 'Leave',             group: 'Provisions',  defaultVisible: false, align: 'right' },
 ];
 
 
 
 const STORAGE_KEY        = 'ihg-salary-emp-cols';
 const HOTEL_FILTER_KEY   = 'ihg-salary-emp-hotel';
+
 const DEFAULT_VISIBLE = new Set(ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.id));
 
-function loadVisibleCols(): Set<ColId> {
+function colKey(hotelId: string) { return `${STORAGE_KEY}-${hotelId}`; }
+
+function loadVisibleCols(hotelId: string): Set<ColId> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(colKey(hotelId));
     if (raw) return new Set(JSON.parse(raw) as ColId[]);
   } catch {}
   return new Set(DEFAULT_VISIBLE);
@@ -105,8 +106,6 @@ function numericValue(col: ColId, e: Employee, sal: SalaryRecord | undefined): n
     case 'gratuity':          return sal?.gratuity ?? null;
     case 'severance':         return sal?.severance ?? null;
     case 'leave_accrual':     return sal?.leave_accrual ?? null;
-    case 'bonus_accrual_dec': return sal?.bonus_accrual_dec ?? null;
-    case 'mgmt_incentive':    return sal?.mgmt_incentive ?? null;
     default:                  return null;
   }
 }
@@ -131,8 +130,10 @@ export default function EmployeesPage() {
   const [exportHotel, setExportHotel] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Load persisted column visibility after mount
-  useEffect(() => { setVisibleCols(loadVisibleCols()); }, []);
+  // Load persisted column visibility whenever the active hotel changes
+  useEffect(() => {
+    if (hotelFilter) setVisibleCols(loadVisibleCols(hotelFilter));
+  }, [hotelFilter]);
 
   // Keep export hotel in sync with filter hotel
   useEffect(() => {
@@ -147,12 +148,17 @@ export default function EmployeesPage() {
   }, [hotelFilter]);
 
   async function load() {
-    const [{ data: h }, { data: e }, { data: s }] = await Promise.all([
-      sb.from('hotels').select('*').order('name'),
+    const [{ data: h }, { data: e }, { data: s }, meRes] = await Promise.all([
+      sb.from('hotels').select('*'),
       sb.from('employees').select('*').order('surname'),
       sb.from('salary_records').select('*'),
+      fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
     ]);
-    const hotelList = (h ?? []) as Hotel[];
+    const me = meRes as { role: string; hotelIds: string[] | null } | null;
+    let hotelList = sortHotels((h ?? []) as Hotel[]);
+    if (me?.role === 'sub' && me.hotelIds?.length) {
+      hotelList = hotelList.filter(h => me.hotelIds!.includes(h.id));
+    }
     setHotels(hotelList);
     setEmployees((e ?? []) as Employee[]);
     setSalaries((s ?? []) as SalaryRecord[]);
@@ -273,7 +279,7 @@ export default function EmployeesPage() {
 
   function applyDraft() {
     setVisibleCols(new Set(draftCols));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify([...draftCols]));
+    if (hotelFilter) localStorage.setItem(colKey(hotelFilter), JSON.stringify([...draftCols]));
     setShowColPicker(false);
   }
 
@@ -283,7 +289,7 @@ export default function EmployeesPage() {
 
   function resetCols() {
     setVisibleCols(new Set(DEFAULT_VISIBLE));
-    localStorage.removeItem(STORAGE_KEY);
+    if (hotelFilter) localStorage.removeItem(colKey(hotelFilter));
   }
 
   function handleExportCSV() {
@@ -408,25 +414,23 @@ export default function EmployeesPage() {
       case 'years_service':   return yrs != null ? `${yrs}` : '—';
       // Salary fields
       case 'structure':       return e.grade_label ?? '—';
-      case 'basic':           return sal ? fmt(sal.basic_salary) : '—';
-      case 'gross_salary':    return sal ? fmt(sal.total_earnings) : '—';
-      case 'ctc':             return sal ? fmt(sal.ctc) : '—';
-      case 'uif_emp':         return sal ? fmt(sal.uif_employee) : '—';
-      case 'medical_emp':     return sal ? fmt(sal.medical_employee) : '—';
-      case 'provident_emp':   return sal ? fmt(sal.provident_employee) : '—';
-      case 'uif_co':          return sal ? fmt(sal.uif_company) : '—';
-      case 'medical_co':      return sal ? fmt(sal.medical_company) : '—';
-      case 'provident_co':    return sal ? fmt(sal.provident_company) : '—';
-      case 'sdl':             return sal ? fmt(sal.sdl_company) : '—';
-      case 'wca':             return sal ? fmt(sal.wca_company) : '—';
-      case 'staff_meals':     return sal ? fmt(sal.staff_meals) : '—';
-      case 'bonus_provision': return sal ? fmt(sal.bonus_provision) : '—';
-      case 'incentive':       return sal?.incentive ? fmt(sal.incentive) : '—';
-      case 'gratuity':        return sal?.gratuity  ? fmt(sal.gratuity)  : '—';
-      case 'severance':       return sal?.severance ? fmt(sal.severance) : '—';
-      case 'leave_accrual':   return sal ? fmt(sal.leave_accrual) : '—';
-      case 'bonus_accrual_dec': return sal ? fmt(sal.bonus_accrual_dec) : '—';
-      case 'mgmt_incentive':  return sal ? fmt(sal.mgmt_incentive) : '—';
+      case 'basic':           return sal?.basic_salary    ? fmt(sal.basic_salary)    : '—';
+      case 'gross_salary':    return sal?.total_earnings  ? fmt(sal.total_earnings)  : '—';
+      case 'ctc':             return sal?.ctc             ? fmt(sal.ctc)             : '—';
+      case 'uif_emp':         return sal?.uif_employee    ? fmt(sal.uif_employee)    : '—';
+      case 'medical_emp':     return sal?.medical_employee  ? fmt(sal.medical_employee)  : '—';
+      case 'provident_emp':   return sal?.provident_employee ? fmt(sal.provident_employee) : '—';
+      case 'uif_co':          return sal?.uif_company     ? fmt(sal.uif_company)     : '—';
+      case 'medical_co':      return sal?.medical_company ? fmt(sal.medical_company) : '—';
+      case 'provident_co':    return sal?.provident_company ? fmt(sal.provident_company) : '—';
+      case 'sdl':             return sal?.sdl_company     ? fmt(sal.sdl_company)     : '—';
+      case 'wca':             return sal?.wca_company     ? fmt(sal.wca_company)     : '—';
+      case 'staff_meals':     return sal?.staff_meals     ? fmt(sal.staff_meals)     : '—';
+      case 'bonus_provision': return sal?.bonus_provision ? fmt(sal.bonus_provision) : '—';
+      case 'incentive':       return sal?.incentive       ? fmt(sal.incentive)       : '—';
+      case 'gratuity':        return sal?.gratuity        ? fmt(sal.gratuity)        : '—';
+      case 'severance':       return sal?.severance       ? fmt(sal.severance)       : '—';
+      case 'leave_accrual':   return sal?.leave_accrual   ? fmt(sal.leave_accrual)   : '—';
     }
   }
 

@@ -133,6 +133,8 @@ export interface IncreaseScenario {
   effective_month: number | null;
   effective_year: number | null;
   applied_at: string | null;
+  hotel_id?: string | null;
+  settings_json?: Record<string, unknown> | null;
 }
 
 export interface ScenarioLine {
@@ -146,6 +148,15 @@ export interface ScenarioLine {
   increase_amount: number;
   current_ctc: number;
   new_ctc: number;
+}
+
+export interface AppUser {
+  id: string;
+  username: string;
+  password_hash: string;
+  role: 'admin' | 'sub';
+  hotel_ids: string[] | null;
+  created_at: string;
 }
 
 // Joined view type

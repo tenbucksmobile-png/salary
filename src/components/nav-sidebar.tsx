@@ -2,25 +2,37 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Users, Upload, TrendingUp, Building2, Settings } from 'lucide-react';
+import { LayoutDashboard, Users, Upload, TrendingUp, Settings, Shield } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const nav = [
+const ADMIN_NAV = [
   { label: 'Dashboard',      href: '/dashboard',               icon: LayoutDashboard },
   { label: 'Employees',      href: '/dashboard/employees',     icon: Users },
   { label: 'Import Payroll', href: '/dashboard/import',        icon: Upload },
   { label: 'Salary Review',  href: '/dashboard/salary-review', icon: TrendingUp },
-  { label: 'Methods',         href: '/dashboard/methods',        icon: Settings },
+  { label: 'Methods',        href: '/dashboard/methods',       icon: Settings },
+  { label: 'Access',         href: '/dashboard/access',        icon: Shield },
 ];
 
-export function NavSidebar() {
+const SUB_NAV = [
+  { label: 'Employees',      href: '/dashboard/employees',     icon: Users },
+  { label: 'Import Payroll', href: '/dashboard/import',        icon: Upload },
+];
+
+interface NavSidebarProps {
+  role: 'admin' | 'sub';
+  username: string;
+}
+
+export function NavSidebar({ role, username }: NavSidebarProps) {
   const pathname = usePathname();
+  const nav = role === 'admin' ? ADMIN_NAV : SUB_NAV;
 
   return (
     <aside className="w-60 shrink-0 border-r bg-white flex flex-col min-h-screen">
       <div className="px-6 py-5 border-b">
         <div className="flex items-center gap-2 mb-0.5">
-          <Building2 className="h-4 w-4 text-muted-foreground" />
+          <Shield className="h-4 w-4 text-muted-foreground" />
           <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">IHG Hotels</p>
         </div>
         <p className="text-lg font-bold text-foreground leading-tight">Salary Manager</p>
@@ -48,6 +60,7 @@ export function NavSidebar() {
       </nav>
 
       <div className="px-6 py-4 border-t space-y-1">
+        {username && <p className="text-xs font-medium text-foreground">{username}</p>}
         <p className="text-xs text-muted-foreground">6 properties · CFE Group</p>
         <a
           href="/api/auth/logout"

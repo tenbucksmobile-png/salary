@@ -4,15 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A web-based **HR salary management system** for 6 IHG CFE hotel properties, replacing an Excel-based salary review workflow. Built with Next.js (App Router) + Supabase + Shadcn UI. Password-gated (no user accounts — single shared password via cookie).
+A web-based **HR salary management system** for 6 IHG CFE hotel properties, replacing an Excel-based salary review workflow. Built with Next.js (App Router) + Supabase + Shadcn UI. Multi-user access-controlled (admin + sub-user roles; username/password login via HMAC-signed cookie).
 
 Core workflows:
 - **Import** employee data from VIP Report 710 payroll files, tabular Excel CSV/TSV exports, Medical Aid update files, or round-trip employee CSV exports
 - **View & edit** employees across all 6 properties with flexible column visibility
 - **Export** employees per hotel as a CSV, edit offsite, and re-import
 - **Calculate payroll burden** automatically (provident fund, UIF, SDL, WCA, staff meals, leave accrual, bonus, incentive, severance, gratuity)
-- **Salary review** forecasting — per-hotel % or flat increase with per-employee overrides and exclusions; commit to salary records
+- **Salary review** forecasting — per-hotel % or flat increase with per-employee overrides and exclusions; save drafts persistently; commit to salary records
 - **Methods** — configure all statutory rates and CTC inclusion flags per hotel; "Save & Update All" recalculates every active employee
+- **Access** — admin-only user management; assign sub-users to specific hotels
 
 ---
 
@@ -27,9 +28,12 @@ Core workflows:
 | CFE | Botswana | exempt from UIF/SDL/WCA |
 | ILG | Botswana | exempt from UIF/SDL/WCA |
 
-Botswana hotels are detected via `hotel.country` containing "botswana". Always use this field — never hardcode short codes for the exemption check. `isBotswana()` in `src/lib/payroll-calc.ts` is the canonical check.
+Botswana hotels are detected via `hotel.country` — `isBotswana()` in `src/lib/payroll-calc.ts` is the canonical check. It matches if the lowercased country includes `"botswana"` **or** equals `"bw"`. Always use this function — never hardcode short codes for the exemption check.
 
 The hotel seed data in `001_initial_schema.sql` uses older names and includes an "APA" entry not present in production. Trust the live `hotels` table, not the seed.
+
+**Hotel sort order** (applied via `sortHotels()` in `src/lib/utils.ts` — use on every page that lists hotels):
+African Procurement Agencies → Indaba Hotel → Indaba Lodge Richards Bay → Indaba Lodge Gaborone → CFE Management → Chobe Safari Lodge → Nata Lodge
 
 ---
 
@@ -39,7 +43,7 @@ The hotel seed data in `001_initial_schema.sql` uses older names and includes an
 - **Supabase** — project ref `fnpfgrpaxoedzvfjrlky` (separate from all other projects)
 - **Shadcn UI v4** — style: base-nova, uses `@base-ui/react`. No `asChild` on Button.
 - **Tailwind CSS v4** with oklch colour tokens
-- **Auth**: HMAC-SHA256 cookie gate — `SITE_PASSWORD` + `COOKIE_SECRET` env vars, cookie name `ihg-salary-auth`, 30-day expiry. No Supabase auth — middleware handles it.
+- **Auth**: multi-user HMAC-SHA256 cookie; cookie payload = base64url(UserContext JSON) + "." + HMAC hex. Logic in `src/lib/auth.ts`. Password hash = `HMAC-SHA256(COOKIE_SECRET, "username:password")`.
 
 ---
 
@@ -62,6 +66,7 @@ There is no dedicated `typecheck` or `lint` script — `npm run build` is the fa
 - **`SITE_PASSWORD` must be quoted in `.env.local` if it contains `#`** — unquoted `#` is treated as a comment: `SITE_PASSWORD="#IHG_HRMngmt2026"`.
 - **`$VAR` strings in env blocks are not shell-expanded** — keep secrets in `.env.local` only.
 - **RLS uses `anon_all` policies** — security is enforced by the middleware cookie check, not Supabase auth.
+- **`NODE_TLS_REJECT_UNAUTHORIZED=0` must be in `.env.local`** — the dev machine has a corporate SSL inspection proxy; Node.js cannot verify Supabase's TLS cert without this. Browser-side Supabase calls work fine; only server-side API routes and server components are affected.
 
 ---
 
@@ -72,6 +77,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://fnpfgrpaxoedzvfjrlky.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>
 SITE_PASSWORD="<password>"        # wrap in quotes if it contains special chars
 COOKIE_SECRET=<32+ char random>   # used for HMAC cookie signing
+NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev machine
 ```
 
 ---
@@ -84,7 +90,13 @@ COOKIE_SECRET=<32+ char random>   # used for HMAC cookie signing
 
 **Salary records are period-keyed** — the unique constraint is `(employee_id, period_year, period_month)`. Imports upsert on this key. The Salary Review commit creates a new record for the target month.
 
-**Auth flow**: `POST /api/auth/login` validates password, issues HMAC token as httpOnly cookie. `middleware.ts` validates that cookie on every non-login, non-static route. `POST /api/auth/logout` clears the cookie.
+**Auth flow**: `POST /api/auth/login` queries the `users` table, verifies HMAC password hash, issues signed cookie. `middleware.ts` verifies the cookie and enforces role-based access. `POST /api/auth/logout` clears the cookie. `GET /api/auth/me` returns the current `UserContext`. Admin CRUD for users at `POST/PATCH/DELETE /api/access`.
+
+**UserContext** (encoded in cookie): `{ id, username, role: 'admin'|'sub', hotelIds: string[]|null }`. `hotelIds: null` means all hotels (admin). Sub-users are restricted to assigned hotels and can only access `/dashboard/employees` and `/dashboard/import`.
+
+**Bootstrap**: if the `users` table is empty when login is attempted, the first login auto-creates an admin using the submitted credentials + `SITE_PASSWORD` check.
+
+**Composite types in `types/database.ts`**: `EmployeeWithSalary` extends `Employee` with optional `hotel?: Hotel` and `latest_salary?: SalaryRecord` — used across dashboard pages. `HotelStats` is the per-hotel aggregate shape used by the dashboard summary.
 
 ---
 
@@ -95,11 +107,12 @@ COOKIE_SECRET=<32+ char random>   # used for HMAC cookie signing
 | Table | Purpose |
 |-------|---------|
 | `hotels` | 6 properties; `country`, `short_code`, `wca_rate`, + configurable method rate columns (see migration 009) |
-| `employees` | One row per employee; `hotel_id`, `surname`, `first_name`, `grade_label`, `employment_date`, `nmw_applicable`, `severance_applicable`, `incentive_applicable`, `incentive_multiplier`, `gratuity_applicable`, `gratuity_rate`, `comments` |
+| `employees` | One row per employee; `hotel_id`, `employee_code`, `surname`, `first_name`, `aka`, `id_number`, `job_title`, `department_code`, `paypoint`, `category`, `job_grade`, `grade_label`, `employment_date`, `status` (`active`/`terminated`/`on_leave`), `nmw_applicable`, `severance_applicable`, `incentive_applicable`, `incentive_multiplier`, `gratuity_applicable`, `gratuity_rate`, `comments` |
 | `salary_records` | One row per employee per payroll period; full earnings, deductions, contributions, provisions, accruals |
 | `payroll_imports` | Audit log of each import |
-| `increase_scenarios` | Named salary increase scenarios; `status` is `draft`, `applied`, or `committed` |
+| `increase_scenarios` | Salary review scenarios; `status` = `draft`/`approved`/`applied`/`committed`; `hotel_id` identifies per-hotel draft; `settings_json` stores hotel-level UI state for draft reconstruction |
 | `scenario_lines` | One row per employee per scenario; stores before/after basic and CTC |
+| `users` | App users; `username`, `password_hash` (HMAC), `role` (`admin`/`sub`), `hotel_ids` (uuid[], null = all) |
 
 ### Migrations
 
@@ -117,6 +130,8 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `008_scenario_workflow.sql` | `effective_month`, `effective_year`, `applied_at` on `increase_scenarios`; migrates `committed` → `applied` |
 | `009_hotel_methods.sql` | Configurable rate columns + CTC flags on `hotels` (see Methods section) |
 | `010_accrual_pct.sql` | `leave_accrual_pct` + `bonus_provision_pct` decimal columns on `hotels` (default 1.0 = 100%) |
+| `011_users.sql` | `users` table for multi-user auth |
+| `012_draft_scenarios.sql` | `hotel_id` + `settings_json` on `increase_scenarios` for per-hotel persistent drafts |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -131,8 +146,8 @@ CTC inclusion flags (boolean, default false for provisions): `ctc_provident_er`,
 **Earnings**: `basic_salary`, `allowances` (jsonb), `total_earnings`
 **Employee deductions**: `tax_paye`, `uif_employee`, `medical_employee`, `ancilla_employee`, `provident_employee`, `total_deductions`
 **Company contributions**: `uif_company`, `medical_company`, `provident_company`, `sdl_company`, `ancilla_company`, `total_company_contrib`
-**Provisions**: `wca_company`, `staff_meals`, `bonus_provision`, `incentive`, `leave_provision`, `other_company_contrib`, `total_payroll_burden`, `total_cost`
-**Leave & accruals**: `leave_days`, `leave_accrual`, `bonus_payout_factor`, `bonus_accrual_dec`, `bonus_accrual_july`, `mgmt_incentive`
+**Provisions**: `wca_company`, `staff_meals`, `bonus_provision`, `incentive`, `leave_provision`, `leave_accrual`, `other_company_contrib`, `total_payroll_burden`, `total_cost`
+**Leave & accruals**: `leave_days`, `bonus_payout_factor`, `bonus_accrual_dec`, `bonus_accrual_july`, `mgmt_incentive`
 **Botswana provisions**: `severance`, `gratuity`
 **Increase scenario**: `increase_amount`, `adjustment`, `increase_pct`, `new_basic`, `new_ctc`
 **Summary**: `net_salary`, `ctc`
@@ -214,33 +229,39 @@ Detection order: round-trip CSV → medical aid → employee details → VIP 710
 ```
 src/
   app/
-    api/auth/
-      login/route.ts       — POST: validates password, sets HMAC cookie
-      logout/route.ts      — POST: clears cookie
-    login/page.tsx         — Login form
+    api/
+      auth/
+        login/route.ts    — POST: queries users table, verifies HMAC hash, issues signed cookie
+        logout/route.ts   — POST: clears cookie
+        me/route.ts       — GET: returns current UserContext from cookie
+      access/route.ts     — POST/PATCH/DELETE: admin-only user CRUD
+    login/page.tsx        — Login form (username + password)
     dashboard/
-      page.tsx             — Dashboard summary with SalarySummaryTable
-      SalarySummaryTable.tsx — Hotel-level before/after salary review table
+      page.tsx            — Dashboard summary: SalarySummaryTable first, hotel cards below
+      SalarySummaryTable.tsx — Hotel-level before/after table; reads draft scenarios first, then committed
+      layout.tsx          — Reads cookie server-side; passes role+username to NavSidebar
+      access/page.tsx     — Admin-only user management UI
       employees/
-        page.tsx           — Employee list; column picker, hotel CSV export, Calculate Burden
-        [id]/page.tsx      — Employee detail + edit form
-      import/page.tsx      — Multi-format import (VIP, Employee TSV, Medical Aid, Round-trip CSV)
-      methods/page.tsx     — Configurable payroll rates + CTC flags per hotel; Save & Update All
-      settings/page.tsx    — Redirects to /dashboard/methods
-      salary-review/page.tsx — Per-hotel increase builder with per-employee overrides/exclusions; commit to salary_records
+        page.tsx          — Employee list; column picker, hotel CSV export, Calculate Burden
+        [id]/page.tsx     — Employee detail + edit form
+      import/page.tsx     — Multi-format import (VIP, Employee TSV, Medical Aid, Round-trip CSV)
+      methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All
+      settings/page.tsx   — Redirects to /dashboard/methods
+      salary-review/page.tsx — Per-hotel increase builder; drafts persist to DB; commit to salary_records
   lib/
-    payroll-calc.ts        — calculateBurden(); isBotswana(), isManager(); BurdenInput/BurdenResult
-    vip-parser.ts          — VIP 710, TSV employee details, medical aid parsers
-    employee-csv.ts        — Round-trip CSV export builder (buildEmployeeCsv) + import parser
-    excel-export.ts        — Salary review Excel export (xlsx-js-style)
+    auth.ts               — UserContext, makeToken(), verifyToken(), hashPassword() — Edge-compatible
+    payroll-calc.ts       — calculateBurden(); isBotswana(), isManager(); BurdenInput/BurdenResult
+    vip-parser.ts         — VIP 710, TSV employee details, medical aid parsers
+    employee-csv.ts       — Round-trip CSV export builder (buildEmployeeCsv) + import parser
+    excel-export.ts       — Salary review Excel export (xlsx-js-style)
     supabase/
-      client.ts            — Browser Supabase client (used by all dashboard pages)
-    utils.ts               — fmtZAR(), fmtCurrency(), MONTH_NAMES, cn()
+      client.ts           — Browser Supabase client (used by all dashboard pages)
+    utils.ts              — fmtZAR(), fmtCurrency(), MONTH_NAMES, sortHotels(), cn()
   components/
-    nav-sidebar.tsx        — Dashboard navigation
-  middleware.ts            — HMAC cookie auth gate
+    nav-sidebar.tsx       — Role-aware navigation; admin sees all tabs, sub sees Employees + Import only
+  middleware.ts           — HMAC cookie auth gate; blocks sub-users from Methods, Salary Review, Access
   types/
-    database.ts            — Hotel, Employee, SalaryRecord, PayrollImport, IncreaseScenario, ScenarioLine
+    database.ts           — Hotel, Employee, SalaryRecord, PayrollImport, IncreaseScenario, ScenarioLine, AppUser
 ```
 
 ---
@@ -249,13 +270,33 @@ src/
 
 `/dashboard/salary-review` — per-hotel increase scenario builder.
 
-**State pattern**: settings are stored per hotel in a `Map<string, HotelSettings>` + a `hotelSettingsRef` (React ref) to avoid stale closure issues on hotel-tab switches. Each hotel has independent `pct`, `flat`, `grade`, `overrides` (per-employee), and `excluded` (employees skipped on commit).
+**State pattern**: settings are stored per hotel in a `Map<string, HotelSettings>` + a `hotelSettingsRef` (React ref) to avoid stale closure issues on hotel-tab switches. A parallel `hotelDraftIds` map tracks the DB scenario ID for each hotel's draft.
 
-**Save button** — persists the current hotel's settings into the map without writing to DB.
+**Save button** — async; writes a `draft` row to `increase_scenarios` (with `hotel_id` + `settings_json`) and replaces `scenario_lines` for that hotel. On page load, all drafts are fetched in the initial `Promise.all` and refs are populated before `setHotelFilter` fires, so the form restores correctly on return.
 
-**Exclusions** — checkbox per employee row. Excluded employees show `opacity-45` + "excluded" badge; they appear in the preview/export at 0% but are skipped on Commit (no salary record written for them).
+**Delete button** — trash icon per row in the Saved Increases table; removes the draft scenario + its lines from DB.
 
-**Commit** — iterates all saved hotels, calls `calculateBurden` with each hotel's method rates, writes `increase_scenarios`, `scenario_lines`, and new `salary_records` records for the target month/year.
+**Exclusions** — checkbox per employee row. Excluded employees show `opacity-45` + "excluded" badge; they are skipped in scenario_lines and on Commit (no salary record written for them).
+
+**Commit** — updates each hotel's draft scenario status to `committed` (sets `effective_month`, `effective_year`, `committed_at`); writes new `salary_records` for the target month/year; clears all draft state. Does NOT create a new scenario row — the existing draft row is promoted.
+
+**Dashboard** — `SalarySummaryTable` reads all `draft` scenario lines first (shows pending increases before commit). Falls back to the most recent `committed`/`applied` scenario if no drafts exist.
+
+---
+
+## Access Control
+
+`/dashboard/access` — admin-only user management page.
+
+**Roles**:
+- `admin` — full access to all tabs and all hotels
+- `sub` — Employees and Import tabs only; filtered to assigned hotels
+
+**Nav**: `nav-sidebar.tsx` renders different link lists based on `role` prop passed from `dashboard/layout.tsx`.
+
+**Middleware** blocks sub-users from: `/dashboard` (root), `/dashboard/methods`, `/dashboard/salary-review`, `/dashboard/access`, `/dashboard/settings` — redirects to `/dashboard/employees`.
+
+**Hotel filtering for sub-users**: `employees/page.tsx` and `import/page.tsx` call `GET /api/auth/me` on mount and filter the hotel dropdown to `user.hotelIds`.
 
 ---
 
@@ -281,7 +322,7 @@ Re-import: via Import page — select the same hotel, upload the CSV. Format is 
 
 ## Column Visibility (Employees page)
 
-Persisted in `localStorage` under key `'ihg-salary-emp-cols'`. The picker uses a **draft pattern** — selections stage inside the dropdown and only apply when the user clicks **OK**. Hotel filter persisted under `'ihg-salary-emp-hotel'`.
+Persisted in `localStorage` under key `'ihg-salary-emp-cols-{hotelId}'` — **per-hotel**, not shared. The picker uses a **draft pattern** — selections stage inside the dropdown and only apply when the user clicks **OK**. Hotel filter persisted under `'ihg-salary-emp-hotel'`.
 
 **Hotel filter has no "All Hotels" option** — always shows one hotel. On mount the hotel is resolved inside `load()` after the hotel list arrives: validates the localStorage value against live hotel IDs, falls back to first hotel if missing or stale. The employee detail page writes the employee's hotel ID to the same key so "Back to Employees" always lands on the correct hotel.
 
@@ -291,9 +332,13 @@ Persisted in `localStorage` under key `'ihg-salary-emp-cols'`. The picker uses a
 
 Default visible columns: Emp Code, Surname, First Name, Hotel, Department, Job Title, Grade, Basic Salary, Gross Salary, CTC.
 
-Column groups: Employee · Salary · Deductions · Contributions · Provisions · Accruals
+Column groups: Employee · Salary · Deductions · Contributions · Provisions
+
+**Note**: `bonus_accrual_dec` and `mgmt_incentive` are NOT displayed in the column picker (no calculation attached). `leave_accrual` is in the Provisions group (labelled "Leave"). There is no Accruals group.
 
 **Category sum view** — a select dropdown overrides the column picker to show only anchor columns + the chosen group, with a totals row at the bottom.
+
+Zero monetary values display as "—" (not "R0" or "P0").
 
 ---
 

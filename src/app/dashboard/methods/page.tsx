@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { calculateBurden, isBotswana } from '@/lib/payroll-calc';
+import { sortHotels } from '@/lib/utils';
 import { RefreshCw, CheckCircle } from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -79,8 +80,8 @@ export default function MethodsPage() {
   const [done,     setDone]     = useState<number | null>(null);
 
   useEffect(() => {
-    sb.from('hotels').select('*').order('name').then(({ data }) => {
-      const list = (data ?? []) as Hotel[];
+    sb.from('hotels').select('*').then(({ data }) => {
+      const list = sortHotels((data ?? []) as Hotel[]);
       setHotels(list);
       setConfigs(new Map(list.map(h => [h.id, hotelToConfig(h)])));
       if (list.length) setSelected(list[0].id);

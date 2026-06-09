@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile } from '@/lib/vip-parser';
 import { isEmployeeCsvExport, parseEmployeeCsvExport, type RoundtripRow } from '@/lib/employee-csv';
 import { Hotel } from '@/types/database';
-import { fmtCurrency, MONTH_NAMES } from '@/lib/utils';
+import { fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
 import { Upload, CheckCircle, FileText, ChevronRight } from 'lucide-react';
 
 type Step = 'select' | 'preview' | 'done';
@@ -100,7 +100,16 @@ export default function ImportPage() {
   const [result, setResult]       = useState({ added: 0, updated: 0 });
 
   useEffect(() => {
-    sb.from('hotels').select('*').order('name').then(({ data }) => setHotels((data ?? []) as Hotel[]));
+    Promise.all([
+      sb.from('hotels').select('*'),
+      fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
+    ]).then(([{ data }, me]) => {
+      let list = sortHotels((data ?? []) as Hotel[]);
+      if (me?.role === 'sub' && me?.hotelIds?.length) {
+        list = list.filter((h: Hotel) => me.hotelIds.includes(h.id));
+      }
+      setHotels(list);
+    });
   }, []);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {

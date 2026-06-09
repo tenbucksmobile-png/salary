@@ -1,35 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { verifyToken, COOKIE_NAME } from '@/lib/auth';
 
-const COOKIE_NAME = 'ihg-salary-auth';
-
-async function expectedToken(): Promise<string> {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(process.env.COOKIE_SECRET ?? ''),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(process.env.SITE_PASSWORD ?? ''));
-  return Array.from(new Uint8Array(sig))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
+const SUB_BLOCKED = [
+  '/dashboard/methods',
+  '/dashboard/salary-review',
+  '/dashboard/access',
+  '/dashboard/settings',
+];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // Always allow login and auth API routes
   if (pathname.startsWith('/login') || pathname.startsWith('/api/auth')) {
     return NextResponse.next();
   }
-  const cookie = request.cookies.get(COOKIE_NAME);
-  if (!cookie?.value) return NextResponse.redirect(new URL('/login', request.url));
-  const token = await expectedToken();
-  if (cookie.value !== token) {
+
+  const token = request.cookies.get(COOKIE_NAME)?.value ?? '';
+  if (!token) return NextResponse.redirect(new URL('/login', request.url));
+
+  const user = await verifyToken(token);
+  if (!user) {
     const res = NextResponse.redirect(new URL('/login', request.url));
     res.cookies.delete(COOKIE_NAME);
     return res;
   }
+
+  // Sub-users: redirect blocked routes to employees
+  if (user.role === 'sub') {
+    const blocked =
+      pathname === '/dashboard' ||
+      SUB_BLOCKED.some(p => pathname.startsWith(p));
+    if (blocked) {
+      return NextResponse.redirect(new URL('/dashboard/employees', request.url));
+    }
+  }
+
   return NextResponse.next();
 }
 

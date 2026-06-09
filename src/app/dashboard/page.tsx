@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { Hotel, SalaryRecord, Employee, PayrollImport } from '@/types/database';
-import { fmtCurrency, MONTH_NAMES } from '@/lib/utils';
+import { fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
 import { Calendar } from 'lucide-react';
 import SalarySummaryTable from './SalarySummaryTable';
 
@@ -9,7 +9,7 @@ async function getHotelStats() {
 
   const [{ data: hotels }, { data: employees }, { data: salaries }, { data: imports }] =
     await Promise.all([
-      sb.from('hotels').select('*').order('name'),
+      sb.from('hotels').select('*'),
       sb.from('employees').select('*').eq('status', 'active'),
       sb.from('salary_records').select('*'),
       sb.from('payroll_imports').select('*').order('imported_at', { ascending: false }),
@@ -30,7 +30,7 @@ async function getHotelStats() {
     }
   }
 
-  return (hotels ?? []).map((h: Hotel) => {
+  return sortHotels((hotels ?? []) as Hotel[]).map((h: Hotel) => {
     const hotelEmps = empList.filter(e => e.hotel_id === h.id);
     const hotelSals = hotelEmps.map(e => latestSalary.get(e.id)).filter(Boolean) as SalaryRecord[];
     const lastImport = impList.find(i => i.hotel_id === h.id);
@@ -64,13 +64,13 @@ export default async function DashboardPage() {
         <h1 className="text-2xl font-bold">Dashboard</h1>
       </div>
 
-      <div className="grid grid-cols-1 gap-4">
+      <SalarySummaryTable />
+
+      <div className="grid grid-cols-1 gap-4 mt-8">
         {stats.map(s => (
           <HotelCard key={s.hotel.id} stats={s} />
         ))}
       </div>
-
-      <SalarySummaryTable />
     </div>
   );
 }
