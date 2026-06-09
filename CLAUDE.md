@@ -107,7 +107,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev mach
 | Table | Purpose |
 |-------|---------|
 | `hotels` | 6 properties; `country`, `short_code`, `wca_rate`, + configurable method rate columns (see migration 009) |
-| `employees` | One row per employee; `hotel_id`, `employee_code`, `surname`, `first_name`, `aka`, `id_number`, `job_title`, `department_code`, `paypoint`, `category`, `job_grade`, `grade_label`, `employment_date`, `status` (`active`/`terminated`/`on_leave`), `nmw_applicable`, `severance_applicable`, `incentive_applicable`, `incentive_multiplier`, `gratuity_applicable`, `gratuity_rate`, `comments` |
+| `employees` | One row per employee; `hotel_id`, `employee_code` (**nullable** — ANO positions have no employee yet; CSL and NL have no codes), `surname`, `first_name`, `aka`, `id_number`, `job_title`, `department_code`, `paypoint`, `category`, `job_grade`, `grade_label`, `employment_date`, `status` (`active`/`terminated`/`on_leave`), `nmw_applicable`, `severance_applicable`, `incentive_applicable`, `incentive_multiplier`, `gratuity_applicable`, `gratuity_rate`, `comments` |
 | `salary_records` | One row per employee per payroll period; full earnings, deductions, contributions, provisions, accruals |
 | `payroll_imports` | Audit log of each import |
 | `increase_scenarios` | Salary review scenarios; `status` = `draft`/`approved`/`applied`/`committed`; `hotel_id` identifies per-hotel draft; `settings_json` stores hotel-level UI state for draft reconstruction |
@@ -132,6 +132,8 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `010_accrual_pct.sql` | `leave_accrual_pct` + `bonus_provision_pct` decimal columns on `hotels` (default 1.0 = 100%) |
 | `011_users.sql` | `users` table for multi-user auth |
 | `012_draft_scenarios.sql` | `hotel_id` + `settings_json` on `increase_scenarios` for per-hotel persistent drafts |
+| `013_employee_code_nullable.sql` | `ALTER TABLE employees ALTER COLUMN employee_code DROP NOT NULL` — allows ANO positions without an employee |
+| `014_clear_csl_nl_employee_codes.sql` | Clears `employee_code` to NULL for all CSL and NL employees (codes were incorrectly generated) |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -241,8 +243,8 @@ src/
       access/route.ts     — POST/PATCH/DELETE: admin-only user CRUD
     login/page.tsx        — Login form (username + password)
     dashboard/
-      page.tsx            — Dashboard summary: SalarySummaryTable first, hotel cards below
-      SalarySummaryTable.tsx — Hotel-level before/after table; reads draft scenarios first, then committed
+      page.tsx            — Dashboard: SalarySummaryTable first; hotel cards below each with per-grade breakdown table
+      SalarySummaryTable.tsx — Filterable hotel-level before/after table; reads draft scenarios first, then committed
       layout.tsx          — Reads cookie server-side; passes role+username to NavSidebar
       access/page.tsx     — Admin-only user management UI
       employees/
@@ -284,7 +286,13 @@ src/
 
 **Commit** — updates each hotel's draft scenario status to `committed` (sets `effective_month`, `effective_year`, `committed_at`); writes new `salary_records` for the target month/year; clears all draft state. Does NOT create a new scenario row — the existing draft row is promoted.
 
-**Dashboard** — `SalarySummaryTable` reads all `draft` scenario lines first (shows pending increases before commit). Falls back to the most recent `committed`/`applied` scenario if no drafts exist.
+**Threshold** — optional second tier within a hotel's scenario. `threshold` (basic salary amount) divides employees into two bands:
+- Basic **< threshold**: uses `belowPct`/`belowFlat` if set; otherwise **0** (no increase).
+- Basic **≥ threshold**: uses `abovePct`/`aboveFlat` if set; otherwise falls back to the global `pct`/`flat`.
+
+Grade-level exclusions (`excludedGrades`) and per-employee exclusions (`excluded`) both set `isExcluded = true` — excluded employees are kept in the table with 0 increase and are included in totals/consolidations but receive no salary change on Commit.
+
+**Dashboard** — `SalarySummaryTable` reads all `draft` scenario lines first (shows pending increases before commit). Falls back to the most recent `committed`/`applied` scenario if no drafts exist. The server-rendered hotel cards below also load the same scenario lines to show per-grade breakdowns with matching figures.
 
 ---
 
@@ -332,13 +340,16 @@ Persisted in `localStorage` under key `'ihg-salary-emp-cols-{hotelId}'` — **pe
 
 **Batch delete** — checkbox on each row (header checkbox selects all visible). A red "Delete X selected" button appears in the toolbar when rows are ticked; confirms then deletes employees + all their salary records in one operation. Selection clears on hotel/search filter change.
 
-**Generate Codes button** — assigns `SUR001` format employee codes (`first 3 letters of surname + 3-digit sequence`) to all employees except those at CSL and NL. Sequential numbers (001, 002…) within each hotel per surname prefix. Uses `hotel.short_code` to exclude CSL/NL.
-
 Default visible columns: Emp Code, Surname, First Name, Hotel, Department, Job Title, Grade, Basic Salary, Gross Salary, CTC.
 
-Column groups: Employee · Salary · Deductions · Contributions · Provisions
+Column groups and membership:
+- **Employee**: Emp Code, Surname, First Name, Hotel, Department, Job Title, Grade (`structure` col → `grade_label`), Start Date, Yrs Service
+- **Salary**: Basic Salary, Structure (`structure_sal` col → shows `—`, placeholder for future salary-band import), Gross Salary, CTC
+- **Benefits**: Medical (Co), Prov Fund (Co)
+- **Legislative**: UIF (Co), SDL, WCA
+- **Provisions**: Staff Meals, Bonus Provision, Incentive, Gratuity, Severance, Leave
 
-**Note**: `bonus_accrual_dec` and `mgmt_incentive` are NOT displayed in the column picker (no calculation attached). `leave_accrual` is in the Provisions group (labelled "Leave"). There is no Accruals group.
+**Note**: `bonus_accrual_dec` and `mgmt_incentive` are NOT displayed in the column picker (no calculation attached). `leave_accrual` is in the Provisions group (labelled "Leave"). There is no Deductions or Accruals group. The Generate Codes button has been removed.
 
 **Category sum view** — a select dropdown overrides the column picker to show only anchor columns + the chosen group, with a totals row at the bottom.
 
