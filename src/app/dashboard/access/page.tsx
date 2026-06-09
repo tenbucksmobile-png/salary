@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { sortHotels } from '@/lib/utils';
 import { Hotel } from '@/types/database';
 import { AppUser } from '@/types/database';
-import { Plus, Pencil, Trash2, CheckCircle, X } from 'lucide-react';
+import { Plus, Pencil, Trash2, CheckCircle, X, Eye, EyeOff } from 'lucide-react';
 
 interface FormState {
   id: string;
@@ -28,9 +28,10 @@ export default function AccessPage() {
   const [users,   setUsers]   = useState<AppUser[]>([]);
   const [hotels,  setHotels]  = useState<Hotel[]>([]);
   const [form,    setForm]    = useState<FormState | null>(null);
-  const [saving,  setSaving]  = useState(false);
-  const [saved,   setSaved]   = useState(false);
-  const [error,   setError]   = useState('');
+  const [saving,     setSaving]     = useState(false);
+  const [saved,      setSaved]      = useState(false);
+  const [error,      setError]      = useState('');
+  const [showPwd,    setShowPwd]    = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -45,6 +46,7 @@ export default function AccessPage() {
   function openAdd() {
     setForm({ ...EMPTY_FORM, hotelIds: new Set() });
     setError('');
+    setShowPwd(false);
   }
 
   function openEdit(u: AppUser) {
@@ -56,9 +58,10 @@ export default function AccessPage() {
       hotelIds: new Set(u.hotel_ids ?? []),
     });
     setError('');
+    setShowPwd(false);
   }
 
-  function closeForm() { setForm(null); setError(''); }
+  function closeForm() { setForm(null); setError(''); setShowPwd(false); }
 
   function toggleHotel(id: string) {
     if (!form) return;
@@ -206,13 +209,24 @@ export default function AccessPage() {
               <label className="text-sm font-medium">
                 Password {form.id && <span className="text-muted-foreground font-normal">(leave blank to keep current)</span>}
               </label>
-              <input
-                type="password"
-                value={form.password}
-                onChange={e => setForm({ ...form, password: e.target.value })}
-                placeholder={form.id ? '••••••••' : 'Enter password'}
-                className="mt-1 w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              />
+              <div className="relative mt-1">
+                <input
+                  type={showPwd ? 'text' : 'password'}
+                  value={form.password}
+                  onChange={e => setForm({ ...form, password: e.target.value })}
+                  placeholder={form.id ? '••••••••' : 'Enter password'}
+                  className="w-full rounded-md border border-input px-3 py-2 pr-9 text-sm outline-none focus:ring-2 focus:ring-ring"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPwd(v => !v)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  tabIndex={-1}
+                  title={showPwd ? 'Hide password' : 'Show password'}
+                >
+                  {showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
 
             {/* Role */}

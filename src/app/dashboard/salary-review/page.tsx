@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { fmtZAR, fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
-import { TrendingUp, CheckCircle, Pencil, X, Check, Download, Save, Trash2 } from 'lucide-react';
+import { TrendingUp, CheckCircle, Pencil, X, Check, Download, Save, Trash2, ChevronDown } from 'lucide-react';
 import { calculateBurden, BurdenResult } from '@/lib/payroll-calc';
 import { exportSalaryReview, ExportHotel } from '@/lib/excel-export';
 
@@ -18,7 +18,12 @@ interface Override {
 interface HotelSettings {
   pct: string;
   flat: string;
-  grade: string;
+  excludedGrades: Set<string>;
+  threshold: string;
+  belowPct: string;
+  belowFlat: string;
+  abovePct: string;
+  aboveFlat: string;
   overrides: Map<string, Override>;
   excluded: Set<string>;
 }
@@ -49,12 +54,13 @@ function computeRows(
   const gPct         = parseFloat(settings.pct) / 100;
   const gFlat        = parseFloat(settings.flat) || 0;
   const hasGlobalPct = !isNaN(gPct) && parseFloat(settings.pct) > 0;
+  const thresh       = parseFloat(settings.threshold) || 0;
+  const hasThreshold = thresh > 0;
 
-  if (!hasGlobalPct && gFlat === 0 && settings.overrides.size === 0 && settings.excluded.size === 0) return [];
+  if (!hasGlobalPct && gFlat === 0 && !hasThreshold && settings.overrides.size === 0 && settings.excluded.size === 0) return [];
 
   return employees
     .filter(e => e.hotel_id === hotelId)
-    .filter(e => settings.grade === 'All Grades' || e.grade_label === settings.grade)
     .map(e => {
       const sal   = latestSalary.get(e.id);
       const hotel = hotelMap.get(e.hotel_id);
@@ -62,12 +68,22 @@ function computeRows(
 
       const currentBasic = sal.basic_salary;
       const currentCtc   = sal.ctc;
-      const isExcluded    = settings.excluded.has(e.id);
-      const ov            = settings.overrides.get(e.id);
-      const effectivePct  = isExcluded ? 0 : (ov && ov.pct  !== '' ? (parseFloat(ov.pct)  || 0) / 100 : (hasGlobalPct ? gPct : 0));
-      const effectiveFlat = isExcluded ? 0 : (ov && ov.flat !== '' ? (parseFloat(ov.flat) || 0)        : gFlat);
+      const isExcluded   = settings.excluded.has(e.id) || settings.excludedGrades.has(e.grade_label ?? '');
+      const ov           = settings.overrides.get(e.id);
 
-      const newBasic         = Math.round(currentBasic * (1 + effectivePct) + effectiveFlat);
+      // Base rate: threshold bands take priority over global pct/flat for non-override employees
+      const inLower  = hasThreshold && currentBasic < thresh;
+      const basePct  = hasThreshold
+        ? (inLower ? (parseFloat(settings.belowPct)  / 100 || 0) : (parseFloat(settings.abovePct)  / 100 || 0))
+        : (hasGlobalPct ? gPct : 0);
+      const baseFlat = hasThreshold
+        ? (inLower ? (parseFloat(settings.belowFlat) || 0) : (parseFloat(settings.aboveFlat) || 0))
+        : gFlat;
+
+      const effectivePct  = isExcluded ? 0 : (ov && ov.pct  !== '' ? (parseFloat(ov.pct)  || 0) / 100 : basePct);
+      const effectiveFlat = isExcluded ? 0 : (ov && ov.flat !== '' ? (parseFloat(ov.flat) || 0)        : baseFlat);
+
+      const newBasic         = isExcluded ? currentBasic : Math.round((currentBasic * (1 + effectivePct) + effectiveFlat) / 10) * 10;
       const newTotalEarnings = sal.total_earnings + (newBasic - currentBasic);
 
       const empYrs = e.employment_date
@@ -131,7 +147,14 @@ export default function SalaryReviewPage() {
 
   const [pct,       setPct]       = useState('');
   const [flat,      setFlat]      = useState('');
-  const [grade,     setGrade]     = useState('All Grades');
+  const [excludedGrades, setExcludedGrades] = useState<Set<string>>(new Set());
+  const [gradeDropdownOpen, setGradeDropdownOpen] = useState(false);
+  const gradeDropdownRef = useRef<HTMLDivElement>(null);
+  const [threshold, setThreshold] = useState('');
+  const [belowPct,  setBelowPct]  = useState('');
+  const [belowFlat, setBelowFlat] = useState('');
+  const [abovePct,  setAbovePct]  = useState('');
+  const [aboveFlat, setAboveFlat] = useState('');
   const [overrides, setOverrides] = useState<Map<string, Override>>(new Map());
   const [excluded,  setExcluded]  = useState<Set<string>>(new Set());
 
@@ -149,15 +172,11 @@ export default function SalaryReviewPage() {
   const [saveFlash,  setSaveFlash]  = useState(false);
   const [committing, setCommitting] = useState(false);
   const [committed,  setCommitted]  = useState(false);
-  const [commitMonth, setCommitMonth] = useState(1);
-  const [commitYear,  setCommitYear]  = useState(2026);
+  const [commitMonth, setCommitMonth] = useState(() => new Date().getMonth() + 1);
+  const [commitYear,  setCommitYear]  = useState(() => new Date().getFullYear());
   const [exporting,  setExporting]  = useState(false);
 
   useEffect(() => {
-    const d = new Date();
-    setCommitMonth(d.getMonth() + 1);
-    setCommitYear(d.getFullYear());
-
     async function load() {
       const [{ data: h }, { data: e }, { data: s }, { data: drafts }] = await Promise.all([
         sb.from('hotels').select('*'),
@@ -185,9 +204,14 @@ export default function SalaryReviewPage() {
         if (!draft.hotel_id || !draft.settings_json) continue;
         const s2 = draft.settings_json as Record<string, unknown>;
         settingsMap.set(draft.hotel_id, {
-          pct:       (s2.pct  as string)  ?? '',
-          flat:      (s2.flat as string)  ?? '',
-          grade:     (s2.grade as string) ?? 'All Grades',
+          pct:       (s2.pct       as string) ?? '',
+          flat:      (s2.flat      as string) ?? '',
+          excludedGrades: new Set<string>((s2.excludedGrades as string[]) ?? []),
+          threshold: (s2.threshold as string) ?? '',
+          belowPct:  (s2.belowPct  as string) ?? '',
+          belowFlat: (s2.belowFlat as string) ?? '',
+          abovePct:  (s2.abovePct  as string) ?? '',
+          aboveFlat: (s2.aboveFlat as string) ?? '',
           overrides: new Map(Object.entries((s2.overrides as Record<string, Override>) ?? {})),
           excluded:  new Set<string>((s2.excluded as string[]) ?? []),
         });
@@ -214,20 +238,35 @@ export default function SalaryReviewPage() {
     const saved = hotelSettingsRef.current.get(hotelFilter);
     setPct(saved?.pct ?? '');
     setFlat(saved?.flat ?? '');
-    setGrade(saved?.grade ?? 'All Grades');
+    setExcludedGrades(new Set(saved?.excludedGrades ?? []));
+    setThreshold(saved?.threshold ?? '');
+    setBelowPct(saved?.belowPct  ?? '');
+    setBelowFlat(saved?.belowFlat ?? '');
+    setAbovePct(saved?.abovePct  ?? '');
+    setAboveFlat(saved?.aboveFlat ?? '');
     setOverrides(new Map(saved?.overrides ?? []));
     setExcluded(new Set(saved?.excluded ?? []));
     setEditingId(null);
     setCommitted(false);
   }, [hotelFilter]);
 
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (gradeDropdownRef.current && !gradeDropdownRef.current.contains(e.target as Node)) {
+        setGradeDropdownOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
   const hotelMap = useMemo(() => new Map(hotels.map(h => [h.id, h])), [hotels]);
 
   const forecastRows = useMemo((): ForecastRow[] => {
     if (!hotelFilter) return [];
-    const liveSetting: HotelSettings = { pct, flat, grade, overrides, excluded };
+    const liveSetting: HotelSettings = { pct, flat, excludedGrades, threshold, belowPct, belowFlat, abovePct, aboveFlat, overrides, excluded };
     return computeRows(hotelFilter, liveSetting, employees, hotelMap, latestSalary);
-  }, [hotelFilter, pct, flat, grade, overrides, excluded, employees, hotelMap, latestSalary]);
+  }, [hotelFilter, pct, flat, excludedGrades, threshold, belowPct, belowFlat, abovePct, aboveFlat, overrides, excluded, employees, hotelMap, latestSalary]);
 
   const totals = useMemo(() => ({
     currentBasic:   forecastRows.reduce((s, r) => s + r.currentBasic,   0),
@@ -237,6 +276,7 @@ export default function SalaryReviewPage() {
     currentCtc:     forecastRows.reduce((s, r) => s + r.currentCtc,      0),
     newCtc:         forecastRows.reduce((s, r) => s + r.newCtc,          0),
     count:          forecastRows.length,
+    excludedCount:  forecastRows.filter(r => r.isExcluded).length,
   }), [forecastRows]);
 
   const savedSummary = useMemo(() =>
@@ -246,11 +286,12 @@ export default function SalaryReviewPage() {
         const s    = hotelSettings.get(h.id)!;
         const rows = computeRows(h.id, s, employees, hotelMap, latestSalary);
         return {
-          hotel: h,
-          pct:   s.pct,
-          flat:  s.flat,
-          grade: s.grade,
-          count: rows.length,
+          hotel:     h,
+          pct:       s.pct,
+          flat:      s.flat,
+          excludedGrades: s.excludedGrades ?? new Set<string>(),
+          threshold: s.threshold ?? '',
+          count:     rows.length,
           currentBasic:   rows.reduce((a, r) => a + r.currentBasic,   0),
           newBasic:       rows.reduce((a, r) => a + r.newBasic,        0),
           increaseAmount: rows.reduce((a, r) => a + r.increaseAmount,  0),
@@ -287,10 +328,10 @@ export default function SalaryReviewPage() {
     setSaving(true);
     try {
       const hotel = hotelMap.get(hotelFilter)!;
-      const entry: HotelSettings = { pct, flat, grade, overrides: new Map(overrides), excluded: new Set(excluded) };
+      const entry: HotelSettings = { pct, flat, excludedGrades: new Set(excludedGrades), threshold, belowPct, belowFlat, abovePct, aboveFlat, overrides: new Map(overrides), excluded: new Set(excluded) };
 
       const settingsJson = {
-        pct, flat, grade,
+        pct, flat, excludedGrades: [...excludedGrades], threshold, belowPct, belowFlat, abovePct, aboveFlat,
         overrides: Object.fromEntries([...overrides.entries()]),
         excluded:  [...excluded],
       };
@@ -369,7 +410,8 @@ export default function SalaryReviewPage() {
 
     // If we're on this hotel's tab, clear the form
     if (hotelFilter === hotelId) {
-      setPct(''); setFlat(''); setGrade('All Grades');
+      setPct(''); setFlat(''); setExcludedGrades(new Set());
+      setThreshold(''); setBelowPct(''); setBelowFlat(''); setAbovePct(''); setAboveFlat('');
       setOverrides(new Map()); setExcluded(new Set());
     }
   }
@@ -466,7 +508,7 @@ export default function SalaryReviewPage() {
       const exportHotels: ExportHotel[] = hotels
         .filter(h => activeHotelIds.has(h.id))
         .map(h => {
-          const settings = hotelSettings.get(h.id) ?? { pct: '', flat: '', grade: 'All Grades', overrides: new Map(), excluded: new Set<string>() };
+          const settings = hotelSettings.get(h.id) ?? { pct: '', flat: '', excludedGrades: new Set<string>(), threshold: '', belowPct: '', belowFlat: '', abovePct: '', aboveFlat: '', overrides: new Map(), excluded: new Set<string>() };
           const rows     = computeRows(h.id, settings, employees, hotelMap, latestSalary);
           return {
             id:        h.id,
@@ -515,10 +557,13 @@ export default function SalaryReviewPage() {
   }
 
   const currentHotel   = hotelMap.get(hotelFilter);
-  const hasAnyInput    = (parseFloat(pct) > 0) || (parseFloat(flat) > 0) || overrides.size > 0;
+  const hasAnyInput    = (parseFloat(pct) > 0) || (parseFloat(flat) > 0) || (parseFloat(threshold) > 0) || overrides.size > 0;
   const isSaved        = hotelSettings.has(hotelFilter) && (() => {
     const s = hotelSettings.get(hotelFilter)!;
-    return s.pct === pct && s.flat === flat && s.grade === grade;
+    return s.pct === pct && s.flat === flat &&
+      s.excludedGrades.size === excludedGrades.size && [...s.excludedGrades].every(g => excludedGrades.has(g)) &&
+      s.threshold === threshold && s.belowPct === belowPct && s.belowFlat === belowFlat &&
+      s.abovePct === abovePct && s.aboveFlat === aboveFlat;
   })();
   const overrideCount  = forecastRows.filter(r => r.hasOverride).length;
 
@@ -543,6 +588,7 @@ export default function SalaryReviewPage() {
                 <th className="text-left py-2 font-medium text-muted-foreground">Hotel</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">%</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Flat</th>
+                <th className="text-right py-2 font-medium text-muted-foreground">Threshold</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Grade</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Employees</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Monthly Increase</th>
@@ -559,7 +605,12 @@ export default function SalaryReviewPage() {
                   </td>
                   <td className="py-2 text-right font-mono text-green-700">{s.pct ? `${s.pct}%` : '—'}</td>
                   <td className="py-2 text-right font-mono">{s.flat ? fmtCurrency(parseFloat(s.flat), s.hotel.country) : '—'}</td>
-                  <td className="py-2 text-right text-muted-foreground">{s.grade !== 'All Grades' ? s.grade : 'All'}</td>
+                  <td className="py-2 text-right font-mono text-xs text-muted-foreground">
+                    {s.threshold ? fmtCurrency(parseFloat(s.threshold), s.hotel.country) : '—'}
+                  </td>
+                  <td className="py-2 text-right text-muted-foreground text-xs">
+                    {s.excludedGrades.size === 0 ? 'All' : `Excl. ${[...s.excludedGrades].join(', ')}`}
+                  </td>
                   <td className="py-2 text-right tabular-nums">{s.count}</td>
                   <td className="py-2 text-right font-mono text-amber-700">
                     {s.increaseAmount > 0 ? `+${fmtCurrency(s.increaseAmount, s.hotel.country)}` : '—'}
@@ -576,11 +627,7 @@ export default function SalaryReviewPage() {
                         Edit
                       </button>
                       <button
-                        onClick={() => {
-                          if (window.confirm(`Delete saved increase for ${s.hotel.name}? This cannot be undone.`)) {
-                            deleteDraft(s.hotel.id);
-                          }
-                        }}
+                        onClick={() => deleteDraft(s.hotel.id)}
                         title="Delete this hotel's saved increase"
                         className="text-destructive hover:opacity-70 transition-opacity"
                       >
@@ -614,15 +661,43 @@ export default function SalaryReviewPage() {
             </select>
           </div>
 
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Grade</label>
-            <select
-              value={grade}
-              onChange={e => setGrade(e.target.value)}
-              className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
+          <div className="relative" ref={gradeDropdownRef}>
+            <label className="text-xs font-medium text-muted-foreground block mb-1">Exclude Grades</label>
+            <button
+              type="button"
+              onClick={() => setGradeDropdownOpen(v => !v)}
+              className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white flex items-center gap-2 min-w-[160px] justify-between"
             >
-              {GRADE_OPTIONS.map(g => <option key={g} value={g}>{g}</option>)}
-            </select>
+              <span>{excludedGrades.size === 0 ? 'None excluded' : `${excludedGrades.size} grade${excludedGrades.size > 1 ? 's' : ''} excluded`}</span>
+              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+            </button>
+            {gradeDropdownOpen && (
+              <div className="absolute z-20 mt-1 bg-white border rounded-lg shadow-lg py-1.5 min-w-[180px]">
+                {GRADE_OPTIONS.slice(1).map(g => (
+                  <label key={g} className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-muted/30 cursor-pointer text-sm">
+                    <input
+                      type="checkbox"
+                      checked={excludedGrades.has(g)}
+                      onChange={() => setExcludedGrades(prev => {
+                        const next = new Set(prev);
+                        next.has(g) ? next.delete(g) : next.add(g);
+                        return next;
+                      })}
+                      className="rounded accent-primary"
+                    />
+                    {g}
+                  </label>
+                ))}
+                {excludedGrades.size > 0 && (
+                  <button
+                    onClick={() => setExcludedGrades(new Set())}
+                    className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground border-t mt-1 pt-2"
+                  >
+                    Clear exclusions
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="h-px w-px mx-1 self-stretch" aria-hidden />
@@ -668,7 +743,105 @@ export default function SalaryReviewPage() {
 
         </div>
 
-        {(pct || flat) && (
+        {/* ── Threshold section ── */}
+        <div className="mt-4 pt-4 border-t flex gap-4 items-end flex-wrap">
+          <div>
+            <label className="text-xs font-medium text-muted-foreground block mb-1">Threshold Basic</label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+                {currentHotel?.country.toLowerCase().includes('botswana') ? 'P' : 'R'}
+              </span>
+              <input
+                type="number" min="0" step="1"
+                value={threshold}
+                onChange={e => setThreshold(e.target.value)}
+                placeholder="e.g. 7000"
+                className="rounded-md border border-input pl-7 pr-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring w-36"
+              />
+            </div>
+          </div>
+
+          {threshold && (
+            <>
+              <div className="self-end pb-2.5 text-xs font-semibold text-blue-700 whitespace-nowrap">
+                Below &lt; {threshold}
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground block mb-1">% Increase</label>
+                <div className="relative">
+                  <input
+                    type="number" min="0" max="100" step="0.1"
+                    value={belowPct}
+                    onChange={e => setBelowPct(e.target.value)}
+                    placeholder="e.g. 5.5"
+                    className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring w-28 pr-7"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">%</span>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground block mb-1">Flat Adjustment</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+                    {currentHotel?.country.toLowerCase().includes('botswana') ? 'P' : 'R'}
+                  </span>
+                  <input
+                    type="number" min="0" step="1"
+                    value={belowFlat}
+                    onChange={e => setBelowFlat(e.target.value)}
+                    placeholder="e.g. 200"
+                    className="rounded-md border border-input pl-7 pr-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring w-32"
+                  />
+                </div>
+              </div>
+
+              <div className="self-end pb-2.5 text-xs font-semibold text-amber-700 whitespace-nowrap">
+                Above ≥ {threshold}
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground block mb-1">% Increase</label>
+                <div className="relative">
+                  <input
+                    type="number" min="0" max="100" step="0.1"
+                    value={abovePct}
+                    onChange={e => setAbovePct(e.target.value)}
+                    placeholder="e.g. 5.5"
+                    className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring w-28 pr-7"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">%</span>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground block mb-1">Flat Adjustment</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+                    {currentHotel?.country.toLowerCase().includes('botswana') ? 'P' : 'R'}
+                  </span>
+                  <input
+                    type="number" min="0" step="1"
+                    value={aboveFlat}
+                    onChange={e => setAboveFlat(e.target.value)}
+                    placeholder="e.g. 350"
+                    className="rounded-md border border-input pl-7 pr-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring w-32"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {threshold && (belowPct || belowFlat || abovePct || aboveFlat) && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Threshold rule:
+            <span className="font-mono ml-1 text-foreground">
+              Basic &lt; {threshold} → {belowPct ? `${belowPct}%` : '—'}{belowFlat ? ` + ${belowFlat} flat` : ''}
+              {' · '}
+              Basic ≥ {threshold} → {abovePct ? `${abovePct}%` : '—'}{aboveFlat ? ` + ${aboveFlat} flat` : ''}
+            </span>
+          </p>
+        )}
+
+        {!threshold && (pct || flat) && (
           <p className="mt-3 text-xs text-muted-foreground">
             Formula per employee:
             <span className="font-mono ml-1 text-foreground">
@@ -716,6 +889,7 @@ export default function SalaryReviewPage() {
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">New Basic</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current CTC</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">New CTC</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Actual %</th>
                   <th className="px-4 py-3 w-10" />
                 </tr>
               </thead>
@@ -764,6 +938,12 @@ export default function SalaryReviewPage() {
                       <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newBasic, r.hotel.country)}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmtCurrency(r.currentCtc, r.hotel.country)}</td>
                       <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.newCtc, r.hotel.country)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-xs">
+                        {r.isExcluded || r.currentBasic === 0
+                          ? <span className="text-muted-foreground">—</span>
+                          : <span className="text-green-700">{((r.newBasic - r.currentBasic) / r.currentBasic * 100).toFixed(2)}%</span>
+                        }
+                      </td>
 
                       <td className="px-4 py-2.5 text-center">
                         <button
@@ -794,7 +974,7 @@ export default function SalaryReviewPage() {
                                   type="number" min="0" max="200" step="0.1"
                                   value={editDraft.pct}
                                   onChange={e => setEditDraft(d => ({ ...d, pct: e.target.value }))}
-                                  placeholder={pct || '0'}
+                                  placeholder={String((r.effectivePct * 100).toFixed(1))}
                                   className="rounded-md border border-amber-300 bg-white px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-amber-400 w-28 pr-7"
                                 />
                                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">%</span>
@@ -809,7 +989,7 @@ export default function SalaryReviewPage() {
                                 type="number" min="0" step="1"
                                 value={editDraft.flat}
                                 onChange={e => setEditDraft(d => ({ ...d, flat: e.target.value }))}
-                                placeholder={flat || '0'}
+                                placeholder={r.effectiveFlat ? String(r.effectiveFlat) : '0'}
                                 className="rounded-md border border-amber-300 bg-white px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-amber-400 w-32"
                               />
                             </div>
@@ -845,13 +1025,16 @@ export default function SalaryReviewPage() {
               </tbody>
               <tfoot>
                 <tr className="border-t bg-muted/20 font-semibold">
-                  <td className="px-4 py-3" colSpan={3}>Totals ({totals.count} employees{excluded.size > 0 ? `, ${excluded.size} excluded` : ''})</td>
+                  <td className="px-4 py-3" colSpan={3}>Totals ({totals.count} employees{totals.excludedCount > 0 ? `, ${totals.excludedCount} excluded` : ''})</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.currentBasic, currentHotel?.country ?? '')}</td>
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3 text-right font-mono">{totals.totalFlat > 0 ? fmtCurrency(totals.totalFlat, currentHotel?.country ?? '') : '—'}</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.newBasic, currentHotel?.country ?? '')}</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.currentCtc, currentHotel?.country ?? '')}</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.newCtc, currentHotel?.country ?? '')}</td>
+                  <td className="px-4 py-3 text-right font-mono text-xs text-green-700">
+                    {totals.currentBasic > 0 ? `${((totals.newBasic - totals.currentBasic) / totals.currentBasic * 100).toFixed(2)}%` : '—'}
+                  </td>
                   <td className="px-4 py-3" />
                 </tr>
               </tfoot>
@@ -868,7 +1051,7 @@ export default function SalaryReviewPage() {
 
       {!hasAnyInput && !isSaved && (
         <p className="text-muted-foreground text-sm mb-6">
-          Enter a % increase and/or flat adjustment above to see the forecast for this hotel.
+          Enter a % increase, flat adjustment, or threshold above to see the forecast for this hotel.
         </p>
       )}
 

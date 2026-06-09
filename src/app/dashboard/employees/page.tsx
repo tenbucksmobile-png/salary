@@ -13,10 +13,10 @@ import { buildEmployeeCsv } from '@/lib/employee-csv';
 
 type ColId =
   | 'employee_code' | 'surname' | 'name' | 'hotel' | 'department' | 'title'
-  | 'employment_date' | 'years_service'
-  | 'structure' | 'basic' | 'gross_salary' | 'ctc'
-  | 'uif_emp' | 'medical_emp' | 'provident_emp'
-  | 'uif_co' | 'medical_co' | 'provident_co' | 'sdl' | 'wca'
+  | 'employment_date' | 'years_service' | 'structure'
+  | 'basic' | 'structure_sal' | 'gross_salary' | 'ctc'
+  | 'medical_co' | 'provident_co'
+  | 'uif_co' | 'sdl' | 'wca'
   | 'staff_meals' | 'bonus_provision' | 'incentive' | 'gratuity' | 'severance'
   | 'leave_accrual';
 
@@ -36,23 +36,21 @@ const ALL_COLUMNS: ColDef[] = [
   { id: 'hotel',           label: 'Hotel',             group: 'Employee',    defaultVisible: true },
   { id: 'department',      label: 'Department',        group: 'Employee',    defaultVisible: true },
   { id: 'title',           label: 'Job Title',         group: 'Employee',    defaultVisible: true },
+  { id: 'structure',       label: 'Grade',             group: 'Employee',    defaultVisible: true },
   { id: 'employment_date', label: 'Start Date',        group: 'Employee',    defaultVisible: false },
   { id: 'years_service',   label: 'Yrs Service',       group: 'Employee',    defaultVisible: false, align: 'right' },
   // Core salary
-  { id: 'structure',       label: 'Grade',             group: 'Salary',      defaultVisible: true },
   { id: 'basic',           label: 'Basic Salary',      group: 'Salary',      defaultVisible: true,  align: 'right' },
+  { id: 'structure_sal',   label: 'Structure',         group: 'Salary',      defaultVisible: true },
   { id: 'gross_salary',    label: 'Gross Salary',      group: 'Salary',      defaultVisible: true,  align: 'right' },
   { id: 'ctc',             label: 'CTC',               group: 'Salary',      defaultVisible: true,  align: 'right' },
-  // Employee deductions
-  { id: 'uif_emp',         label: 'UIF (Emp)',         group: 'Deductions',  defaultVisible: false, align: 'right' },
-  { id: 'medical_emp',     label: 'Medical (Emp)',     group: 'Deductions',  defaultVisible: false, align: 'right' },
-  { id: 'provident_emp',   label: 'Prov Fund (Emp)',   group: 'Deductions',  defaultVisible: false, align: 'right' },
-  // Company contributions
-  { id: 'uif_co',          label: 'UIF (Co)',          group: 'Contributions', defaultVisible: false, align: 'right' },
-  { id: 'medical_co',      label: 'Medical (Co)',      group: 'Contributions', defaultVisible: false, align: 'right' },
-  { id: 'provident_co',    label: 'Prov Fund (Co)',    group: 'Contributions', defaultVisible: false, align: 'right' },
-  { id: 'sdl',             label: 'SDL',               group: 'Contributions', defaultVisible: false, align: 'right' },
-  { id: 'wca',             label: 'WCA',               group: 'Contributions', defaultVisible: false, align: 'right' },
+  // Company benefits
+  { id: 'medical_co',      label: 'Medical (Co)',      group: 'Benefits',    defaultVisible: false, align: 'right' },
+  { id: 'provident_co',    label: 'Prov Fund (Co)',    group: 'Benefits',    defaultVisible: false, align: 'right' },
+  // Legislative contributions
+  { id: 'uif_co',          label: 'UIF (Co)',          group: 'Legislative', defaultVisible: false, align: 'right' },
+  { id: 'sdl',             label: 'SDL',               group: 'Legislative', defaultVisible: false, align: 'right' },
+  { id: 'wca',             label: 'WCA',               group: 'Legislative', defaultVisible: false, align: 'right' },
   // Payroll burden / provisions
   { id: 'staff_meals',     label: 'Staff Meals',       group: 'Provisions',  defaultVisible: false, align: 'right' },
   { id: 'bonus_provision', label: 'Bonus',             group: 'Provisions',  defaultVisible: false, align: 'right' },
@@ -92,9 +90,6 @@ function numericValue(col: ColId, e: Employee, sal: SalaryRecord | undefined): n
     case 'basic':             return sal?.basic_salary ?? null;
     case 'gross_salary':      return sal?.total_earnings ?? null;
     case 'ctc':               return sal?.ctc ?? null;
-    case 'uif_emp':           return sal?.uif_employee ?? null;
-    case 'medical_emp':       return sal?.medical_employee ?? null;
-    case 'provident_emp':     return sal?.provident_employee ?? null;
     case 'uif_co':            return sal?.uif_company ?? null;
     case 'medical_co':        return sal?.medical_company ?? null;
     case 'provident_co':      return sal?.provident_company ?? null;
@@ -195,7 +190,7 @@ export default function EmployeesPage() {
 
   const filtered = useMemo(() => employees
     .filter(e => !hotelFilter || e.hotel_id === hotelFilter)
-    .filter(e => !search || `${e.surname} ${e.first_name} ${e.employee_code} ${e.job_title ?? ''}`.toLowerCase().includes(search.toLowerCase())),
+    .filter(e => !search || `${e.surname} ${e.first_name} ${e.employee_code ?? ''} ${e.job_title ?? ''}`.toLowerCase().includes(search.toLowerCase())),
     [employees, hotelFilter, search]);
 
   useEffect(() => { setSelected(new Set()); }, [hotelFilter, search]);
@@ -212,41 +207,6 @@ export default function EmployeesPage() {
     setSelected(prev =>
       prev.size === filtered.length ? new Set() : new Set(filtered.map(e => e.id))
     );
-  }
-
-  const [codingDone, setCodingDone] = useState(false);
-
-  async function generateEmployeeCodes() {
-    const excluded = new Set(['CSL', 'NL']);
-    const eligible = employees.filter(e => {
-      const h = hotelMap.get(e.hotel_id);
-      return h && !excluded.has(h.short_code.toUpperCase());
-    });
-    if (!eligible.length) return;
-
-    // Sort by surname then first name so numbering is deterministic
-    const sorted = [...eligible].sort((a, b) =>
-      a.surname.localeCompare(b.surname) || a.first_name.localeCompare(b.first_name)
-    );
-
-    // Assign codes: per hotel, per 3-letter prefix, sequential 001, 002…
-    const counters = new Map<string, number>();
-    const updates: { id: string; code: string }[] = [];
-    for (const emp of sorted) {
-      const prefix = emp.surname.replace(/[^a-zA-Z]/g, '').slice(0, 3).toUpperCase().padEnd(3, 'X');
-      const key = `${emp.hotel_id}::${prefix}`;
-      const n = (counters.get(key) ?? 0) + 1;
-      counters.set(key, n);
-      updates.push({ id: emp.id, code: `${prefix}${String(n).padStart(3, '0')}` });
-    }
-
-    await Promise.all(updates.map(u => sb.from('employees').update({ employee_code: u.code }).eq('id', u.id)));
-    setEmployees(prev => prev.map(e => {
-      const u = updates.find(u => u.id === e.id);
-      return u ? { ...e, employee_code: u.code } : e;
-    }));
-    setCodingDone(true);
-    setTimeout(() => setCodingDone(false), 3000);
   }
 
   async function deleteSelected() {
@@ -404,7 +364,7 @@ export default function EmployeesPage() {
     const country = hotelMap.get(e.hotel_id)?.country ?? '';
     const fmt     = (n: number) => fmtCurrency(n, country);
     switch (col) {
-      case 'employee_code':   return <span className="font-mono text-muted-foreground">{e.employee_code}</span>;
+      case 'employee_code':   return <span className="font-mono text-muted-foreground">{e.employee_code ?? '—'}</span>;
       case 'surname':         return <span className="font-medium">{e.surname}</span>;
       case 'name':            return e.first_name;
       case 'hotel':           return hotelMap.get(e.hotel_id)?.short_code ?? '—';
@@ -413,13 +373,11 @@ export default function EmployeesPage() {
       case 'employment_date': return e.employment_date ? new Date(e.employment_date).toLocaleDateString('en-ZA') : '—';
       case 'years_service':   return yrs != null ? `${yrs}` : '—';
       // Salary fields
-      case 'structure':       return e.grade_label ?? '—';
+      case 'structure':
+      case 'structure_sal':   return e.grade_label ?? '—';
       case 'basic':           return sal?.basic_salary    ? fmt(sal.basic_salary)    : '—';
       case 'gross_salary':    return sal?.total_earnings  ? fmt(sal.total_earnings)  : '—';
       case 'ctc':             return sal?.ctc             ? fmt(sal.ctc)             : '—';
-      case 'uif_emp':         return sal?.uif_employee    ? fmt(sal.uif_employee)    : '—';
-      case 'medical_emp':     return sal?.medical_employee  ? fmt(sal.medical_employee)  : '—';
-      case 'provident_emp':   return sal?.provident_employee ? fmt(sal.provident_employee) : '—';
       case 'uif_co':          return sal?.uif_company     ? fmt(sal.uif_company)     : '—';
       case 'medical_co':      return sal?.medical_company ? fmt(sal.medical_company) : '—';
       case 'provident_co':    return sal?.provident_company ? fmt(sal.provident_company) : '—';
@@ -473,16 +431,6 @@ export default function EmployeesPage() {
               Export CSV
             </button>
           </div>
-          {/* Generate employee codes */}
-          <button
-            onClick={generateEmployeeCodes}
-            disabled={loading}
-            className="flex items-center gap-2 rounded-md border border-input bg-white px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
-          >
-            {codingDone
-              ? <><CheckCircle className="h-4 w-4 text-green-500" /> Codes applied</>
-              : 'Generate Codes'}
-          </button>
           {/* Calculate Burden */}
           <button
             onClick={runCalculateBurden}

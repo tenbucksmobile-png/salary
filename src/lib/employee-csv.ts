@@ -206,7 +206,7 @@ const str = (s: string) => s.trim();
 
 export function parseEmployeeCsvExport(
   text: string,
-  existing: { id: string; employee_code: string }[],
+  existing: { id: string; employee_code: string | null }[],
 ): { rows: RoundtripRow[]; errors: string[] } {
   const lines = text.split('\n').map(l => l.replace(/\r$/, ''));
   const nonEmpty = lines.filter(l => l.trim());
@@ -217,7 +217,7 @@ export function parseEmployeeCsvExport(
   const idx = (col: string) => headers.indexOf(col);
   const get = (cols: string[], col: string) => cols[idx(col)] ?? '';
 
-  const codeMap = new Map(existing.map(e => [e.employee_code.toUpperCase(), e.id]));
+  const codeMap = new Map(existing.filter(e => e.employee_code).map(e => [e.employee_code!.toUpperCase(), e.id]));
   const rows: RoundtripRow[] = [];
   const errors: string[] = [];
 

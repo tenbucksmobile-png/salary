@@ -12,8 +12,6 @@ import { isBotswana } from '@/lib/payroll-calc';
 const GRADE_OPTIONS = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive'];
 const STATUS_OPTIONS = ['active', 'terminated', 'on_leave'] as const;
 
-const now = new Date();
-
 export default function EmployeeDetailPage() {
   const { id } = useParams<{ id: string }>();
   const sb = createClient();
@@ -23,10 +21,13 @@ export default function EmployeeDetailPage() {
   const [salaries, setSalaries] = useState<SalaryRecord[]>([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [savingSal, setSavingSal] = useState(false);
   const [savedSal, setSavedSal] = useState(false);
+  const [saveSalError, setSaveSalError] = useState('');
 
   const [form, setForm] = useState({
+    employee_code: '',
     surname: '',
     first_name: '',
     job_title: '',
@@ -44,11 +45,9 @@ export default function EmployeeDetailPage() {
     gratuity_rate: 0,
   });
 
-  const [salForm, setSalForm] = useState({
-    basic_salary: 0,
-    total_earnings: 0,
-    period_month: now.getMonth() + 1,
-    period_year: now.getFullYear(),
+  const [salForm, setSalForm] = useState(() => {
+    const d = new Date();
+    return { basic_salary: 0, total_earnings: 0, period_month: d.getMonth() + 1, period_year: d.getFullYear() };
   });
 
   useEffect(() => {
@@ -66,6 +65,7 @@ export default function EmployeeDetailPage() {
         const salList = (sals ?? []) as SalaryRecord[];
         setSalaries(salList);
         setForm({
+          employee_code: e.employee_code ?? '',
           surname: e.surname ?? '',
           first_name: e.first_name ?? '',
           job_title: e.job_title ?? '',
@@ -98,38 +98,45 @@ export default function EmployeeDetailPage() {
 
   async function save() {
     setSaving(true);
-    await sb.from('employees').update({
+    setSaveError('');
+    const { error } = await sb.from('employees').update({
       ...form,
+      employee_code:   form.employee_code || null,
       grade_label:     form.grade_label || null,
       employment_date: form.employment_date || null,
       aka:             form.aka || null,
       comments:        form.comments || null,
       updated_at:      new Date().toISOString(),
     }).eq('id', id);
-    setEmp(prev => prev ? { ...prev, surname: form.surname, first_name: form.first_name } : prev);
     setSaving(false);
+    if (error) {
+      setSaveError(error.message);
+      return;
+    }
+    setEmp(prev => prev ? { ...prev, employee_code: form.employee_code, surname: form.surname, first_name: form.first_name } : prev);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
 
   async function saveSalary() {
     setSavingSal(true);
+    setSaveSalError('');
     const existing = salaries[0];
 
     if (existing) {
-      // Update the latest record's basic and gross
-      await sb.from('salary_records').update({
+      const { error } = await sb.from('salary_records').update({
         basic_salary: salForm.basic_salary,
         total_earnings: salForm.total_earnings,
       }).eq('id', existing.id);
+      setSavingSal(false);
+      if (error) { setSaveSalError(error.message); return; }
       setSalaries(prev => prev.map(s =>
         s.id === existing.id
           ? { ...s, basic_salary: salForm.basic_salary, total_earnings: salForm.total_earnings }
           : s
       ));
     } else {
-      // No record yet — insert a minimal one
-      const { data: inserted } = await sb.from('salary_records').insert({
+      const { data: inserted, error } = await sb.from('salary_records').insert({
         employee_id: id,
         period_month: salForm.period_month,
         period_year: salForm.period_year,
@@ -151,10 +158,11 @@ export default function EmployeeDetailPage() {
         net_salary: salForm.total_earnings,
         ctc: salForm.total_earnings,
       }).select().single();
+      setSavingSal(false);
+      if (error) { setSaveSalError(error.message); return; }
       if (inserted) setSalaries([inserted as SalaryRecord]);
     }
 
-    setSavingSal(false);
     setSavedSal(true);
     setTimeout(() => setSavedSal(false), 2000);
   }
@@ -172,13 +180,22 @@ export default function EmployeeDetailPage() {
 
       <div className="mb-6">
         <h1 className="text-2xl font-bold">{form.surname || emp.surname}, {form.first_name || emp.first_name}</h1>
-        <p className="text-muted-foreground text-sm">{emp.employee_code} · {hotel?.name}</p>
+        <p className="text-muted-foreground text-sm">{form.employee_code || emp.employee_code} · {hotel?.name}</p>
       </div>
 
       <div className="grid grid-cols-2 gap-6">
         {/* Left — employee details */}
         <div className="bg-white rounded-xl border p-6 space-y-4">
           <h2 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground">Employee Details</h2>
+
+          <Field label="Employee Code">
+            <input
+              value={form.employee_code}
+              onChange={e => setForm(f => ({ ...f, employee_code: e.target.value }))}
+              className="w-full rounded-md border border-input px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-ring"
+              placeholder="e.g. SMI001"
+            />
+          </Field>
 
           <Field label="Surname">
             <input
@@ -342,6 +359,7 @@ export default function EmployeeDetailPage() {
             <Save className="h-4 w-4" />
             {saved ? 'Saved!' : saving ? 'Saving…' : 'Save Changes'}
           </button>
+          {saveError && <p className="text-xs text-red-600 mt-1">{saveError}</p>}
         </div>
 
         {/* Right column */}
@@ -349,7 +367,7 @@ export default function EmployeeDetailPage() {
           <div className="bg-white rounded-xl border p-6">
             <h2 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground mb-4">VIP Info</h2>
             <dl className="space-y-2 text-sm">
-              <Row label="Employee Code" value={emp.employee_code} />
+              <Row label="Employee Code" value={emp.employee_code ?? '—'} />
               <Row label="ID Number" value={emp.id_number ?? '—'} />
               <Row label="Paypoint" value={emp.paypoint ?? '—'} />
               <Row label="Category" value={emp.category?.toString() ?? '—'} />
@@ -441,6 +459,7 @@ export default function EmployeeDetailPage() {
                 <Save className="h-4 w-4" />
                 {savedSal ? 'Saved!' : savingSal ? 'Saving…' : latestSal ? 'Save Salary' : 'Create Salary Record'}
               </button>
+              {saveSalError && <p className="text-xs text-red-600">{saveSalError}</p>}
               <p className="text-xs text-muted-foreground">After saving, run Calculate Burden to recalculate contributions.</p>
             </div>
           </div>

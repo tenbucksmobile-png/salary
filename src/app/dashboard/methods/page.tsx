@@ -388,15 +388,15 @@ export default function MethodsPage() {
                 {/* UIF */}
                 {bw ? (
                   <tr className="opacity-50 pointer-events-none">
-                    <td className="px-5 py-3">UIF — Employee + Company</td>
+                    <td className="px-5 py-3">UIF — Company (ER)</td>
                     <td className="px-5 py-3">{exemptBadge}</td>
                     <td className="px-5 py-3 text-center text-xs text-muted-foreground">—</td>
                   </tr>
                 ) : (
                   <tr>
                     <td className="px-5 py-3">
-                      UIF — Employee + Company
-                      <span className="ml-1.5 text-xs text-muted-foreground">× Basic</span>
+                      UIF — Company (ER)
+                      <span className="ml-1.5 text-xs text-muted-foreground">× Basic · employee mirrors ER rate</span>
                     </td>
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-3 flex-wrap">

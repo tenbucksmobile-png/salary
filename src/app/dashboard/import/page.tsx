@@ -132,7 +132,7 @@ export default function ImportPage() {
       setExistingEmpData(new Map(existingList.map(e => [e.id as string, e])));
       const { rows, errors: parseErrors } = parseEmployeeCsvExport(
         text,
-        existingList as { id: string; employee_code: string }[],
+        existingList as { id: string; employee_code: string | null }[],
       );
       setRoundtripRows(rows);
       setErrors(parseErrors);
@@ -211,7 +211,7 @@ export default function ImportPage() {
       const existingNameMap = new Map(
         (existing ?? []).map((e: any) => [`${e.surname.toLowerCase()}|${e.first_name.toLowerCase()}`, e.id as string])
       );
-      const existingCodes = new Set((existing ?? []).map((e: any) => e.employee_code as string));
+      const existingCodes = new Set((existing ?? []).filter((e: any) => e.employee_code).map((e: any) => e.employee_code as string));
 
       const importRows: ImportRow[] = emps.map(emp => {
         const nameKey = `${emp.surname.toLowerCase()}|${emp.firstName.toLowerCase()}`;
@@ -249,7 +249,7 @@ export default function ImportPage() {
       const { employees, errors: parseErrors, periodMonth: pm, periodYear: py } = parseVIPReport(text);
 
       const { data: existing } = await sb.from('employees').select('id, employee_code').eq('hotel_id', hotelId);
-      const existingMap = new Map((existing ?? []).map((e: any) => [e.employee_code as string, e.id as string]));
+      const existingMap = new Map((existing ?? []).filter((e: any) => e.employee_code).map((e: any) => [e.employee_code as string, e.id as string]));
 
       const importRows: ImportRow[] = employees.map(emp => ({
         importType: 'vip' as const,

@@ -178,6 +178,10 @@ All rates have fallback constants used when the hotel hasn't had migration 009 a
 
 `calculateBurden()` now returns `ctc` directly. It equals `total_earnings` + all ER items where the hotel's CTC flag is `true`. Defaults preserve backward-compatible behaviour (ER contributions in CTC, provisions out). All call sites should use `burden.ctc` — do not recompute `total_earnings + total_company_contrib`.
 
+**Always-in-CTC (no flag)**: `medical_company`, `ancilla_company`, and `otherCompanyContrib` are unconditionally included in CTC regardless of any flag. Only the items listed in `hotels` configurable CTC flags are togglable.
+
+**CTC flag defaults in `calculateBurden`**: `ctcProvidentEr`, `ctcUifEr`, `ctcSdl`, `ctcWca` all default to `true` (in CTC); `ctcMeals`, `ctcLeaveAccrual`, `ctcBonus` default to `false` (out of CTC). These defaults are overridden by the values stored in `hotels` and passed via `BurdenInput`.
+
 ### Per-employee flags
 
 - `incentiveApplicable` — sets `incentive = gross × multiplier / 12`; skips `bonus_provision`
@@ -344,8 +348,10 @@ Zero monetary values display as "—" (not "R0" or "P0").
 
 ## Grade Labels
 
-`employees.grade_label` is a free-text field set manually (not from VIP). Options used across properties:
-`ANO`, `Front Line`, `Supervisory`, `Middle Management`, `Management`, `Exec`
+`employees.grade_label` is a free-text field set manually (not from VIP). Canonical values (enforced by `GRADE_MAP` in `import/page.tsx` on import):
+`ANO`, `FTC`, `DNQ`, `Frontline`, `Supervisory`, `Management`, `Executive`
+
+Free-text variants like `"front line"`, `"exec"`, `"supervisor"` are normalised to the canonical form on import. The salary review grade filter and dashboard grade badges use these same canonical values. `Unclassified` is displayed for employees whose `grade_label` is null.
 
 ---
 
@@ -353,4 +359,4 @@ Zero monetary values display as "—" (not "R0" or "P0").
 
 Tailwind CSS v4 + Shadcn UI base-nova. Custom tokens in `global.css`. Standard colours: `bg-white` for cards, `bg-muted/40` for table headers, `text-muted-foreground` for secondary text, `text-primary` for action items.
 
-Monetary values: always use `fmtZAR(n)` or `fmtCurrency(n, country)` from `src/lib/utils.ts`. Botswana amounts display as "P X,XXX", South Africa as "R X,XXX".
+Monetary values: always use `fmtZAR(n)` or `fmtCurrency(n, country)` from `src/lib/utils.ts`. Botswana amounts display as "P X,XXX", South Africa as "R X,XXX". Always pass `hotel.country` (the full country string) to `fmtCurrency` — it checks `includes('botswana')` but does **not** handle the `'bw'` short code that `isBotswana()` handles, so passing `hotel.short_code` would produce incorrect ZAR formatting for Botswana hotels.

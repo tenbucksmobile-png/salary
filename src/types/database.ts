@@ -30,7 +30,7 @@ export interface Hotel {
 export interface Employee {
   id: string;
   hotel_id: string;
-  employee_code: string;
+  employee_code: string | null;
   surname: string;
   first_name: string;
   aka: string | null;
