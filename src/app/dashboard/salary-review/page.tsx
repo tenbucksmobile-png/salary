@@ -605,11 +605,65 @@ export default function SalaryReviewPage() {
 
   return (
     <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold">Salary Review</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Set increases per hotel, save each one, then export or commit to payroll
-        </p>
+      <div className="mb-8 flex items-start justify-between gap-6 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold">Salary Review</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Set increases per hotel, save each one, then export or commit to payroll
+          </p>
+        </div>
+
+        <div className="flex items-end gap-3 flex-wrap">
+          {/* Export — always available */}
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="flex items-center gap-2 rounded-md border border-input bg-white px-5 py-2.5 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+          >
+            <Download className="h-4 w-4" />
+            {exporting ? 'Building Excel…' : 'Export to Excel'}
+          </button>
+
+          {/* Commit — only when scenarios are saved */}
+          {savedSummary.length > 0 && (
+            <div className="flex items-end gap-3 flex-wrap">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground block mb-1">Effective Month</label>
+                <select
+                  value={commitMonth}
+                  onChange={e => { setCommitMonth(Number(e.target.value)); setCommitted(false); }}
+                  className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
+                >
+                  {MONTH_NAMES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground block mb-1">Year</label>
+                <input
+                  type="number" min="2020" max="2099"
+                  value={commitYear}
+                  onChange={e => { setCommitYear(Number(e.target.value)); setCommitted(false); }}
+                  className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring w-28 font-mono"
+                />
+              </div>
+              {!committed ? (
+                <button
+                  onClick={commitAll}
+                  disabled={committing}
+                  className="flex items-center gap-2 rounded-md bg-green-700 text-white px-5 py-2.5 text-sm font-medium hover:bg-green-800 disabled:opacity-50 transition-colors"
+                >
+                  <TrendingUp className="h-4 w-4" />
+                  {committing ? 'Committing…' : `Commit to Payroll — ${MONTH_NAMES[commitMonth - 1]} ${commitYear}`}
+                </button>
+              ) : (
+                <div className="flex items-center gap-2 text-green-700 font-medium text-sm pb-2">
+                  <CheckCircle className="h-5 w-5" />
+                  Salary records updated for {MONTH_NAMES[commitMonth - 1]} {commitYear}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Saved hotels summary ── */}
@@ -1091,74 +1145,6 @@ export default function SalaryReviewPage() {
         </p>
       )}
 
-      {/* ── Commit + Export ── */}
-      {savedSummary.length > 0 && (
-        <div className="flex items-end gap-4 flex-wrap bg-white rounded-xl border p-5">
-          <div>
-            <p className="text-xs font-semibold text-muted-foreground mb-2">
-              Commit {savedSummary.reduce((s, r) => s + r.count, 0)} employees across {savedSummary.length} hotel{savedSummary.length !== 1 ? 's' : ''} to payroll
-            </p>
-            <div className="flex items-center gap-3 flex-wrap">
-              <div>
-                <label className="text-xs font-medium text-muted-foreground block mb-1">Effective Month</label>
-                <select
-                  value={commitMonth}
-                  onChange={e => { setCommitMonth(Number(e.target.value)); setCommitted(false); }}
-                  className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
-                >
-                  {MONTH_NAMES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-muted-foreground block mb-1">Year</label>
-                <input
-                  type="number" min="2020" max="2099"
-                  value={commitYear}
-                  onChange={e => { setCommitYear(Number(e.target.value)); setCommitted(false); }}
-                  className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring w-28 font-mono"
-                />
-              </div>
-              {!committed ? (
-                <button
-                  onClick={commitAll}
-                  disabled={committing}
-                  className="flex items-center gap-2 rounded-md bg-green-700 text-white px-5 py-2.5 text-sm font-medium hover:bg-green-800 disabled:opacity-50 transition-colors self-end"
-                >
-                  <TrendingUp className="h-4 w-4" />
-                  {committing ? 'Committing…' : `Commit to Payroll — ${MONTH_NAMES[commitMonth - 1]} ${commitYear}`}
-                </button>
-              ) : (
-                <div className="flex items-center gap-2 text-green-700 font-medium text-sm self-end pb-2">
-                  <CheckCircle className="h-5 w-5" />
-                  Salary records updated for {MONTH_NAMES[commitMonth - 1]} {commitYear}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <button
-            onClick={handleExport}
-            disabled={exporting}
-            className="flex items-center gap-2 rounded-md border border-input bg-white px-5 py-2.5 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50 self-end"
-          >
-            <Download className="h-4 w-4" />
-            {exporting ? 'Building Excel…' : 'Export to Excel'}
-          </button>
-        </div>
-      )}
-
-      {savedSummary.length === 0 && (
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleExport}
-            disabled={exporting}
-            className="flex items-center gap-2 rounded-md border border-input bg-white px-5 py-2.5 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
-          >
-            <Download className="h-4 w-4" />
-            {exporting ? 'Building Excel…' : 'Export to Excel'}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
