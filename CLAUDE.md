@@ -58,6 +58,12 @@ npm run start
 
 There is no dedicated `typecheck` or `lint` script — `npm run build` is the fastest way to catch type errors. There are no tests and no test runner configured.
 
+**Deploy to Vercel** (corporate SSL proxy requires the env var for the CLI too):
+```powershell
+$env:NODE_TLS_REJECT_UNAUTHORIZED="0"; vercel --prod
+```
+Production URL: **https://ihg-salary-topaz.vercel.app** — Vercel project `marius-projects-ce903021/ihg-salary`, connected to `tenbucksmobile-png/salary` on GitHub (auto-deploys on push to `master`).
+
 ---
 
 ## Critical Rules
@@ -66,7 +72,7 @@ There is no dedicated `typecheck` or `lint` script — `npm run build` is the fa
 - **`SITE_PASSWORD` must be quoted in `.env.local` if it contains `#`** — unquoted `#` is treated as a comment: `SITE_PASSWORD="#IHG_HRMngmt2026"`.
 - **`$VAR` strings in env blocks are not shell-expanded** — keep secrets in `.env.local` only.
 - **RLS uses `anon_all` policies** — security is enforced by the middleware cookie check, not Supabase auth.
-- **`NODE_TLS_REJECT_UNAUTHORIZED=0` must be in `.env.local`** — the dev machine has a corporate SSL inspection proxy; Node.js cannot verify Supabase's TLS cert without this. Browser-side Supabase calls work fine; only server-side API routes and server components are affected.
+- **`NODE_TLS_REJECT_UNAUTHORIZED=0` must be in `.env.local`** — the dev machine has a corporate SSL inspection proxy; Node.js cannot verify Supabase's TLS cert without this. Browser-side Supabase calls work fine; only server-side API routes and server components are affected. Also required as a shell env var when running the Vercel CLI (`$env:NODE_TLS_REJECT_UNAUTHORIZED="0"; vercel --prod`).
 
 ---
 
@@ -247,6 +253,7 @@ src/
     dashboard/
       page.tsx            — Dashboard: SalarySummaryTable first; hotel cards below each with per-grade breakdown table
       SalarySummaryTable.tsx — Filterable hotel-level before/after table; reads draft scenarios first, then committed
+      InflationHistoryCard.tsx — CPI + historic increases + NMW reference card; data stored in localStorage only
       layout.tsx          — Reads cookie server-side; passes role+username to NavSidebar
       access/page.tsx     — Admin-only user management UI
       employees/
@@ -295,6 +302,20 @@ src/
 Grade-level exclusions (`excludedGrades`) and per-employee exclusions (`excluded`) both set `isExcluded = true` — excluded employees are kept in the table with 0 increase and are included in totals/consolidations but receive no salary change on Commit.
 
 **Dashboard** — `SalarySummaryTable` reads all `draft` scenario lines first (shows pending increases before commit). Falls back to the most recent `committed`/`applied` scenario if no drafts exist. The server-rendered hotel cards below also load the same scenario lines to show per-grade breakdowns with matching figures.
+
+**`InflationHistoryCard`** (`src/app/dashboard/InflationHistoryCard.tsx`) — `'use client'` card rendered on the dashboard between `SalarySummaryTable` and the hotel cards. Stores all data in `localStorage` (never in the DB):
+
+| Key | Content |
+|-----|---------|
+| `ihg-salary-cpi` | `Record<country, Record<year, string>>` — CPI % per country per year |
+| `ihg-salary-increases` | `Record<hotelId, Record<year, { pct: string; flat: string }>>` — historic increases; `flat` is a monetary adjustment |
+| `ihg-salary-nmw` | `Record<year, string>` — SA National Minimum Wage reference value (shared across all SA hotels) |
+| `ihg-salary-cpi-month` | `string` — month label for CPI header (e.g. `"July"`) |
+| `ihg-salary-increase-notes` | `string` — free-text notes |
+
+NMW indicator shows only for SA hotels where `short_code !== 'APA'` and `!isBotswana(country)`. The `YEARS` constant covers 6 years: last 5 completed + current year. Must match `BENCHMARK_YEARS` in `excel-export.ts`.
+
+The salary review Excel export reads all five localStorage keys in `handleExport()` and passes a `BenchmarkData` object to `exportSalaryReview()`, which prepends a CPI table, historic increases table (with NMW row), and optional notes above the summary table in the **Overview** sheet.
 
 ---
 
