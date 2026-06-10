@@ -1,5 +1,20 @@
-// Salary review Excel export — one sheet per hotel + a Summary sheet
+// Salary review Excel export — one sheet per hotel + an Overview sheet
 // Uses xlsx-js-style (SheetJS community + cell-level styling)
+
+// Last 5 completed years + current year — must match InflationHistoryCard.tsx YEARS
+const _cy = new Date().getFullYear();
+const BENCHMARK_YEARS = Array.from({ length: 6 }, (_, i) => String(_cy - 5 + i));
+
+export interface IncreaseEntry { pct: string; flat: string; }
+
+export interface BenchmarkData {
+  cpi: Record<string, Record<string, string>>;              // { 'South Africa': { '2021': '4.5' } }
+  increases: Record<string, Record<string, IncreaseEntry>>; // { [hotelId]: { '2021': { pct, flat } } }
+  nmw: Record<string, string>;                              // { '2021': '21.69' } — SA NMW per year
+  notes: string;
+  cpiMonth: string;                                         // e.g. 'July' — month CPI rate was pegged
+  hotels: { id: string; name: string }[];                   // sorted hotel list for increases rows
+}
 
 export interface ExportHotelRow {
   surname: string;
@@ -69,6 +84,56 @@ function tot(v: number | string, isNum = true) {
   return { v: v as string, t: 's', s: { ...base, alignment: { horizontal: 'left' } } };
 }
 
+// Benchmark section helpers (CPI + historic increases block)
+const LBLUE = 'EEF2F7';
+const DBLUE = '2C4A6E';
+
+function sectionHdr(v: string) {
+  return {
+    v, t: 's',
+    s: {
+      font:      { bold: true, sz: 11, color: { rgb: DBLUE } },
+      fill:      { patternType: 'solid', fgColor: { rgb: LBLUE } },
+      alignment: { horizontal: 'left', vertical: 'center' },
+    },
+  };
+}
+
+function hdrSm(v: string) {
+  return {
+    v, t: 's',
+    s: {
+      font:      { bold: true, color: { rgb: '444444' } },
+      fill:      { patternType: 'solid', fgColor: { rgb: 'F0F4F8' } },
+      alignment: { horizontal: 'center' },
+      border:    { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } } },
+    },
+  };
+}
+
+function bmark(v: string | undefined) {
+  const n = parseFloat(v ?? '');
+  if (isNaN(n)) {
+    return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, font: { color: { rgb: 'BBBBBB' } } } };
+  }
+  return { v: +n.toFixed(1), t: 'n', z: '0.0"%"', s: { alignment: { horizontal: 'center' } } };
+}
+
+function incCell(entry: IncreaseEntry | undefined) {
+  if (!entry) return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, font: { color: { rgb: 'BBBBBB' } } } };
+  const pct  = parseFloat(entry.pct);
+  const flat = parseFloat(entry.flat);
+  const hasPct  = !isNaN(pct)  && pct  !== 0;
+  const hasFlat = !isNaN(flat) && flat !== 0;
+  if (!hasPct && !hasFlat) {
+    return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, font: { color: { rgb: 'BBBBBB' } } } };
+  }
+  const parts: string[] = [];
+  if (hasPct)  parts.push(`${pct.toFixed(1)}%`);
+  if (hasFlat) parts.push(flat.toLocaleString('en-ZA', { maximumFractionDigits: 0 }));
+  return { v: parts.join(' + '), t: 's', s: { alignment: { horizontal: 'center' } } };
+}
+
 // ── Hotel detail sheet ────────────────────────────────────────────────────────
 
 function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
@@ -129,9 +194,68 @@ function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
   return ws;
 }
 
-// ── Summary sheet ─────────────────────────────────────────────────────────────
+// ── Overview sheet (benchmark + summary) ─────────────────────────────────────
 
-function buildSummarySheet(hotels: ExportHotel[], XLSX: any): any {
+function buildSummarySheet(hotels: ExportHotel[], benchmark: BenchmarkData | null, XLSX: any): any {
+  // ── Benchmark block ───────────────────────────────────────────────────────
+  const benchmarkRows: any[][] = [];
+
+  if (benchmark) {
+    const yrs = BENCHMARK_YEARS;
+
+    // CPI section
+    const cpiTitle = benchmark.cpiMonth
+      ? `CPI — Annual Average % as @ ${benchmark.cpiMonth}`
+      : 'CPI — Annual Average %';
+    benchmarkRows.push([sectionHdr(cpiTitle)]);
+    benchmarkRows.push([hdrSm('Country'), ...yrs.map(y => hdrSm(y))]);
+    for (const [country, yearData] of Object.entries(benchmark.cpi)) {
+      benchmarkRows.push([str(country), ...yrs.map(y => bmark(yearData[y]))]);
+    }
+    benchmarkRows.push([]); // blank separator
+
+    // Historic increases section
+    benchmarkRows.push([sectionHdr('Historic Salary Increases — % Applied')]);
+    benchmarkRows.push([hdrSm('Hotel'), ...yrs.map(y => hdrSm(y))]);
+    for (const { id, name } of benchmark.hotels) {
+      const inc = benchmark.increases[id] ?? {};
+      benchmarkRows.push([str(name), ...yrs.map(y => incCell(inc[y]))]);
+    }
+
+    // NMW row — only if any value is present
+    const hasNmw = Object.values(benchmark.nmw ?? {}).some(v => v && v.trim());
+    if (hasNmw) {
+      const AMBER = 'FFF3CD';
+      const nmwLabel = {
+        v: 'NMW (SA)', t: 's',
+        s: { font: { bold: true, color: { rgb: '92610A' } }, fill: { patternType: 'solid', fgColor: { rgb: AMBER } }, alignment: { horizontal: 'left' } },
+      };
+      const nmwCells = yrs.map(y => {
+        const v = benchmark.nmw[y];
+        const n = parseFloat(v ?? '');
+        if (isNaN(n)) return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, fill: { patternType: 'solid', fgColor: { rgb: AMBER } }, font: { color: { rgb: 'BBBBBB' } } } };
+        return { v: +n.toFixed(2), t: 'n', z: '#,##0.00', s: { alignment: { horizontal: 'center' }, fill: { patternType: 'solid', fgColor: { rgb: AMBER } }, font: { color: { rgb: '92610A' } } } };
+      });
+      benchmarkRows.push([nmwLabel, ...nmwCells]);
+    }
+
+    benchmarkRows.push([]); // blank separator
+
+    // Notes (only if present)
+    if (benchmark.notes.trim()) {
+      benchmarkRows.push([
+        { v: 'Notes:', t: 's', s: { font: { bold: true } } },
+        { v: benchmark.notes, t: 's', s: { alignment: { horizontal: 'left', wrapText: true } } },
+      ]);
+      benchmarkRows.push([]);
+    }
+
+    // Salary review summary section header
+    benchmarkRows.push([sectionHdr('Salary Review Summary')]);
+    benchmarkRows.push([]);
+  }
+
+  // ── Summary table ─────────────────────────────────────────────────────────
   const headers = [
     hdr('Hotel'), hdr('Short Code'), hdr('Currency'), hdr('Headcount'),
     hdr('Current Basic'), hdr('New Basic'), hdr('Monthly Increase'), hdr('Annual Increase'),
@@ -176,13 +300,22 @@ function buildSummarySheet(hotels: ExportHotel[], XLSX: any): any {
     { v: +pchTot.toFixed(1), t: 'n', z: '0.0"%"', s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, alignment: { horizontal: 'right' } } },
   ];
 
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows, totRow]);
+  const aoa = [...benchmarkRows, headers, ...dataRows, totRow];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+
   ws['!cols'] = [
     { wch: 28 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
     { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 18 },
     { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 10 },
   ];
-  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+
+  // Freeze on the summary table header row (after benchmark rows, if any)
+  if (!benchmark) {
+    ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+  } else {
+    ws['!freeze'] = { xSplit: 0, ySplit: benchmarkRows.length + 1 };
+  }
+
   return ws;
 }
 
@@ -191,14 +324,15 @@ function buildSummarySheet(hotels: ExportHotel[], XLSX: any): any {
 export async function exportSalaryReview(
   hotels: ExportHotel[],
   filename: string,
+  benchmark?: BenchmarkData | null,
 ): Promise<void> {
   // Dynamic import keeps xlsx-js-style out of the SSR bundle
   const XLSX = (await import('xlsx-js-style')).default ?? (await import('xlsx-js-style'));
 
   const wb = XLSX.utils.book_new();
 
-  // Summary sheet first
-  XLSX.utils.book_append_sheet(wb, buildSummarySheet(hotels, XLSX), 'Summary');
+  // Overview sheet first (benchmark block + summary table)
+  XLSX.utils.book_append_sheet(wb, buildSummarySheet(hotels, benchmark ?? null, XLSX), 'Overview');
 
   // One sheet per hotel (only hotels with rows)
   for (const h of hotels) {

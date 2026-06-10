@@ -1,0 +1,308 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Hotel } from '@/types/database';
+import { sortHotels } from '@/lib/utils';
+import { Save, CheckCircle } from 'lucide-react';
+
+const currentYear = new Date().getFullYear();
+// Last 5 completed years + current year (e.g. 2021-2026 when currentYear is 2026)
+const YEARS = Array.from({ length: 6 }, (_, i) => String(currentYear - 5 + i));
+
+const DEFAULT_CPI: Record<string, Record<string, string>> = {
+  'South Africa': { '2021': '4.5', '2022': '6.9', '2023': '5.9', '2024': '4.4', '2025': '3.2' },
+  'Botswana':     { '2021': '8.7', '2022': '12.2', '2023': '10.0', '2024': '5.2', '2025': '4.1' },
+};
+
+type CpiData = Record<string, Record<string, string>>;
+type NmwData = Record<string, string>; // year → NMW value (user-defined unit: hourly or monthly)
+
+export interface IncreaseEntry { pct: string; flat: string; }
+type IncreaseData = Record<string, Record<string, IncreaseEntry>>;
+
+const STORAGE_CPI       = 'ihg-salary-cpi';
+const STORAGE_INCREASES = 'ihg-salary-increases';
+const STORAGE_NOTES     = 'ihg-salary-increase-notes';
+const STORAGE_CPI_MONTH = 'ihg-salary-cpi-month';
+const STORAGE_NMW       = 'ihg-salary-nmw';
+
+const MONTH_NAMES_SHORT = [
+  'January','February','March','April','May','June',
+  'July','August','September','October','November','December',
+];
+
+// SA hotels that display NMW: not Botswana, not APA
+function showNmw(hotel: Hotel): boolean {
+  const isBw  = hotel.country?.toLowerCase().includes('botswana');
+  const isApa = hotel.short_code === 'APA';
+  return !isBw && !isApa;
+}
+
+function loadCpi(): CpiData {
+  try {
+    const raw = localStorage.getItem(STORAGE_CPI);
+    if (raw) return JSON.parse(raw) as CpiData;
+  } catch {}
+  return JSON.parse(JSON.stringify(DEFAULT_CPI)) as CpiData;
+}
+
+function migrateEntry(v: unknown): IncreaseEntry {
+  if (v && typeof v === 'object' && 'pct' in v) return v as IncreaseEntry;
+  return { pct: typeof v === 'string' ? v : '', flat: '' };
+}
+
+function loadIncreases(): IncreaseData {
+  try {
+    const raw = localStorage.getItem(STORAGE_INCREASES);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, Record<string, unknown>>;
+    const result: IncreaseData = {};
+    for (const [hotelId, years] of Object.entries(parsed)) {
+      result[hotelId] = {};
+      for (const [year, val] of Object.entries(years)) {
+        result[hotelId][year] = migrateEntry(val);
+      }
+    }
+    return result;
+  } catch {}
+  return {};
+}
+
+function loadNotes(): string {
+  try { return localStorage.getItem(STORAGE_NOTES) ?? ''; } catch { return ''; }
+}
+
+function loadCpiMonth(): string {
+  try { return localStorage.getItem(STORAGE_CPI_MONTH) ?? 'July'; } catch { return 'July'; }
+}
+
+function loadNmw(): NmwData {
+  try {
+    const raw = localStorage.getItem(STORAGE_NMW);
+    if (raw) return JSON.parse(raw) as NmwData;
+  } catch {}
+  return {};
+}
+
+function currencySymbol(hotel: Hotel): string {
+  return hotel.country?.toLowerCase().includes('botswana') ? 'P' : 'R';
+}
+
+export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
+  const [cpi,       setCpi]       = useState<CpiData>(JSON.parse(JSON.stringify(DEFAULT_CPI)) as CpiData);
+  const [increases, setIncreases] = useState<IncreaseData>({});
+  const [nmw,       setNmw]       = useState<NmwData>({});
+  const [notes,     setNotes]     = useState('');
+  const [cpiMonth,  setCpiMonth]  = useState('July');
+  const [saved,     setSaved]     = useState(false);
+
+  useEffect(() => {
+    setCpi(loadCpi());
+    setIncreases(loadIncreases());
+    setNmw(loadNmw());
+    setNotes(loadNotes());
+    setCpiMonth(loadCpiMonth());
+  }, []);
+
+  function setCpiCell(country: string, year: string, value: string) {
+    setCpi(prev => ({ ...prev, [country]: { ...prev[country], [year]: value } }));
+  }
+
+  function setIncreaseField(hotelId: string, year: string, field: 'pct' | 'flat', value: string) {
+    setIncreases(prev => {
+      const existing = prev[hotelId]?.[year] ?? { pct: '', flat: '' };
+      return {
+        ...prev,
+        [hotelId]: { ...(prev[hotelId] ?? {}), [year]: { ...existing, [field]: value } },
+      };
+    });
+  }
+
+  function setNmwCell(year: string, value: string) {
+    setNmw(prev => ({ ...prev, [year]: value }));
+  }
+
+  function saveAll() {
+    try {
+      localStorage.setItem(STORAGE_CPI,       JSON.stringify(cpi));
+      localStorage.setItem(STORAGE_INCREASES,  JSON.stringify(increases));
+      localStorage.setItem(STORAGE_NOTES,      notes);
+      localStorage.setItem(STORAGE_CPI_MONTH,  cpiMonth);
+      localStorage.setItem(STORAGE_NMW,        JSON.stringify(nmw));
+    } catch {}
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  }
+
+  const sortedHotels = sortHotels(hotels);
+
+  return (
+    <div className="bg-white rounded-xl border p-6 space-y-6">
+      <h2 className="font-semibold text-sm uppercase tracking-wide text-muted-foreground">
+        Inflation &amp; Increase History
+      </h2>
+
+      {/* CPI table */}
+      <div>
+        <div className="flex items-center gap-3 mb-2">
+          <p className="text-xs font-medium text-muted-foreground">
+            CPI — Annual Average % as @
+          </p>
+          <select
+            value={cpiMonth}
+            onChange={e => setCpiMonth(e.target.value)}
+            className="rounded border border-input px-1.5 py-0.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+          >
+            {MONTH_NAMES_SHORT.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="text-sm whitespace-nowrap">
+            <thead>
+              <tr className="border-b bg-muted/40">
+                <th className="text-left px-4 py-2.5 font-medium text-muted-foreground text-xs w-40">Country</th>
+                {YEARS.map(y => (
+                  <th key={y} className="text-center px-3 py-2.5 font-medium text-muted-foreground text-xs w-24">{y}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(cpi).map(([country, yearData], i) => (
+                <tr key={country} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
+                  <td className="px-4 py-2 text-xs font-medium">{country}</td>
+                  {YEARS.map(y => (
+                    <td key={y} className="px-3 py-2">
+                      <div className="flex items-center gap-0.5">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={yearData[y] ?? ''}
+                          onChange={e => setCpiCell(country, y, e.target.value)}
+                          className="w-16 rounded border border-input px-1.5 py-1 text-xs text-right font-mono outline-none focus:ring-1 focus:ring-ring"
+                        />
+                        <span className="text-xs text-muted-foreground">%</span>
+                      </div>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Historic increases */}
+      <div>
+        <p className="text-xs font-medium text-muted-foreground mb-2">
+          Historic Salary Increases — % and / or flat monetary adjustment
+        </p>
+        <div className="overflow-x-auto">
+          <table className="text-sm whitespace-nowrap">
+            <thead>
+              <tr className="border-b bg-muted/40">
+                <th className="text-left px-4 py-2.5 font-medium text-muted-foreground text-xs w-56">Hotel</th>
+                {YEARS.map(y => (
+                  <th key={y} className="text-center px-3 py-2.5 font-medium text-muted-foreground text-xs w-32">{y}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedHotels.map((hotel, i) => {
+                const sym    = currencySymbol(hotel);
+                const hasNmw = showNmw(hotel);
+                return (
+                  <tr key={hotel.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
+                    {/* Hotel name cell — NMW label written once here, aligned via invisible spacer rows */}
+                    <td className="px-4 py-2 align-top">
+                      <div className="flex flex-col gap-1">
+                        {/* Row 1: hotel name — aligns with % input row */}
+                        <span className="text-xs font-medium">{hotel.name}</span>
+                        {hasNmw && <>
+                          {/* Row 2: invisible spacer — same structure as the R flat input row */}
+                          <div className="invisible flex items-center gap-0.5" aria-hidden="true">
+                            <span className="text-xs">{sym}</span>
+                            <span className="w-14 px-1.5 py-0.5 text-xs inline-block">·</span>
+                          </div>
+                          {/* Row 3: NMW label — aligns with the amber NMW input row */}
+                          <span className="text-[10px] font-medium text-amber-600">National Minimum Wage</span>
+                        </>}
+                      </div>
+                    </td>
+                    {YEARS.map(y => {
+                      const entry = increases[hotel.id]?.[y] ?? { pct: '', flat: '' };
+                      return (
+                        <td key={y} className="px-3 py-2 align-top">
+                          <div className="flex flex-col gap-1">
+                            {/* % row */}
+                            <div className="flex items-center gap-0.5">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={entry.pct}
+                                onChange={e => setIncreaseField(hotel.id, y, 'pct', e.target.value)}
+                                className="w-14 rounded border border-input px-1.5 py-0.5 text-xs text-right font-mono outline-none focus:ring-1 focus:ring-ring"
+                                placeholder="—"
+                              />
+                              <span className="text-xs text-muted-foreground">%</span>
+                            </div>
+                            {/* flat row */}
+                            <div className="flex items-center gap-0.5">
+                              <span className="text-xs text-muted-foreground">{sym}</span>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={entry.flat}
+                                onChange={e => setIncreaseField(hotel.id, y, 'flat', e.target.value)}
+                                className="w-14 rounded border border-input px-1.5 py-0.5 text-xs text-right font-mono outline-none focus:ring-1 focus:ring-ring"
+                                placeholder="—"
+                              />
+                            </div>
+                            {/* NMW input — SA hotels only, not APA; label is in the hotel name cell */}
+                            {hasNmw && (
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={nmw[y] ?? ''}
+                                onChange={e => setNmwCell(y, e.target.value)}
+                                className="w-14 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-xs text-right font-mono text-amber-700 outline-none focus:ring-1 focus:ring-amber-400"
+                                placeholder="—"
+                              />
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Notes + Save */}
+      <div className="flex items-end justify-between gap-4 pt-1">
+        <div className="flex-1 max-w-md">
+          <label className="text-xs font-medium text-muted-foreground block mb-1">Notes</label>
+          <textarea
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            rows={2}
+            placeholder="Any notes about increases or CPI context…"
+            className="w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring resize-none"
+          />
+        </div>
+        <button
+          onClick={saveAll}
+          className="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
+        >
+          {saved
+            ? <><CheckCircle className="h-4 w-4" /> Saved!</>
+            : <><Save className="h-4 w-4" /> Save All</>}
+        </button>
+      </div>
+    </div>
+  );
+}

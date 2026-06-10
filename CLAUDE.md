@@ -56,7 +56,7 @@ npm run build      # also runs TypeScript type-check (no separate tsc script)
 npm run start
 ```
 
-There is no dedicated `typecheck` or `lint` script — `npm run build` is the fastest way to catch type errors.
+There is no dedicated `typecheck` or `lint` script — `npm run build` is the fastest way to catch type errors. There are no tests and no test runner configured.
 
 ---
 
@@ -84,7 +84,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev mach
 
 ## Architecture Notes
 
-**Server vs client split**: `src/app/dashboard/page.tsx` (the main dashboard) is a **React Server Component** — it uses `src/lib/supabase/server.ts` and fetches data server-side. All other dashboard sub-pages (`employees/`, `import/`, `methods/`, `salary-review/`) are `'use client'` and query Supabase directly via `src/lib/supabase/client.ts`.
+**Server vs client split**: `src/app/dashboard/page.tsx` (the main dashboard) is a **React Server Component** — it uses `src/lib/supabase/server.ts` and fetches all hotels, active employees, all salary records, and payroll imports in a single `Promise.all`. `SalarySummaryTable.tsx` is `'use client'` despite being rendered inside the RSC page — it runs its own parallel Supabase queries client-side (hotels, employees, salary records, and scenarios). All other dashboard sub-pages (`employees/`, `import/`, `methods/`, `salary-review/`) are `'use client'` and query Supabase directly via `src/lib/supabase/client.ts`.
 
 **`latest_salary` DB view** — this view exists in the database but is not queried by the app. All pages compute the latest salary record client-side by sorting `salary_records` by `period_year` desc / `period_month` desc and taking the first match per `employee_id`.
 
@@ -189,6 +189,8 @@ All rates have fallback constants used when the hotel hasn't had migration 009 a
 - `incentiveApplicable` — sets `incentive = gross × multiplier / 12`; skips `bonus_provision`
 - `severanceApplicable` (BW) — `severance = basic/26 × (1 or 2 days/month based on tenure)`; also sets `provident_employee` and `provident_company` to 0 (BW rule: severance employees have no PF contributions)
 - `gratuityApplicable` — `gratuity = gross × rate%`
+
+**`yearsOfService` is not stored** — computed at render from `employment_date`: `Math.floor(ms / (365.25 days in ms) * 10) / 10` (1 decimal). Passed as `BurdenInput.yearsOfService` to drive the Botswana PF ER junior/senior tier split (< 5 yrs = 4.5%, ≥ 5 yrs = 9%) and severance rate (< 5 yrs = 1 day/month, ≥ 5 yrs = 2 days/month). The `yearsOfService()` helper is defined locally in `employees/page.tsx` — not a shared util.
 
 ### APA Director override
 
@@ -363,6 +365,9 @@ Zero monetary values display as "—" (not "R0" or "P0").
 `ANO`, `FTC`, `DNQ`, `Frontline`, `Supervisory`, `Management`, `Executive`
 
 Free-text variants like `"front line"`, `"exec"`, `"supervisor"` are normalised to the canonical form on import. The salary review grade filter and dashboard grade badges use these same canonical values. `Unclassified` is displayed for employees whose `grade_label` is null.
+
+The canonical grade sort order used in `dashboard/page.tsx` for per-hotel grade breakdowns:
+`['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Unclassified']`
 
 ---
 

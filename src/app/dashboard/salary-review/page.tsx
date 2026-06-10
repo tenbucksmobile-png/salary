@@ -6,7 +6,7 @@ import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { fmtZAR, fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
 import { TrendingUp, CheckCircle, Pencil, X, Check, Download, Save, Trash2, ChevronDown } from 'lucide-react';
 import { calculateBurden, BurdenResult } from '@/lib/payroll-calc';
-import { exportSalaryReview, ExportHotel } from '@/lib/excel-export';
+import { exportSalaryReview, ExportHotel, BenchmarkData } from '@/lib/excel-export';
 
 const GRADE_OPTIONS = ['All Grades', 'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive'];
 
@@ -548,9 +548,42 @@ export default function SalaryReviewPage() {
         return;
       }
 
+      // Read benchmark data saved on the Dashboard page
+      let benchmark: BenchmarkData | undefined;
+      try {
+        const rawCpi  = localStorage.getItem('ihg-salary-cpi');
+        const rawInc  = localStorage.getItem('ihg-salary-increases');
+        const rawNmw  = localStorage.getItem('ihg-salary-nmw');
+        const notes   = localStorage.getItem('ihg-salary-increase-notes') ?? '';
+        const month   = localStorage.getItem('ihg-salary-cpi-month') ?? 'July';
+        if (rawCpi || rawInc) {
+          // Migrate legacy string values to { pct, flat } shape
+          const parsedInc = rawInc
+            ? JSON.parse(rawInc) as Record<string, Record<string, unknown>>
+            : {};
+          const increases: BenchmarkData['increases'] = {};
+          for (const [hid, years] of Object.entries(parsedInc)) {
+            increases[hid] = {};
+            for (const [yr, val] of Object.entries(years)) {
+              increases[hid][yr] = (val && typeof val === 'object' && 'pct' in val)
+                ? val as BenchmarkData['increases'][string][string]
+                : { pct: typeof val === 'string' ? val : '', flat: '' };
+            }
+          }
+          benchmark = {
+            cpi:      rawCpi ? JSON.parse(rawCpi) as BenchmarkData['cpi'] : {},
+            increases,
+            nmw:      rawNmw ? JSON.parse(rawNmw) as BenchmarkData['nmw'] : {},
+            notes,
+            cpiMonth: month,
+            hotels: hotels.map(h => ({ id: h.id, name: h.name })),
+          };
+        }
+      } catch { /* skip benchmark if localStorage is unavailable */ }
+
       const date     = new Date().toISOString().slice(0, 10);
       const filename = `IHG_Salary_Review_${date}.xlsx`;
-      await exportSalaryReview(exportHotels, filename);
+      await exportSalaryReview(exportHotels, filename, benchmark);
     } finally {
       setExporting(false);
     }

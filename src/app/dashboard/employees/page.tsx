@@ -3,10 +3,10 @@
 import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, SalaryRecord } from '@/types/database';
-import { fmtZAR, fmtCurrency, sortHotels } from '@/lib/utils';
+import { fmtZAR, fmtCurrency, sortHotels, MONTH_NAMES } from '@/lib/utils';
 import Link from 'next/link';
-import { Search, SlidersHorizontal, X, Calculator, CheckCircle, Download, Trash2 } from 'lucide-react';
-import { calculateBurden } from '@/lib/payroll-calc';
+import { Search, SlidersHorizontal, X, Calculator, CheckCircle, Download, Trash2, UserPlus } from 'lucide-react';
+import { calculateBurden, BurdenResult } from '@/lib/payroll-calc';
 import { buildEmployeeCsv } from '@/lib/employee-csv';
 
 // ── Column definitions ────────────────────────────────────────────────────────
@@ -68,6 +68,71 @@ const HOTEL_FILTER_KEY   = 'ihg-salary-emp-hotel';
 
 const DEFAULT_VISIBLE = new Set(ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.id));
 
+const GRADE_OPTIONS  = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive'];
+const STATUS_OPTIONS = ['active', 'terminated', 'on_leave'] as const;
+
+// Maps each display ColId to its CSV column name. ColIds with no direct CSV
+// column (hotel, years_service, structure_sal) are omitted — they are skipped
+// when building the filtered export.
+const COL_TO_CSV: Partial<Record<ColId, string>> = {
+  employee_code:   'employee_code',
+  surname:         'surname',
+  name:            'first_name',
+  department:      'department',
+  title:           'job_title',
+  structure:       'grade_label',
+  employment_date: 'employment_date',
+  basic:           'basic_salary',
+  gross_salary:    'total_earnings',
+  ctc:             'ctc',
+  medical_co:      'medical_company',
+  provident_co:    'provident_company',
+  uif_co:          'uif_company',
+  sdl:             'sdl_company',
+  wca:             'wca_company',
+  staff_meals:     'staff_meals',
+  bonus_provision: 'bonus_provision',
+  incentive:       'incentive',
+  gratuity:        'gratuity',
+  severance:       'severance',
+  leave_accrual:   'leave_accrual',
+};
+
+interface AddForm {
+  hotel_id: string;
+  employee_code: string;
+  surname: string;
+  first_name: string;
+  job_title: string;
+  department_code: string;
+  grade_label: string;
+  status: 'active' | 'terminated' | 'on_leave';
+  employment_date: string;
+  basic_salary: number;
+  total_earnings: number;
+  period_month: number;
+  period_year: number;
+}
+
+function emptyAddForm(hotelId = ''): AddForm {
+  const d = new Date();
+  return {
+    hotel_id: hotelId,
+    employee_code: '',
+    surname: '',
+    first_name: '',
+    job_title: '',
+    department_code: '',
+    grade_label: '',
+    status: 'active',
+    employment_date: '',
+    basic_salary: 0,
+    total_earnings: 0,
+    period_month: d.getMonth() + 1,
+    period_year: d.getFullYear(),
+  };
+}
+
 function colKey(hotelId: string) { return `${STORAGE_KEY}-${hotelId}`; }
 
 function loadVisibleCols(hotelId: string): Set<ColId> {
@@ -125,6 +190,11 @@ export default function EmployeesPage() {
   const [exportHotel, setExportHotel] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addForm,      setAddForm]      = useState<AddForm>(emptyAddForm());
+  const [adding,       setAdding]       = useState(false);
+  const [addError,     setAddError]     = useState('');
+
   // Load persisted column visibility whenever the active hotel changes
   useEffect(() => {
     if (hotelFilter) setVisibleCols(loadVisibleCols(hotelFilter));
@@ -173,6 +243,152 @@ export default function EmployeesPage() {
   }
 
   useEffect(() => { load(); }, []);
+
+  function openAddModal() {
+    setAddForm(emptyAddForm(hotelFilter));
+    setAddError('');
+    setShowAddModal(true);
+  }
+
+  async function handleAdd() {
+    if (!addForm.surname.trim() || !addForm.first_name.trim()) {
+      setAddError('Surname and First Name are required.');
+      return;
+    }
+    if (!addForm.hotel_id) {
+      setAddError('Please select a hotel.');
+      return;
+    }
+    setAdding(true);
+    setAddError('');
+
+    const { data: emp, error: empErr } = await sb.from('employees').insert({
+      hotel_id:             addForm.hotel_id,
+      employee_code:        addForm.employee_code || null,
+      surname:              addForm.surname.trim(),
+      first_name:           addForm.first_name.trim(),
+      job_title:            addForm.job_title || null,
+      department_code:      addForm.department_code || null,
+      grade_label:          addForm.grade_label || null,
+      status:               addForm.status,
+      employment_date:      addForm.employment_date || null,
+      nmw_applicable:       false,
+      severance_applicable: false,
+      incentive_applicable: false,
+      incentive_multiplier: 2,
+      gratuity_applicable:  false,
+      gratuity_rate:        0,
+    }).select().single();
+
+    if (empErr || !emp) {
+      setAddError(empErr?.message ?? 'Failed to create employee.');
+      setAdding(false);
+      return;
+    }
+
+    const hotel         = hotelMap.get(addForm.hotel_id);
+    const totalEarnings = addForm.total_earnings || addForm.basic_salary;
+    let burden: BurdenResult | null = null;
+
+    if (hotel && addForm.basic_salary > 0) {
+      burden = calculateBurden({
+        basic:                 addForm.basic_salary,
+        totalEarnings:         totalEarnings,
+        jobTitle:              addForm.job_title || null,
+        country:               hotel.country,
+        wcaRate:               hotel.wca_rate ?? 0,
+        hotelShortCode:        hotel.short_code,
+        yearsOfService:        yearsOfService(addForm.employment_date) ?? 0,
+        severanceApplicable:   false,
+        incentiveApplicable:   false,
+        incentiveMultiplier:   2,
+        gratuityApplicable:    false,
+        gratuityRate:          0,
+        taxPaye:               0,
+        medicalEmployee:       0,
+        medicalCompany:        0,
+        ancillaEmployee:       0,
+        ancillaCompany:        0,
+        leaveProvision:        0,
+        otherCompanyContrib:   0,
+        mgmtIncentive:         0,
+        bonusAccrualDec:       0,
+        bonusAccrualJuly:      0,
+        providentEeRate:       hotel.provident_ee_rate        ?? undefined,
+        providentErRate:       hotel.provident_er_rate        ?? undefined,
+        providentErRateSenior: hotel.provident_er_rate_senior ?? undefined,
+        uifRate:               hotel.uif_rate                 ?? undefined,
+        uifCap:                hotel.uif_cap                  ?? undefined,
+        sdlRate:               hotel.sdl_rate                 ?? undefined,
+        mealsStandard:         hotel.meals_standard           ?? undefined,
+        mealsManager:          hotel.meals_manager            ?? undefined,
+        leaveDays:             hotel.leave_days               ?? undefined,
+        bonusDays:             hotel.bonus_days               ?? undefined,
+        ctcProvidentEr:        hotel.ctc_provident_er         ?? undefined,
+        ctcUifEr:              hotel.ctc_uif_er               ?? undefined,
+        ctcSdl:                hotel.ctc_sdl                  ?? undefined,
+        ctcWca:                hotel.ctc_wca                  ?? undefined,
+        ctcMeals:              hotel.ctc_meals                ?? undefined,
+        ctcLeaveAccrual:       hotel.ctc_leave_accrual        ?? undefined,
+        ctcBonus:              hotel.ctc_bonus                ?? undefined,
+        leaveAccrualPct:       hotel.leave_accrual_pct        ?? undefined,
+        bonusProvisionPct:     hotel.bonus_provision_pct      ?? undefined,
+      });
+    }
+
+    const { error: salErr } = await sb.from('salary_records').insert({
+      employee_id:           (emp as any).id,
+      period_month:          addForm.period_month,
+      period_year:           addForm.period_year,
+      basic_salary:          addForm.basic_salary,
+      total_earnings:        totalEarnings,
+      allowances:            {},
+      tax_paye:              0,
+      uif_employee:          burden?.uif_employee          ?? 0,
+      medical_employee:      0,
+      ancilla_employee:      0,
+      provident_employee:    burden?.provident_employee    ?? 0,
+      total_deductions:      burden?.total_deductions      ?? 0,
+      uif_company:           burden?.uif_company           ?? 0,
+      medical_company:       0,
+      provident_company:     burden?.provident_company     ?? 0,
+      sdl_company:           burden?.sdl_company           ?? 0,
+      ancilla_company:       0,
+      total_company_contrib: burden?.total_company_contrib ?? 0,
+      wca_company:           burden?.wca_company           ?? 0,
+      staff_meals:           burden?.staff_meals           ?? 0,
+      bonus_provision:       burden?.bonus_provision       ?? 0,
+      incentive:             0,
+      leave_provision:       0,
+      other_company_contrib: 0,
+      total_payroll_burden:  burden?.total_payroll_burden  ?? 0,
+      total_cost:            burden?.total_cost            ?? totalEarnings,
+      leave_days:            burden?.leave_days            ?? 0,
+      leave_accrual:         burden?.leave_accrual         ?? 0,
+      bonus_payout_factor:   0,
+      bonus_accrual_dec:     0,
+      bonus_accrual_july:    0,
+      mgmt_incentive:        0,
+      severance:             0,
+      gratuity:              0,
+      increase_amount:       0,
+      adjustment:            0,
+      increase_pct:          0,
+      new_basic:             0,
+      new_ctc:               0,
+      net_salary:            burden?.net_salary            ?? totalEarnings,
+      ctc:                   burden?.ctc                   ?? totalEarnings,
+    });
+
+    setAdding(false);
+    if (salErr) {
+      setAddError(`Employee created but salary record failed: ${salErr.message}`);
+      await load();
+      return;
+    }
+    setShowAddModal(false);
+    await load();
+  }
 
   const hotelMap = useMemo(() => new Map((hotels).map(h => [h.id, h])), [hotels]);
 
@@ -256,7 +472,17 @@ export default function EmployeesPage() {
     const hotel = hotelMap.get(exportHotel);
     if (!hotel) return;
     const hotelEmployees = employees.filter(e => e.hotel_id === exportHotel);
-    const csv = buildEmployeeCsv(hotelEmployees, latestSalary);
+
+    // Resolve which CSV columns to emit — use the saved column picker selection
+    // for the export hotel, mapped through COL_TO_CSV. Columns with no CSV
+    // equivalent (hotel, years_service, structure_sal) are silently skipped.
+    const savedCols = loadVisibleCols(exportHotel);
+    const csvCols = ALL_COLUMNS
+      .filter(c => savedCols.has(c.id))
+      .map(c => COL_TO_CSV[c.id])
+      .filter((c): c is string => !!c);
+
+    const csv = buildEmployeeCsv(hotelEmployees, latestSalary, csvCols.length ? csvCols : undefined);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -443,6 +669,14 @@ export default function EmployeesPage() {
               ? <><Calculator className="h-4 w-4 animate-pulse" /> Calculating…</>
               : <><Calculator className="h-4 w-4" /> Calculate Burden</>}
           </button>
+          {/* Add Employee */}
+          <button
+            onClick={openAddModal}
+            className="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            <UserPlus className="h-4 w-4" />
+            Add Employee
+          </button>
         </div>
       </div>
 
@@ -523,6 +757,171 @@ export default function EmployeesPage() {
         </div>
       </div>
 
+      {/* Add Employee Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowAddModal(false)} />
+          <div className="relative bg-white rounded-xl border shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b shrink-0">
+              <h2 className="text-base font-semibold">Add Employee</h2>
+              <button onClick={() => setShowAddModal(false)}><X className="h-4 w-4 text-muted-foreground" /></button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 px-6 py-4 space-y-4">
+              <AddField label="Hotel">
+                <select
+                  value={addForm.hotel_id}
+                  onChange={e => setAddForm(f => ({ ...f, hotel_id: e.target.value }))}
+                  className="w-full rounded-md border border-input px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="">— Select hotel —</option>
+                  {hotels.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
+                </select>
+              </AddField>
+
+              <div className="grid grid-cols-2 gap-4">
+                <AddField label="Surname *">
+                  <input
+                    value={addForm.surname}
+                    onChange={e => setAddForm(f => ({ ...f, surname: e.target.value }))}
+                    className="w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                    placeholder="e.g. Smith"
+                  />
+                </AddField>
+                <AddField label="First Name *">
+                  <input
+                    value={addForm.first_name}
+                    onChange={e => setAddForm(f => ({ ...f, first_name: e.target.value }))}
+                    className="w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                    placeholder="e.g. John"
+                  />
+                </AddField>
+              </div>
+
+              <AddField label="Employee Code">
+                <input
+                  value={addForm.employee_code}
+                  onChange={e => setAddForm(f => ({ ...f, employee_code: e.target.value }))}
+                  className="w-full rounded-md border border-input px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="Optional — leave blank for ANO positions"
+                />
+              </AddField>
+
+              <div className="grid grid-cols-2 gap-4">
+                <AddField label="Job Title">
+                  <input
+                    value={addForm.job_title}
+                    onChange={e => setAddForm(f => ({ ...f, job_title: e.target.value }))}
+                    className="w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </AddField>
+                <AddField label="Department Code">
+                  <input
+                    value={addForm.department_code}
+                    onChange={e => setAddForm(f => ({ ...f, department_code: e.target.value }))}
+                    className="w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </AddField>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <AddField label="Grade">
+                  <select
+                    value={addForm.grade_label}
+                    onChange={e => setAddForm(f => ({ ...f, grade_label: e.target.value }))}
+                    className="w-full rounded-md border border-input px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="">— Not set —</option>
+                    {GRADE_OPTIONS.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </AddField>
+                <AddField label="Status">
+                  <select
+                    value={addForm.status}
+                    onChange={e => setAddForm(f => ({ ...f, status: e.target.value as AddForm['status'] }))}
+                    className="w-full rounded-md border border-input px-3 py-2 text-sm bg-white outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </AddField>
+              </div>
+
+              <AddField label="Employment Date">
+                <input
+                  type="date"
+                  value={addForm.employment_date}
+                  onChange={e => setAddForm(f => ({ ...f, employment_date: e.target.value }))}
+                  className="w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                />
+              </AddField>
+
+              <div className="border-t pt-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Initial Salary</p>
+                <div className="grid grid-cols-2 gap-4 mb-3">
+                  <AddField label="Basic Salary">
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={addForm.basic_salary || ''}
+                      onChange={e => setAddForm(f => ({ ...f, basic_salary: parseFloat(e.target.value) || 0 }))}
+                      className="w-full rounded-md border border-input px-3 py-2 text-sm text-right font-mono outline-none focus:ring-2 focus:ring-ring"
+                      placeholder="0"
+                    />
+                  </AddField>
+                  <AddField label="Gross Salary">
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={addForm.total_earnings || ''}
+                      onChange={e => setAddForm(f => ({ ...f, total_earnings: parseFloat(e.target.value) || 0 }))}
+                      className="w-full rounded-md border border-input px-3 py-2 text-sm text-right font-mono outline-none focus:ring-2 focus:ring-ring"
+                      placeholder="Same as basic if no allowances"
+                    />
+                  </AddField>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground w-12 shrink-0">Period</span>
+                  <select
+                    value={addForm.period_month}
+                    onChange={e => setAddForm(f => ({ ...f, period_month: Number(e.target.value) }))}
+                    className="rounded-md border border-input px-2 py-1.5 text-sm bg-white outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+                  </select>
+                  <input
+                    type="number"
+                    value={addForm.period_year}
+                    onChange={e => setAddForm(f => ({ ...f, period_year: Number(e.target.value) }))}
+                    className="w-24 rounded-md border border-input px-2 py-1.5 text-sm text-right font-mono outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+              </div>
+
+              {addError && <p className="text-xs text-red-600">{addError}</p>}
+            </div>
+
+            <div className="px-6 py-4 border-t shrink-0 flex justify-end gap-3">
+              <button
+                onClick={() => setShowAddModal(false)}
+                className="rounded-md border border-input px-4 py-2 text-sm font-medium hover:bg-muted transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAdd}
+                disabled={adding}
+                className="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                <UserPlus className="h-4 w-4" />
+                {adding ? 'Adding…' : 'Add Employee'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-white rounded-xl border overflow-x-auto">
         <table className="w-full text-sm whitespace-nowrap">
@@ -578,6 +977,15 @@ export default function EmployeesPage() {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function AddField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="text-xs font-medium text-muted-foreground block mb-1">{label}</label>
+      {children}
     </div>
   );
 }

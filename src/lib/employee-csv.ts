@@ -95,69 +95,75 @@ function cell(v: string | number | boolean | null | undefined | Record<string, u
   return s;
 }
 
+function rowValue(col: string, e: Employee, s: SalaryRecord | undefined): string {
+  switch (col) {
+    case 'employee_code':         return cell(e.employee_code);
+    case 'surname':               return cell(e.surname);
+    case 'first_name':            return cell(e.first_name);
+    case 'aka':                   return cell(e.aka);
+    case 'job_title':             return cell(e.job_title);
+    case 'department':            return cell(e.department_code);
+    case 'grade_label':           return cell(e.grade_label);
+    case 'employment_date':       return cell(e.employment_date);
+    case 'status':                return cell(e.status);
+    case 'nmw_applicable':        return cell(e.nmw_applicable);
+    case 'severance_applicable':  return cell(e.severance_applicable);
+    case 'incentive_applicable':  return cell(e.incentive_applicable);
+    case 'incentive_multiplier':  return cell(e.incentive_multiplier);
+    case 'gratuity_applicable':   return cell(e.gratuity_applicable);
+    case 'gratuity_rate':         return cell(e.gratuity_rate);
+    case 'comments':              return cell(e.comments);
+    case 'period_month':          return cell(s?.period_month         ?? '');
+    case 'period_year':           return cell(s?.period_year          ?? '');
+    case 'basic_salary':          return cell(s?.basic_salary         ?? '');
+    case 'allowances':            return s ? cell(s.allowances as Record<string, unknown>) : '{}';
+    case 'total_earnings':        return cell(s?.total_earnings        ?? '');
+    case 'tax_paye':              return cell(s?.tax_paye              ?? '');
+    case 'uif_employee':          return cell(s?.uif_employee          ?? '');
+    case 'medical_employee':      return cell(s?.medical_employee      ?? '');
+    case 'ancilla_employee':      return cell(s?.ancilla_employee      ?? '');
+    case 'provident_employee':    return cell(s?.provident_employee    ?? '');
+    case 'total_deductions':      return cell(s?.total_deductions      ?? '');
+    case 'uif_company':           return cell(s?.uif_company           ?? '');
+    case 'medical_company':       return cell(s?.medical_company       ?? '');
+    case 'provident_company':     return cell(s?.provident_company     ?? '');
+    case 'sdl_company':           return cell(s?.sdl_company           ?? '');
+    case 'ancilla_company':       return cell(s?.ancilla_company       ?? '');
+    case 'total_company_contrib': return cell(s?.total_company_contrib ?? '');
+    case 'wca_company':           return cell(s?.wca_company           ?? '');
+    case 'staff_meals':           return cell(s?.staff_meals           ?? '');
+    case 'bonus_provision':       return cell(s?.bonus_provision       ?? '');
+    case 'incentive':             return cell(s?.incentive             ?? '');
+    case 'leave_provision':       return cell(s?.leave_provision       ?? '');
+    case 'other_company_contrib': return cell(s?.other_company_contrib ?? '');
+    case 'total_payroll_burden':  return cell(s?.total_payroll_burden  ?? '');
+    case 'total_cost':            return cell(s?.total_cost            ?? '');
+    case 'leave_days':            return cell(s?.leave_days            ?? '');
+    case 'leave_accrual':         return cell(s?.leave_accrual         ?? '');
+    case 'bonus_payout_factor':   return cell(s?.bonus_payout_factor   ?? '');
+    case 'bonus_accrual_dec':     return cell(s?.bonus_accrual_dec     ?? '');
+    case 'bonus_accrual_july':    return cell(s?.bonus_accrual_july    ?? '');
+    case 'mgmt_incentive':        return cell(s?.mgmt_incentive        ?? '');
+    case 'severance':             return cell(s?.severance             ?? '');
+    case 'gratuity':              return cell(s?.gratuity              ?? '');
+    case 'net_salary':            return cell(s?.net_salary            ?? '');
+    case 'ctc':                   return cell(s?.ctc                   ?? '');
+    default:                      return '';
+  }
+}
+
+// columns defaults to the full CSV_COLUMNS list for backward-compatible round-trip exports.
+// Pass a filtered list to emit only specific columns (e.g. matching the column picker selection).
 export function buildEmployeeCsv(
   employees: Employee[],
   latestSalary: Map<string, SalaryRecord>,
+  columns: readonly string[] = CSV_COLUMNS,
 ): string {
-  const header = CSV_COLUMNS.join(',');
-
+  const header = columns.join(',');
   const rows = employees.map(e => {
     const s = latestSalary.get(e.id);
-    return [
-      cell(e.employee_code),
-      cell(e.surname),
-      cell(e.first_name),
-      cell(e.aka),
-      cell(e.job_title),
-      cell(e.department_code),
-      cell(e.grade_label),
-      cell(e.employment_date),
-      cell(e.status),
-      cell(e.nmw_applicable),
-      cell(e.severance_applicable),
-      cell(e.incentive_applicable),
-      cell(e.incentive_multiplier),
-      cell(e.gratuity_applicable),
-      cell(e.gratuity_rate),
-      cell(e.comments),
-      cell(s?.period_month  ?? ''),
-      cell(s?.period_year   ?? ''),
-      cell(s?.basic_salary  ?? ''),
-      s ? cell(s.allowances as Record<string, unknown>) : '{}',
-      cell(s?.total_earnings        ?? ''),
-      cell(s?.tax_paye              ?? ''),
-      cell(s?.uif_employee          ?? ''),
-      cell(s?.medical_employee      ?? ''),
-      cell(s?.ancilla_employee      ?? ''),
-      cell(s?.provident_employee    ?? ''),
-      cell(s?.total_deductions      ?? ''),
-      cell(s?.uif_company           ?? ''),
-      cell(s?.medical_company       ?? ''),
-      cell(s?.provident_company     ?? ''),
-      cell(s?.sdl_company           ?? ''),
-      cell(s?.ancilla_company       ?? ''),
-      cell(s?.total_company_contrib ?? ''),
-      cell(s?.wca_company           ?? ''),
-      cell(s?.staff_meals           ?? ''),
-      cell(s?.bonus_provision       ?? ''),
-      cell(s?.incentive             ?? ''),
-      cell(s?.leave_provision       ?? ''),
-      cell(s?.other_company_contrib ?? ''),
-      cell(s?.total_payroll_burden  ?? ''),
-      cell(s?.total_cost            ?? ''),
-      cell(s?.leave_days            ?? ''),
-      cell(s?.leave_accrual         ?? ''),
-      cell(s?.bonus_payout_factor   ?? ''),
-      cell(s?.bonus_accrual_dec     ?? ''),
-      cell(s?.bonus_accrual_july    ?? ''),
-      cell(s?.mgmt_incentive        ?? ''),
-      cell(s?.severance             ?? ''),
-      cell(s?.gratuity              ?? ''),
-      cell(s?.net_salary            ?? ''),
-      cell(s?.ctc                   ?? ''),
-    ].join(',');
+    return columns.map(col => rowValue(col, e, s)).join(',');
   });
-
   return [header, ...rows].join('\r\n');
 }
 
