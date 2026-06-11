@@ -433,9 +433,13 @@ export default function ReconciliationPage() {
       const pay = payMap.get(code);
       return {
         empCode: code,
-        name: pay?.name ?? furnMap.get(code)?.name ?? loanMap.has(code)
-          ? (afritecStmt?.lines.find(l => l.empCode === code) ?? toplineStmt?.lines.find(l => l.empCode === code))?.name ?? code
-          : code,
+        name: pay?.name
+          ?? furnMap.get(code)?.name
+          ?? afritecStmt?.lines.find(l => l.empCode === code)?.name
+          ?? toplineStmt?.lines.find(l => l.empCode === code)?.name
+          ?? cbMap.get(code)?.name
+          ?? boduloMap.get(code)?.name
+          ?? code,
         furnmart_stmt: furnmartStmt ? (furnMap.get(code)?.amount ?? null) : null,
         furnmart_pay: furnmartStmt && pay ? pay.furnmart : null,
         loan_stmt: hasLoan ? (loanMap.get(code) ?? null) : null,
