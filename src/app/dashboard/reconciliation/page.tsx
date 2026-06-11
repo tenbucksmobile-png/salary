@@ -459,29 +459,16 @@ export default function ReconciliationPage() {
             ))}
           </div>
 
-          {/* Period selectors */}
+          {/* Status + workflow — right side */}
           <div className="flex items-center gap-2 ml-auto">
-            <select
-              value={month}
-              onChange={e => setMonth(Number(e.target.value))}
-              className="border rounded px-2 py-1 text-sm"
-            >
-              {MONTH_NAMES.map((m, i) => (
-                <option key={i} value={i + 1}>{m}</option>
-              ))}
-            </select>
-            <select
-              value={year}
-              onChange={e => setYear(Number(e.target.value))}
-              className="border rounded px-2 py-1 text-sm"
-            >
-              {years.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-
-            {/* Status badge */}
             {period && (
               <span className={`px-2 py-0.5 rounded text-xs font-semibold ${STATUS_COLORS[period.status]}`}>
                 {STATUS_LABELS[period.status]}
+              </span>
+            )}
+            {period && (
+              <span className="text-sm text-muted-foreground">
+                {MONTH_NAMES[month - 1]} {year}
               </span>
             )}
 
@@ -538,10 +525,27 @@ export default function ReconciliationPage() {
         {/* ═════ UPLOAD TAB ═════ */}
         {tab === 'upload' && (
           <div className="max-w-3xl space-y-3">
-            <p className="text-sm text-muted-foreground mb-4">
-              Upload files for <strong>{hotel?.name}</strong> — {MONTH_NAMES[month - 1]} {year}.
-              Re-upload any file to replace it.
-            </p>
+            {/* Period selector */}
+            <div className="flex items-center gap-3 rounded-lg border bg-white px-4 py-3 mb-2">
+              <span className="text-sm font-medium text-muted-foreground">Uploading for</span>
+              <select
+                value={month}
+                onChange={e => setMonth(Number(e.target.value))}
+                className="border rounded px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                {MONTH_NAMES.map((m, i) => (
+                  <option key={i} value={i + 1}>{m}</option>
+                ))}
+              </select>
+              <select
+                value={year}
+                onChange={e => setYear(Number(e.target.value))}
+                className="border rounded px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                {years.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <span className="text-sm text-muted-foreground">— <strong>{hotel?.name}</strong></span>
+            </div>
 
             {UPLOAD_CONFIGS.map(cfg => {
               const existing = uploads.find(u => u.upload_type === cfg.type);
