@@ -37,6 +37,11 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
     payrollKey: null,
   },
   {
+    type: 'twelve_months', label: '12 Months Payroll Report', required: false,
+    accept: '.pdf', desc: '12-month monthly analysis report (PDF)',
+    payrollKey: null,
+  },
+  {
     type: 'afritec', label: 'Afritec Loan Statement', required: false,
     accept: '.xls,.xlsx', desc: 'Monthly loan instalment schedule (.xls)',
     payrollKey: 'staffLoans',
@@ -108,6 +113,7 @@ export default function ReconciliationPage() {
   const [uploads, setUploads] = useState<ReconUpload[]>([]);
   const [queries, setQueries] = useState<ReconQuery[]>([]);
   const [tab, setTab] = useState<'upload' | 'deductions' | 'changes' | 'queries'>('upload');
+  const [dedFilter, setDedFilter] = useState<'all' | 'furnmart' | 'loans' | 'cbstores' | 'bodulo'>('all');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
@@ -207,10 +213,39 @@ export default function ReconciliationPage() {
 
   // ── File upload ───────────────────────────────────────────────────────────
 
+  function viewPdf(upload: ReconUpload) {
+    const b64 = upload.parsed_data?.base64 as string | undefined;
+    if (!b64) return;
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+    window.open(url, '_blank');
+  }
+
   async function handleUpload(type: ReconUploadType, file: File) {
     setUploading(type);
     try {
       const buf = await file.arrayBuffer();
+
+      // PDF — store as base64, no parsing
+      if (type === 'twelve_months') {
+        const bytes = new Uint8Array(buf);
+        let binary = '';
+        bytes.forEach(b => { binary += String.fromCharCode(b); });
+        const base64 = btoa(binary);
+        const pid = await ensurePeriod();
+        const { error } = await supabase.from('recon_uploads').upsert(
+          { period_id: pid, upload_type: type, file_name: file.name,
+            parsed_data: { base64 }, row_count: null, total_amount: null, uploaded_by: username },
+          { onConflict: 'period_id,upload_type' },
+        );
+        if (error) throw error;
+        const { data: ups } = await supabase.from('recon_uploads').select('*').eq('period_id', pid).order('uploaded_at');
+        setUploads((ups || []) as ReconUpload[]);
+        return;
+      }
+
       let parsed: ParsedStatement | ParsedPayroll;
 
       if (type === 'payroll')   parsed = await parsePayrollXlsx(buf, file.name);
@@ -573,6 +608,14 @@ export default function ReconciliationPage() {
                       {existing.row_count != null && (
                         <span className="text-xs text-muted-foreground">{existing.row_count} rows</span>
                       )}
+                      {cfg.type === 'twelve_months' && (
+                        <button
+                          onClick={() => viewPdf(existing)}
+                          className="text-xs text-blue-600 hover:underline"
+                        >
+                          View
+                        </button>
+                      )}
                       <button
                         onClick={() => fileRefs.current[cfg.type]?.click()}
                         className="text-xs text-blue-600 hover:underline"
@@ -679,31 +722,54 @@ export default function ReconciliationPage() {
                 {/* Per-employee table */}
                 {empRows.length > 0 && summaryRows.length > 0 && (
                   <div>
-                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                      Employee Detail
-                    </h2>
+                    <div className="flex items-center justify-between mb-3">
+                      <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                        Employee Detail
+                      </h2>
+                      <div className="flex gap-1">
+                        {([
+                          { key: 'all',      label: 'All' },
+                          furnmartStmt ? { key: 'furnmart', label: 'Furnmart' }  : null,
+                          hasLoan      ? { key: 'loans',    label: 'Loans' }     : null,
+                          cbStmt       ? { key: 'cbstores', label: 'CB Stores' } : null,
+                          boduloStmt   ? { key: 'bodulo',   label: 'Bodulo' }    : null,
+                        ]).filter(Boolean).map((f: any) => (
+                          <button
+                            key={f.key}
+                            onClick={() => setDedFilter(f.key)}
+                            className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                              dedFilter === f.key
+                                ? 'bg-primary text-primary-foreground'
+                                : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                            }`}
+                          >
+                            {f.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <div className="overflow-x-auto">
                       <table className="text-xs border rounded w-full whitespace-nowrap">
                         <thead>
                           <tr className="bg-[#1B3A5C] text-white">
                             <th className="px-3 py-2 text-left">Code</th>
                             <th className="px-3 py-2 text-left">Name</th>
-                            {furnmartStmt && <>
+                            {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
                               <th className="px-3 py-2 text-right">Furnmart Stmt</th>
                               <th className="px-3 py-2 text-right">Furnmart Pay</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
-                            {hasLoan && <>
+                            {hasLoan && (dedFilter === 'all' || dedFilter === 'loans') && <>
                               <th className="px-3 py-2 text-right">Loans Stmt</th>
                               <th className="px-3 py-2 text-right">Loans Pay</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
-                            {cbStmt && <>
+                            {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
                               <th className="px-3 py-2 text-right">CB Stores Stmt</th>
                               <th className="px-3 py-2 text-right">CB Stores Pay</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
-                            {boduloStmt && <>
+                            {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
                               <th className="px-3 py-2 text-right">Bodulo Stmt</th>
                               <th className="px-3 py-2 text-right">Bodulo Pay</th>
                               <th className="px-3 py-2 text-right">±</th>
@@ -729,28 +795,28 @@ export default function ReconciliationPage() {
                               <tr key={row.empCode} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${hasDiscrep ? 'ring-1 ring-inset ring-orange-200' : ''}`}>
                                 <td className="px-3 py-1.5 font-mono text-xs">{row.empCode}</td>
                                 <td className="px-3 py-1.5 max-w-[140px] truncate">{row.name}</td>
-                                {furnmartStmt && <>
+                                {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${furnDiff != null ? diffClass(furnDiff) : ''}`}>
                                     {furnDiff != null ? fmtDiff(furnDiff, country) : '—'}
                                   </td>
                                 </>}
-                                {hasLoan && <>
+                                {hasLoan && (dedFilter === 'all' || dedFilter === 'loans') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.loan_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.loan_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${loanDiff != null ? diffClass(loanDiff) : ''}`}>
                                     {loanDiff != null ? fmtDiff(loanDiff, country) : '—'}
                                   </td>
                                 </>}
-                                {cbStmt && <>
+                                {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.cb_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.cb_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${cbDiff != null ? diffClass(cbDiff) : ''}`}>
                                     {cbDiff != null ? fmtDiff(cbDiff, country) : '—'}
                                   </td>
                                 </>}
-                                {boduloStmt && <>
+                                {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${bodDiff != null ? diffClass(bodDiff) : ''}`}>
