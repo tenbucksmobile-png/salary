@@ -165,6 +165,46 @@ export interface EmployeeWithSalary extends Employee {
   latest_salary?: SalaryRecord;
 }
 
+// Reconciliation types
+export type ReconUploadType = 'payroll' | 'afritec' | 'topline' | 'furnmart' | 'cbstores' | 'bodulo' | 'medical';
+export type ReconStatus = 'open' | 'submitted' | 'approved';
+
+export interface ReconciliationPeriod {
+  id: string;
+  hotel_id: string;
+  period_year: number;
+  period_month: number;
+  status: ReconStatus;
+  notes: string | null;
+  created_at: string;
+  submitted_at: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
+}
+
+export interface ReconUpload {
+  id: string;
+  period_id: string;
+  upload_type: ReconUploadType;
+  file_name: string | null;
+  parsed_data: any;
+  row_count: number | null;
+  total_amount: number | null;
+  uploaded_at: string;
+  uploaded_by: string | null;
+}
+
+export interface ReconQuery {
+  id: string;
+  period_id: string;
+  message: string;
+  created_at: string;
+  author_name: string | null;
+  resolved_at: string | null;
+  resolver_name: string | null;
+  resolved_message: string | null;
+}
+
 // Dashboard stat per hotel
 export interface HotelStats {
   hotel: Hotel;
