@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Users, Upload, TrendingUp, Settings, Shield } from 'lucide-react';
+import { LayoutDashboard, Users, Upload, TrendingUp, Settings, Shield, BarChart2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ADMIN_NAV = [
@@ -10,6 +10,7 @@ const ADMIN_NAV = [
   { label: 'Employees',      href: '/dashboard/employees',     icon: Users },
   { label: 'Import Payroll', href: '/dashboard/import',        icon: Upload },
   { label: 'Salary Review',  href: '/dashboard/salary-review', icon: TrendingUp },
+  { label: 'Reports',        href: '/dashboard/reports',       icon: BarChart2 },
   { label: 'Methods',        href: '/dashboard/methods',       icon: Settings },
   { label: 'Access',         href: '/dashboard/access',        icon: Shield },
 ];

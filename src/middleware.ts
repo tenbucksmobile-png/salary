@@ -4,6 +4,7 @@ import { verifyToken, COOKIE_NAME } from '@/lib/auth';
 const SUB_BLOCKED = [
   '/dashboard/methods',
   '/dashboard/salary-review',
+  '/dashboard/reports',
   '/dashboard/access',
   '/dashboard/settings',
 ];

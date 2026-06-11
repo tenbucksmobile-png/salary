@@ -96,7 +96,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev mach
 
 **Salary records are period-keyed** — the unique constraint is `(employee_id, period_year, period_month)`. Imports upsert on this key. The Salary Review commit creates a new record for the target month.
 
-**Auth flow**: `POST /api/auth/login` queries the `users` table, verifies HMAC password hash, issues signed cookie. `middleware.ts` verifies the cookie and enforces role-based access. `POST /api/auth/logout` clears the cookie. `GET /api/auth/me` returns the current `UserContext`. Admin CRUD for users at `POST/PATCH/DELETE /api/access`.
+**Auth flow**: `POST /api/auth/login` queries the `users` table, verifies HMAC password hash, issues signed cookie (`ihg-salary-auth`, 30-day max-age). `middleware.ts` verifies the cookie and enforces role-based access. `POST /api/auth/logout` clears the cookie. `GET /api/auth/me` returns the current `UserContext`. Admin CRUD for users at `POST/PATCH/DELETE /api/access`.
 
 **UserContext** (encoded in cookie): `{ id, username, role: 'admin'|'sub', hotelIds: string[]|null }`. `hotelIds: null` means all hotels (admin). Sub-users are restricted to assigned hotels and can only access `/dashboard/employees` and `/dashboard/import`.
 
@@ -271,6 +271,7 @@ src/
     excel-export.ts       — Salary review Excel export (xlsx-js-style)
     supabase/
       client.ts           — Browser Supabase client (used by all dashboard pages)
+      server.ts           — Server-side Supabase client (used only in RSC `dashboard/page.tsx`)
     utils.ts              — fmtZAR(), fmtCurrency(), MONTH_NAMES, sortHotels(), cn()
   components/
     nav-sidebar.tsx       — Role-aware navigation; admin sees all tabs, sub sees Employees + Import only
