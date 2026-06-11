@@ -132,10 +132,10 @@ export default function ReconciliationPage() {
   useEffect(() => {
     supabase.from('hotels').select('*').then(({ data }) => {
       if (data) {
-        const sorted = sortHotels(data as Hotel[]);
-        setHotels(sorted);
-        // Default to NataLodge or first Botswana hotel
-        const nl = sorted.find(h => h.short_code === 'NL') || sorted[0];
+        const RECON_CODES = ['CFE', 'CSL', 'NL'];
+        const filtered = sortHotels(data as Hotel[]).filter(h => RECON_CODES.includes(h.short_code));
+        setHotels(filtered);
+        const nl = filtered.find(h => h.short_code === 'NL') || filtered[0];
         if (nl) setHotelId(nl.id);
       }
       setLoading(false);
