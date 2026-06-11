@@ -12,6 +12,8 @@ Core workflows:
 - **Export** employees per hotel as a CSV, edit offsite, and re-import
 - **Calculate payroll burden** automatically (provident fund, UIF, SDL, WCA, staff meals, leave accrual, bonus, incentive, severance, gratuity)
 - **Salary review** forecasting — per-hotel % or flat increase with per-employee overrides and exclusions; save drafts persistently; commit to salary records
+- **Reports** — flexible builder: pick hotels, fields, individual vs summary view, period; export to Excel or PDF
+- **Reconciliation** — monthly three-way cross-check for CSL, NL, CFE: third-party statements vs payroll, prior-month headcount and salary changes; query/response workflow
 - **Methods** — configure all statutory rates and CTC inclusion flags per hotel; "Save & Update All" recalculates every active employee
 - **Access** — admin-only user management; assign sub-users to specific hotels
 
@@ -140,6 +142,7 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `012_draft_scenarios.sql` | `hotel_id` + `settings_json` on `increase_scenarios` for per-hotel persistent drafts |
 | `013_employee_code_nullable.sql` | `ALTER TABLE employees ALTER COLUMN employee_code DROP NOT NULL` — allows ANO positions without an employee |
 | `014_clear_csl_nl_employee_codes.sql` | Clears `employee_code` to NULL for all CSL and NL employees (codes were incorrectly generated) |
+| `015_reconciliation.sql` | `reconciliation_periods`, `recon_uploads`, `recon_queries` tables for the monthly payroll reconciliation workflow |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -263,21 +266,25 @@ src/
       methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All
       settings/page.tsx   — Redirects to /dashboard/methods
       salary-review/page.tsx — Per-hotel increase builder; drafts persist to DB; commit to salary_records
+      reports/page.tsx    — Flexible report builder; Excel + PDF export
+      reconciliation/page.tsx — Monthly payroll reconciliation for CSL/NL/CFE (admin-only)
   lib/
     auth.ts               — UserContext, makeToken(), verifyToken(), hashPassword() — Edge-compatible
     payroll-calc.ts       — calculateBurden(); isBotswana(), isManager(); BurdenInput/BurdenResult
     vip-parser.ts         — VIP 710, TSV employee details, medical aid parsers
     employee-csv.ts       — Round-trip CSV export builder (buildEmployeeCsv) + import parser
     excel-export.ts       — Salary review Excel export (xlsx-js-style)
+    reports-export.ts     — Reports Excel + PDF export (exportReport, exportPdf)
+    recon-parsers.ts      — Reconciliation file parsers: parseAfritecXls, parseFurnmart, parseBodulo, parsePayrollXlsx
     supabase/
       client.ts           — Browser Supabase client (used by all dashboard pages)
       server.ts           — Server-side Supabase client (used only in RSC `dashboard/page.tsx`)
     utils.ts              — fmtZAR(), fmtCurrency(), MONTH_NAMES, sortHotels(), cn()
   components/
     nav-sidebar.tsx       — Role-aware navigation; admin sees all tabs, sub sees Employees + Import only
-  middleware.ts           — HMAC cookie auth gate; blocks sub-users from Methods, Salary Review, Access
+  middleware.ts           — HMAC cookie auth gate; blocks sub-users from Methods, Salary Review, Reports, Reconciliation, Access
   types/
-    database.ts           — Hotel, Employee, SalaryRecord, PayrollImport, IncreaseScenario, ScenarioLine, AppUser
+    database.ts           — Hotel, Employee, SalaryRecord, PayrollImport, IncreaseScenario, ScenarioLine, AppUser, ReconciliationPeriod, ReconUpload, ReconQuery
 ```
 
 ---
@@ -320,6 +327,47 @@ The salary review Excel export reads all five localStorage keys in `handleExport
 
 ---
 
+## Reconciliation
+
+`/dashboard/reconciliation` — admin-only monthly payroll cross-check for **CSL, NL, and CFE** only (hotel tabs are filtered to these three short codes).
+
+**Workflow**: Upload tab → Deductions Check tab → Prior Month Changes tab → Queries tab. Status moves Open → Submitted → Approved.
+
+**Upload tab**: Period selector (month/year) is the first element. File slots:
+
+| Slot | Type | Format | Notes |
+|------|------|--------|-------|
+| Payroll Spreadsheet | `payroll` | `.xlsx` | Required; NataLodge-style department-grouped export |
+| 12 Months Payroll Report | `twelve_months` | `.pdf` | Stored as base64 jsonb; View button opens in new tab |
+| Afritec Loan Statement | `afritec` | `.xls` | Loan instalment schedule |
+| Topline Loan Statement | `topline` | `.xls` | Same format as Afritec |
+| Furnmart Deductions | `furnmart` | `.xlsx` | Multi-SEQ rows per employee |
+| CB Stores Deductions | `cbstores` | `.xls/.xlsx` | Optional; omit if no deductions that month |
+| Bodulo Funeral Scheme | `bodulo` | `.xlsx` | Policy list |
+
+Re-uploading any slot replaces it (upsert on `period_id, upload_type`).
+
+**Parsers** (`src/lib/recon-parsers.ts`):
+- `parseAfritecXls` — detects header by keyword; col 5 = Employee Number, col 10 = Regular Instalment; totals row has no emp code
+- `parseFurnmart` — header detected by "EMP NO"; col 11 (TOTAL) only populated on the last SEQ row per employee; employees with no code go to `unmatchedLines`
+- `parseBodulo` — header at row 0; col 4 = Custom Policy Number, col 9 = Premium Due; "TOTAL TO PAY" extracted from bottom summary block
+- `parsePayrollXlsx` — header detected by `col[0]="Code"`; all other columns detected by keyword (e.g. "furnmart", "cb stores", "funeral", "staff loan") — robust across hotel format variants
+
+All parsers are async and dynamically import `xlsx-js-style`.
+
+**Deductions Check tab**: requires payroll upload. Shows a summary table (statement total vs payroll total, difference) then a per-employee breakdown. Vendor filter buttons — **All / Furnmart / Loans / CB Stores / Bodulo** — narrow the employee table to the selected vendor's columns. Unmatched statement entries (no payroll code match) are shown in an orange callout. Afritec and Topline both map to the payroll `staffLoans` column and are summed together.
+
+**Prior Month Changes tab**: compares uploaded payroll basic salaries against the previous month's `salary_records` in DB. Shows new employees, employees no longer in payroll, and basic salary changes.
+
+**Queries tab**: thread-style queries with author name + timestamp; each can be resolved with a response.
+
+**DB tables** (migration 015):
+- `reconciliation_periods` — one row per hotel/year/month; `status` open/submitted/approved
+- `recon_uploads` — one row per period per upload type (UNIQUE constraint); `parsed_data` jsonb holds the parsed output
+- `recon_queries` — query thread entries per period
+
+---
+
 ## Access Control
 
 `/dashboard/access` — admin-only user management page.
@@ -330,7 +378,7 @@ The salary review Excel export reads all five localStorage keys in `handleExport
 
 **Nav**: `nav-sidebar.tsx` renders different link lists based on `role` prop passed from `dashboard/layout.tsx`.
 
-**Middleware** blocks sub-users from: `/dashboard` (root), `/dashboard/methods`, `/dashboard/salary-review`, `/dashboard/access`, `/dashboard/settings` — redirects to `/dashboard/employees`.
+**Middleware** blocks sub-users from: `/dashboard` (root), `/dashboard/methods`, `/dashboard/salary-review`, `/dashboard/reports`, `/dashboard/reconciliation`, `/dashboard/access`, `/dashboard/settings` — redirects to `/dashboard/employees`.
 
 **Hotel filtering for sub-users**: `employees/page.tsx` and `import/page.tsx` call `GET /api/auth/me` on mount and filter the hotel dropdown to `user.hotelIds`.
 
