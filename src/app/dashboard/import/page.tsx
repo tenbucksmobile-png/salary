@@ -506,16 +506,28 @@ export default function ImportPage() {
     const period = payrollPeriods[selectedPeriodIdx];
 
     const { data: existing } = await sb2
-      .from('employees').select('id, employee_code').eq('hotel_id', hotelId);
+      .from('employees').select('id, employee_code, surname, first_name').eq('hotel_id', hotelId);
 
+    // Primary: match by employee code in DB
     const codeMap = new Map(
       (existing ?? [])
         .filter((e: any) => e.employee_code)
         .map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string]),
     );
+    // Fallback: match by surname+first_name (for hotels like CSL/NL where DB codes are NULL)
+    const nameMap = new Map(
+      (existing ?? []).map((e: any) => [
+        `${String(e.surname ?? '').trim().toLowerCase()}|${String(e.first_name ?? '').trim().toLowerCase()}`,
+        e.id as string,
+      ])
+    );
 
-    const matched = period.rows.filter(r => codeMap.has(r.empCode.toUpperCase()));
-    const unmatched = period.rows.filter(r => !codeMap.has(r.empCode.toUpperCase()));
+    const resolveId = (r: { empCode: string; surname: string; name: string }) =>
+      codeMap.get(r.empCode.toUpperCase()) ??
+      nameMap.get(`${r.surname.trim().toLowerCase()}|${r.name.trim().toLowerCase()}`);
+
+    const matched   = period.rows.filter(r => resolveId(r) !== undefined);
+    const unmatched = period.rows.filter(r => resolveId(r) === undefined);
 
     const { data: importRec } = await sb2.from('payroll_imports').insert({
       hotel_id:           hotelId,
@@ -532,9 +544,13 @@ export default function ImportPage() {
     let updated = 0;
 
     for (const row of matched) {
-      const employeeId = codeMap.get(row.empCode.toUpperCase())!;
-      if (row.department) {
-        await sb2.from('employees').update({ department_code: row.department }).eq('id', employeeId);
+      const employeeId = resolveId(row)!;
+      const empPatch: Record<string, any> = {};
+      if (row.department) empPatch.department_code = row.department;
+      // Write the file's employee code to DB if it was matched by name (code was NULL)
+      if (row.empCode && !codeMap.has(row.empCode.toUpperCase())) empPatch.employee_code = row.empCode;
+      if (Object.keys(empPatch).length > 0) {
+        await sb2.from('employees').update(empPatch).eq('id', employeeId);
       }
       await sb2.from('salary_records').upsert({
         employee_id:           employeeId,

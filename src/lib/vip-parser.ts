@@ -471,7 +471,10 @@ export async function parseCslPayrollSchedule(buffer: ArrayBuffer): Promise<Payr
     for (let i = headerRowIdx + 1; i < data.length; i++) {
       const row = data[i];
       const rawCode = String(row[empCodeCol] ?? '').trim();
-      if (!rawCode.toUpperCase().startsWith('EMP')) continue;
+      if (!rawCode) continue;
+      // Skip summary/total rows — employee codes never start with these words
+      const uc = rawCode.toUpperCase();
+      if (uc.startsWith('TOTAL') || uc.startsWith('GRAND') || uc.startsWith('SUB-') || uc === 'EMP #' || uc === 'EMP#' || uc === 'CODE') continue;
 
       const rawBasic = row[basicCol];
       const basic = typeof rawBasic === 'number' ? rawBasic : parseFloat(String(rawBasic ?? '0')) || 0;
