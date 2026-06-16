@@ -195,6 +195,7 @@ export interface TSVEmployee {
   gradeLabel: string | null;
   medicalCompany: number;
   idNumber: string;
+  employeeCode: string;
 }
 
 function parseTSVDate(s: string): string | null {
@@ -336,6 +337,7 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
     grade:     header.findIndex(h => h === 'grade' || h === 'grade label' || h === 'gradelabel'),
     medical:   header.findIndex(h => h.includes('medical')),
     idNumber:  header.findIndex(h => h === 'omang' || h === 'id number' || h === 'id_number' || h === 'id no' || h === 'national id' || h.includes('identity')),
+    empCode:   header.findIndex(h => h === 'emp code' || h === 'employee code' || h === 'emp no' || h === 'employee no' || h === 'staff no' || h === 'staff code' || h === 'emp #' || h === 'emp#'),
   };
 
   for (let i = 1; i < lines.length; i++) {
@@ -354,6 +356,7 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
       gradeLabel:     get('grade') || null,
       medicalCompany: parseTabularAmount(get('medical')),
       idNumber:       get('idNumber'),
+      employeeCode:   get('empCode'),
     });
   }
   return { employees, errors };

@@ -253,7 +253,7 @@ export default function ImportPage() {
           importType: 'employee' as const,
           action: existingId ? 'update' as const : 'add' as const,
           existing_employee_id: existingId,
-          employeeCode: existingId ? '' : makeSyntheticCode(emp.surname, emp.firstName, existingCodes),
+          employeeCode: emp.employeeCode || (existingId ? '' : makeSyntheticCode(emp.surname, emp.firstName, existingCodes)),
           surname: emp.surname,
           firstName: emp.firstName,
           aka: '',
@@ -599,6 +599,7 @@ export default function ImportPage() {
         await sb2.from('employees').update({
           job_title: row.jobTitle || null,
           department_code: row.department || null,
+          ...(row.employeeCode ? { employee_code: row.employeeCode } : {}),
           ...(row.idNumber ? { id_number: row.idNumber } : {}),
           ...(row.paypoint ? { paypoint: row.paypoint } : {}),
           ...(row.category ? { category: row.category } : {}),
