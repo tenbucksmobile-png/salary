@@ -503,57 +503,49 @@ export default function ImportPage() {
   async function confirmPayrollSchedule() {
     setImporting(true);
     const sb2 = createClient();
-    const period = payrollPeriods[selectedPeriodIdx];
+    try {
+      const period = payrollPeriods[selectedPeriodIdx];
 
-    const { data: existing } = await sb2
-      .from('employees').select('id, employee_code, surname, first_name').eq('hotel_id', hotelId);
+      const { data: existing } = await sb2
+        .from('employees').select('id, employee_code, surname, first_name').eq('hotel_id', hotelId);
 
-    // Primary: match by employee code in DB
-    const codeMap = new Map(
-      (existing ?? [])
-        .filter((e: any) => e.employee_code)
-        .map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string]),
-    );
-    // Fallback: match by surname+first_name (for hotels like CSL/NL where DB codes are NULL)
-    const nameMap = new Map(
-      (existing ?? []).map((e: any) => [
-        `${String(e.surname ?? '').trim().toLowerCase()}|${String(e.first_name ?? '').trim().toLowerCase()}`,
-        e.id as string,
-      ])
-    );
+      // Primary: match by employee code in DB
+      const codeMap = new Map(
+        (existing ?? [])
+          .filter((e: any) => e.employee_code)
+          .map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string]),
+      );
+      // Fallback: match by surname+first_name (for hotels like CSL/NL where DB codes are NULL)
+      const nameMap = new Map(
+        (existing ?? []).map((e: any) => [
+          `${String(e.surname ?? '').trim().toLowerCase()}|${String(e.first_name ?? '').trim().toLowerCase()}`,
+          e.id as string,
+        ])
+      );
 
-    const resolveId = (r: { empCode: string; surname: string; name: string }) =>
-      codeMap.get(r.empCode.toUpperCase()) ??
-      nameMap.get(`${r.surname.trim().toLowerCase()}|${r.name.trim().toLowerCase()}`);
+      const resolveId = (r: { empCode: string; surname: string; name: string }) =>
+        codeMap.get(r.empCode.toUpperCase()) ??
+        nameMap.get(`${r.surname.trim().toLowerCase()}|${r.name.trim().toLowerCase()}`);
 
-    const matched   = period.rows.filter(r => resolveId(r) !== undefined);
-    const unmatched = period.rows.filter(r => resolveId(r) === undefined);
+      const matched   = period.rows.filter(r => resolveId(r) !== undefined);
+      const unmatched = period.rows.filter(r => resolveId(r) === undefined);
 
-    const { data: importRec } = await sb2.from('payroll_imports').insert({
-      hotel_id:           hotelId,
-      filename:           `Payroll_Schedule_${period.sheetName}`,
-      period_month:       period.month,
-      period_year:        period.year,
-      employees_added:    0,
-      employees_updated:  matched.length,
-      employees_flagged:  unmatched.length,
-      status:             'confirmed',
-    }).select().single();
+      const { data: importRec } = await sb2.from('payroll_imports').insert({
+        hotel_id:           hotelId,
+        filename:           `Payroll_Schedule_${period.sheetName}`,
+        period_month:       period.month,
+        period_year:        period.year,
+        employees_added:    0,
+        employees_updated:  matched.length,
+        employees_flagged:  unmatched.length,
+        status:             'confirmed',
+      }).select().single();
 
-    const importId = (importRec as any)?.id;
-    let updated = 0;
+      const importId = (importRec as any)?.id;
 
-    for (const row of matched) {
-      const employeeId = resolveId(row)!;
-      const empPatch: Record<string, any> = {};
-      if (row.department) empPatch.department_code = row.department;
-      // Write the file's employee code to DB if it was matched by name (code was NULL)
-      if (row.empCode && !codeMap.has(row.empCode.toUpperCase())) empPatch.employee_code = row.empCode;
-      if (Object.keys(empPatch).length > 0) {
-        await sb2.from('employees').update(empPatch).eq('id', employeeId);
-      }
-      await sb2.from('salary_records').upsert({
-        employee_id:           employeeId,
+      // Build salary batch and employee patches in one pass
+      const salaryBatch = matched.map(row => ({
+        employee_id:           resolveId(row)!,
         import_id:             importId,
         period_month:          period.month,
         period_year:           period.year,
@@ -567,124 +559,155 @@ export default function ImportPage() {
         uif_company:           0, medical_company:   0, provident_company: 0,
         sdl_company:           0, ancilla_company:   0, total_company_contrib: 0,
         total_payroll_burden:  0, total_cost:        row.basic,
-      }, { onConflict: 'employee_id,period_year,period_month' });
-      updated++;
-    }
+      }));
 
-    setResult({ added: 0, updated });
-    setImporting(false);
-    setStep('done');
+      const empPatches = matched
+        .map(row => {
+          const id = resolveId(row)!;
+          const patch: Record<string, any> = {};
+          if (row.department) patch.department_code = row.department;
+          // Write file's employee code back to DB when matched by name (code was NULL)
+          if (row.empCode && !codeMap.has(row.empCode.toUpperCase())) patch.employee_code = row.empCode;
+          return Object.keys(patch).length > 0 ? { id, patch } : null;
+        })
+        .filter((x): x is { id: string; patch: Record<string, any> } => x !== null);
+
+      // Single batch upsert for salary records + parallel employee patches
+      await Promise.all([
+        ...(salaryBatch.length > 0
+          ? [sb2.from('salary_records').upsert(salaryBatch, { onConflict: 'employee_id,period_year,period_month' })]
+          : []),
+        ...empPatches.map(({ id, patch }) => sb2.from('employees').update(patch).eq('id', id)),
+      ]);
+
+      setResult({ added: 0, updated: matched.length });
+      setStep('done');
+    } catch (err) {
+      setErrors([`Import failed: ${err instanceof Error ? err.message : String(err)}`]);
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function confirmImport() {
     setImporting(true);
     const sb2 = createClient();
+    try {
+      const { data: importRec } = await sb2.from('payroll_imports').insert({
+        hotel_id: hotelId,
+        filename: importType === 'employee' ? 'Employee_Details_Import' : `VIP_Import_${MONTH_NAMES[periodMonth - 1]}_${periodYear}`,
+        period_month: periodMonth,
+        period_year: periodYear,
+        employees_added:   rows.filter(r => r.action === 'add').length,
+        employees_updated: rows.filter(r => r.action === 'update').length,
+        employees_flagged: errors.length,
+        status: 'confirmed',
+      }).select().single();
 
-    const { data: importRec } = await sb2.from('payroll_imports').insert({
-      hotel_id: hotelId,
-      filename: importType === 'employee' ? 'Employee_Details_Import' : `VIP_Import_${MONTH_NAMES[periodMonth - 1]}_${periodYear}`,
-      period_month: periodMonth,
-      period_year: periodYear,
-      employees_added:   rows.filter(r => r.action === 'add').length,
-      employees_updated: rows.filter(r => r.action === 'update').length,
-      employees_flagged: errors.length,
-      status: 'confirmed',
-    }).select().single();
+      const importId = (importRec as any)?.id;
+      let added = 0, updated = 0;
 
-    const importId = (importRec as any)?.id;
-    let added = 0, updated = 0;
+      // Phase 1: employee inserts/updates (sequential — inserts need the returned ID)
+      const salaryBatch: any[] = [];
 
-    for (const row of rows) {
-      let employeeId = row.existing_employee_id;
+      for (const row of rows) {
+        let employeeId = row.existing_employee_id;
 
-      if (row.action === 'add') {
-        const { data: newEmp } = await sb2.from('employees').insert({
-          hotel_id: hotelId,
-          employee_code: row.employeeCode,
-          surname: row.surname,
-          first_name: row.firstName,
-          aka: row.aka || null,
-          id_number: row.idNumber || null,
-          job_title: row.jobTitle || null,
-          department_code: row.department || null,
-          paypoint: row.paypoint || null,
-          category: row.category || null,
-          job_grade: row.jobGrade || null,
-          grade_label: row.gradeLabel || null,
-          ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
-        }).select().single();
-        employeeId = (newEmp as any)?.id;
-        added++;
-      } else {
-        await sb2.from('employees').update({
-          // For HR List imports, the file is the authoritative source — update names too
-          ...(row.importType === 'employee' && row.surname    ? { surname:     row.surname    } : {}),
-          ...(row.importType === 'employee' && row.firstName  ? { first_name:  row.firstName  } : {}),
-          job_title: row.jobTitle || null,
-          department_code: row.department || null,
-          ...(row.employeeCode ? { employee_code: row.employeeCode } : {}),
-          ...(row.idNumber ? { id_number: row.idNumber } : {}),
-          ...(row.paypoint ? { paypoint: row.paypoint } : {}),
-          ...(row.category ? { category: row.category } : {}),
-          ...(row.jobGrade ? { job_grade: row.jobGrade } : {}),
-          ...(row.gradeLabel ? { grade_label: row.gradeLabel } : {}),
-          ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
-          updated_at: new Date().toISOString(),
-        }).eq('id', employeeId!);
-        updated++;
+        if (row.action === 'add') {
+          const { data: newEmp } = await sb2.from('employees').insert({
+            hotel_id: hotelId,
+            employee_code: row.employeeCode,
+            surname: row.surname,
+            first_name: row.firstName,
+            aka: row.aka || null,
+            id_number: row.idNumber || null,
+            job_title: row.jobTitle || null,
+            department_code: row.department || null,
+            paypoint: row.paypoint || null,
+            category: row.category || null,
+            job_grade: row.jobGrade || null,
+            grade_label: row.gradeLabel || null,
+            ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
+          }).select().single();
+          employeeId = (newEmp as any)?.id;
+          added++;
+        } else {
+          await sb2.from('employees').update({
+            // For HR List imports, the file is the authoritative source — update names too
+            ...(row.importType === 'employee' && row.surname   ? { surname:    row.surname    } : {}),
+            ...(row.importType === 'employee' && row.firstName ? { first_name: row.firstName  } : {}),
+            job_title: row.jobTitle || null,
+            department_code: row.department || null,
+            ...(row.employeeCode ? { employee_code: row.employeeCode } : {}),
+            ...(row.idNumber ? { id_number: row.idNumber } : {}),
+            ...(row.paypoint ? { paypoint: row.paypoint } : {}),
+            ...(row.category ? { category: row.category } : {}),
+            ...(row.jobGrade ? { job_grade: row.jobGrade } : {}),
+            ...(row.gradeLabel ? { grade_label: row.gradeLabel } : {}),
+            ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
+            updated_at: new Date().toISOString(),
+          }).eq('id', employeeId!);
+          updated++;
+        }
+
+        // HR List: minimal salary record so employees appear in Salary Review.
+        // Period auto-sets to current month. Run Calculate Burden afterwards.
+        if (employeeId && (importType !== 'employee' || row.basicSalary > 0)) {
+          salaryBatch.push(
+            importType === 'employee' ? {
+              employee_id: employeeId,
+              import_id: importId,
+              period_month: periodMonth,
+              period_year: periodYear,
+              basic_salary: row.basicSalary,
+              allowances: {},
+              total_earnings: row.totalEarnings,
+              tax_paye: 0, uif_employee: 0, medical_employee: 0,
+              ancilla_employee: 0, provident_employee: 0, total_deductions: 0,
+              uif_company: 0, medical_company: row.medicalCompany,
+              provident_company: 0, sdl_company: 0, ancilla_company: 0,
+              total_company_contrib: row.medicalCompany,
+              net_salary: row.basicSalary,
+              ctc: row.totalEarnings + row.medicalCompany,
+            } : {
+              employee_id: employeeId,
+              import_id: importId,
+              period_month: periodMonth,
+              period_year: periodYear,
+              basic_salary: row.basicSalary,
+              allowances: row.allowances,
+              total_earnings: row.totalEarnings,
+              tax_paye: row.taxPaye,
+              uif_employee: row.uifEmployee,
+              medical_employee: row.medicalEmployee,
+              ancilla_employee: row.ancillaEmployee,
+              provident_employee: row.providentEmployee,
+              total_deductions: row.totalDeductions,
+              uif_company: row.uifCompany,
+              medical_company: row.medicalCompany,
+              provident_company: row.providentCompany,
+              sdl_company: row.sdlCompany,
+              ancilla_company: row.ancillaCompany,
+              total_company_contrib: row.totalCompanyContrib,
+              net_salary: row.netSalary,
+              ctc: row.ctc,
+            }
+          );
+        }
       }
 
-      // HR List: write a minimal salary record (basic + medical only; zeros elsewhere)
-      // so employees appear in Salary Review. Period auto-sets to current month.
-      // Run Calculate Burden afterwards to populate contributions and provisions.
-      if (employeeId && (importType !== 'employee' || row.basicSalary > 0)) {
-        await sb2.from('salary_records').upsert(
-          importType === 'employee' ? {
-            employee_id: employeeId,
-            import_id: importId,
-            period_month: periodMonth,
-            period_year: periodYear,
-            basic_salary: row.basicSalary,
-            allowances: {},
-            total_earnings: row.totalEarnings,
-            tax_paye: 0, uif_employee: 0, medical_employee: 0,
-            ancilla_employee: 0, provident_employee: 0, total_deductions: 0,
-            uif_company: 0, medical_company: row.medicalCompany,
-            provident_company: 0, sdl_company: 0, ancilla_company: 0,
-            total_company_contrib: row.medicalCompany,
-            net_salary: row.basicSalary,
-            ctc: row.totalEarnings + row.medicalCompany,
-          } : {
-            employee_id: employeeId,
-            import_id: importId,
-            period_month: periodMonth,
-            period_year: periodYear,
-            basic_salary: row.basicSalary,
-            allowances: row.allowances,
-            total_earnings: row.totalEarnings,
-            tax_paye: row.taxPaye,
-            uif_employee: row.uifEmployee,
-            medical_employee: row.medicalEmployee,
-            ancilla_employee: row.ancillaEmployee,
-            provident_employee: row.providentEmployee,
-            total_deductions: row.totalDeductions,
-            uif_company: row.uifCompany,
-            medical_company: row.medicalCompany,
-            provident_company: row.providentCompany,
-            sdl_company: row.sdlCompany,
-            ancilla_company: row.ancillaCompany,
-            total_company_contrib: row.totalCompanyContrib,
-            net_salary: row.netSalary,
-            ctc: row.ctc,
-          },
-          { onConflict: 'employee_id,period_year,period_month' }
-        );
+      // Phase 2: single batch upsert for all salary records
+      if (salaryBatch.length > 0) {
+        await sb2.from('salary_records').upsert(salaryBatch, { onConflict: 'employee_id,period_year,period_month' });
       }
+
+      setResult({ added, updated });
+      setStep('done');
+    } catch (err) {
+      setErrors([`Import failed: ${err instanceof Error ? err.message : String(err)}`]);
+    } finally {
+      setImporting(false);
     }
-
-    setResult({ added, updated });
-    setImporting(false);
-    setStep('done');
   }
 
   function reset() {
