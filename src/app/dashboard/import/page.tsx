@@ -239,16 +239,20 @@ export default function ImportPage() {
       // ── Employee details spreadsheet (TSV or CSV) ─────────────────────────
       const { employees: emps, errors: parseErrors } = parseTSVEmployeeFile(text);
 
-      // Match by surname + first_name; also grab existing codes to avoid collisions
+      // Match by employee code first, fall back to surname+first_name
       const { data: existing } = await sb.from('employees').select('id, surname, first_name, employee_code').eq('hotel_id', hotelId);
       const existingNameMap = new Map(
         (existing ?? []).map((e: any) => [`${e.surname.toLowerCase()}|${e.first_name.toLowerCase()}`, e.id as string])
+      );
+      const existingCodeMap = new Map(
+        (existing ?? []).filter((e: any) => e.employee_code).map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string])
       );
       const existingCodes = new Set((existing ?? []).filter((e: any) => e.employee_code).map((e: any) => e.employee_code as string));
 
       const importRows: ImportRow[] = emps.map(emp => {
         const nameKey = `${emp.surname.toLowerCase()}|${emp.firstName.toLowerCase()}`;
-        const existingId = existingNameMap.get(nameKey);
+        const codeKey = emp.employeeCode ? emp.employeeCode.toUpperCase() : '';
+        const existingId = (codeKey ? existingCodeMap.get(codeKey) : undefined) ?? existingNameMap.get(nameKey);
         return {
           importType: 'employee' as const,
           action: existingId ? 'update' as const : 'add' as const,
@@ -597,6 +601,9 @@ export default function ImportPage() {
         added++;
       } else {
         await sb2.from('employees').update({
+          // For HR List imports, the file is the authoritative source — update names too
+          ...(row.importType === 'employee' && row.surname    ? { surname:     row.surname    } : {}),
+          ...(row.importType === 'employee' && row.firstName  ? { first_name:  row.firstName  } : {}),
           job_title: row.jobTitle || null,
           department_code: row.department || null,
           ...(row.employeeCode ? { employee_code: row.employeeCode } : {}),
@@ -611,30 +618,51 @@ export default function ImportPage() {
         updated++;
       }
 
-      if (employeeId && importType !== 'employee') {
-        await sb2.from('salary_records').upsert({
-          employee_id: employeeId,
-          import_id: importId,
-          period_month: periodMonth,
-          period_year: periodYear,
-          basic_salary: row.basicSalary,
-          allowances: row.allowances,
-          total_earnings: row.totalEarnings,
-          tax_paye: row.taxPaye,
-          uif_employee: row.uifEmployee,
-          medical_employee: row.medicalEmployee,
-          ancilla_employee: row.ancillaEmployee,
-          provident_employee: row.providentEmployee,
-          total_deductions: row.totalDeductions,
-          uif_company: row.uifCompany,
-          medical_company: row.medicalCompany,
-          provident_company: row.providentCompany,
-          sdl_company: row.sdlCompany,
-          ancilla_company: row.ancillaCompany,
-          total_company_contrib: row.totalCompanyContrib,
-          net_salary: row.netSalary,
-          ctc: row.ctc,
-        }, { onConflict: 'employee_id,period_year,period_month' });
+      // HR List: write a minimal salary record (basic + medical only; zeros elsewhere)
+      // so employees appear in Salary Review. Period auto-sets to current month.
+      // Run Calculate Burden afterwards to populate contributions and provisions.
+      if (employeeId && (importType !== 'employee' || row.basicSalary > 0)) {
+        await sb2.from('salary_records').upsert(
+          importType === 'employee' ? {
+            employee_id: employeeId,
+            import_id: importId,
+            period_month: periodMonth,
+            period_year: periodYear,
+            basic_salary: row.basicSalary,
+            allowances: {},
+            total_earnings: row.totalEarnings,
+            tax_paye: 0, uif_employee: 0, medical_employee: 0,
+            ancilla_employee: 0, provident_employee: 0, total_deductions: 0,
+            uif_company: 0, medical_company: row.medicalCompany,
+            provident_company: 0, sdl_company: 0, ancilla_company: 0,
+            total_company_contrib: row.medicalCompany,
+            net_salary: row.basicSalary,
+            ctc: row.totalEarnings + row.medicalCompany,
+          } : {
+            employee_id: employeeId,
+            import_id: importId,
+            period_month: periodMonth,
+            period_year: periodYear,
+            basic_salary: row.basicSalary,
+            allowances: row.allowances,
+            total_earnings: row.totalEarnings,
+            tax_paye: row.taxPaye,
+            uif_employee: row.uifEmployee,
+            medical_employee: row.medicalEmployee,
+            ancilla_employee: row.ancillaEmployee,
+            provident_employee: row.providentEmployee,
+            total_deductions: row.totalDeductions,
+            uif_company: row.uifCompany,
+            medical_company: row.medicalCompany,
+            provident_company: row.providentCompany,
+            sdl_company: row.sdlCompany,
+            ancilla_company: row.ancillaCompany,
+            total_company_contrib: row.totalCompanyContrib,
+            net_salary: row.netSalary,
+            ctc: row.ctc,
+          },
+          { onConflict: 'employee_id,period_year,period_month' }
+        );
       }
     }
 
@@ -1062,6 +1090,12 @@ export default function ImportPage() {
                 {errors.map((err, i) => <li key={i}>{err}</li>)}
               </ul>
             </details>
+          )}
+
+          {importType === 'employee' && (
+            <p className="text-xs text-muted-foreground">
+              Salary records are written with gross salary only. Run <strong>Calculate Burden</strong> or <strong>Methods → Save &amp; Update</strong> afterwards to populate contributions and provisions.
+            </p>
           )}
 
           <div className="flex gap-3">
