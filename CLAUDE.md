@@ -158,6 +158,10 @@ CTC inclusion flags (boolean, default false for provisions): `ctc_provident_er`,
 **Employee deductions**: `tax_paye`, `uif_employee`, `medical_employee`, `ancilla_employee`, `provident_employee`, `total_deductions`
 **Company contributions**: `uif_company`, `medical_company`, `provident_company`, `sdl_company`, `ancilla_company`, `total_company_contrib`
 **Provisions**: `wca_company`, `staff_meals`, `bonus_provision`, `incentive`, `leave_provision`, `leave_accrual`, `other_company_contrib`, `total_payroll_burden`, `total_cost`
+
+**`allowances` JSONB shape** — stores arbitrary named allowances from VIP imports (`Record<string, number>`). The special key `structure` holds the Structure Allowance component shown on the employee detail page. `Basic Salary = Total Earnings − allowances.structure` is derived read-only. All other keys (e.g. `"HOUSING"`, `"TRANSPORT"`) come verbatim from the VIP 710 earnings block.
+
+**`leave_provision` vs `leave_accrual`** — two distinct columns. `leave_provision` is populated directly from VIP 710 imports and passed through `BurdenInput.leaveProvision` unchanged (not recomputed by `calculateBurden`). `leave_accrual` IS computed by `calculateBurden()` using `basic × (days/365) × pct`. The Employees page "Leave" column shows `leave_accrual`; `leave_provision` is a legacy VIP figure.
 **Leave & accruals**: `leave_days`, `bonus_payout_factor`, `bonus_accrual_dec`, `bonus_accrual_july`, `mgmt_incentive`
 **Botswana provisions**: `severance`, `gratuity`
 **Increase scenario**: `increase_amount`, `adjustment`, `increase_pct`, `new_basic`, `new_ctc`
@@ -233,7 +237,8 @@ Detection order: CSL Payroll Schedule xlsx (by file extension) → round-trip CS
 
 - Parser: `src/lib/vip-parser.ts` → `parseTSVEmployeeFile()`
 - Detected: first line starts with "Surname" and contains "Gross"
-- Matched by surname + first_name; salary period set manually in UI
+- Matched by surname + first_name (not employee code); salary period set manually in UI
+- If no DB match is found, a new employee is created with a synthetic code (`makeSyntheticCode` in `import/page.tsx`): first 3 chars of surname + first 3 chars of first name, uppercased, deduplicated with a numeric suffix if needed
 
 ### Medical Aid Update (CSV from medical aid provider)
 

@@ -123,6 +123,7 @@ export default function ImportPage() {
     setLoading(true);
 
     // ── CSL Payroll Schedule (.xlsx multi-sheet) ──────────────────────────────
+    let text: string;
     if (file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls')) {
       const buf = await file.arrayBuffer();
       const periods = await parseCslPayrollSchedule(buf);
@@ -137,9 +138,19 @@ export default function ImportPage() {
         setStep('preview');
         return;
       }
+      // Non-CSL xlsx — extract first sheet as CSV so the text-based parsers work
+      const XLSX = (await import('xlsx-js-style')).default;
+      const wb = XLSX.read(buf, { type: 'array' });
+      const firstSheet = wb.SheetNames[0];
+      if (!firstSheet) {
+        setErrors(['Could not read xlsx file: no sheets found']);
+        setLoading(false);
+        return;
+      }
+      text = XLSX.utils.sheet_to_csv(wb.Sheets[firstSheet]);
+    } else {
+      text = await file.text();
     }
-
-    const text = await file.text();
     const firstLine = text.split('\n')[0] ?? '';
     const isMedical    = isMedicalAidFile(firstLine);
     const isRoundtrip  = !isMedical && isEmployeeCsvExport(firstLine);
