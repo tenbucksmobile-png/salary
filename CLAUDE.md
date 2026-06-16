@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A web-based **HR salary management system** for 6 IHG CFE hotel properties, replacing an Excel-based salary review workflow. Built with Next.js (App Router) + Supabase + Shadcn UI. Multi-user access-controlled (admin + sub-user roles; username/password login via HMAC-signed cookie).
 
 Core workflows:
-- **Import** employee data from VIP Report 710 payroll files, tabular Excel CSV/TSV exports, Medical Aid update files, or round-trip employee CSV exports
+- **Import** employee data from VIP Report 710 payroll files, tabular Excel CSV/TSV exports, Medical Aid update files, round-trip employee CSV exports, or CSL Payroll Schedule xlsx workbooks
 - **View & edit** employees across all 6 properties with flexible column visibility
 - **Export** employees per hotel as a CSV, edit offsite, and re-import
 - **Calculate payroll burden** automatically (provident fund, UIF, SDL, WCA, staff meals, leave accrual, bonus, incentive, severance, gratuity)
@@ -211,7 +211,17 @@ All rates have fallback constants used when the hotel hasn't had migration 009 a
 
 The import page (`/dashboard/import`) auto-detects the file format on upload (hotel must be selected first).
 
-Detection order: round-trip CSV → medical aid → employee details → VIP 710.
+Detection order: CSL Payroll Schedule xlsx (by file extension) → round-trip CSV → medical aid → employee details → VIP 710.
+
+### CSL Payroll Schedule (multi-sheet xlsx)
+
+- Parser: `src/lib/vip-parser.ts` → `parseCslPayrollSchedule(buffer: ArrayBuffer)`
+- Detected: file has `.xlsx`/`.xls` extension and sheet names match month patterns (e.g. "July25", "Jan 26")
+- Each sheet = one payroll month; header row and column positions are detected dynamically (vary across sheets)
+- Employee code column matched by cell value "EMP #", "EMP#", or "Code" in the first 10 rows, first 4 columns
+- UI shows a month selector dropdown; imports `basic_salary` only — run Calculate Burden afterwards
+- Matches by `employee_code`; unmatched codes are skipped (not created as new employees)
+- Also dynamically imports `xlsx-js-style` (same SSR-safe pattern as recon parsers)
 
 ### VIP Report 710 (fixed-width payroll register)
 
@@ -256,14 +266,14 @@ src/
     dashboard/
       page.tsx            — Dashboard: SalarySummaryTable first; hotel cards below each with per-grade breakdown table
       SalarySummaryTable.tsx — Filterable hotel-level before/after table; reads draft scenarios first, then committed
-      InflationHistoryCard.tsx — CPI + historic increases + NMW reference card; data stored in localStorage only
+      InflationHistoryCard.tsx — CPI + historic increases + NMW reference card; data stored in localStorage only; rendered at the bottom of Methods page (not dashboard)
       layout.tsx          — Reads cookie server-side; passes role+username to NavSidebar
       access/page.tsx     — Admin-only user management UI
       employees/
         page.tsx          — Employee list; column picker, hotel CSV export, Calculate Burden
-        [id]/page.tsx     — Employee detail + edit form
-      import/page.tsx     — Multi-format import (VIP, Employee TSV, Medical Aid, Round-trip CSV)
-      methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All
+        [id]/page.tsx     — Employee detail + edit form; salary section has Structure (stored in allowances.structure) + Total (Gross) inputs; Basic Salary = Total − Structure is derived read-only; provident fund uses basic for EE and ER (APA Director exception: 14% of gross)
+      import/page.tsx     — Multi-format import (VIP, Employee TSV, Medical Aid, Round-trip CSV, CSL Payroll Schedule xlsx)
+      methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All; InflationHistoryCard rendered at bottom
       settings/page.tsx   — Redirects to /dashboard/methods
       salary-review/page.tsx — Per-hotel increase builder; drafts persist to DB; commit to salary_records
       reports/page.tsx    — Flexible report builder; Excel + PDF export
@@ -271,7 +281,7 @@ src/
   lib/
     auth.ts               — UserContext, makeToken(), verifyToken(), hashPassword() — Edge-compatible
     payroll-calc.ts       — calculateBurden(); isBotswana(), isManager(); BurdenInput/BurdenResult
-    vip-parser.ts         — VIP 710, TSV employee details, medical aid parsers
+    vip-parser.ts         — VIP 710, TSV employee details, medical aid parsers, parseCslPayrollSchedule
     employee-csv.ts       — Round-trip CSV export builder (buildEmployeeCsv) + import parser
     excel-export.ts       — Salary review Excel export (xlsx-js-style)
     reports-export.ts     — Reports Excel + PDF export (exportReport, exportPdf)
@@ -301,7 +311,7 @@ src/
 
 **Exclusions** — checkbox per employee row. Excluded employees show `opacity-45` + "excluded" badge; they are skipped in scenario_lines and on Commit (no salary record written for them).
 
-**Commit** — updates each hotel's draft scenario status to `committed` (sets `effective_month`, `effective_year`, `committed_at`); writes new `salary_records` for the target month/year; clears all draft state. Does NOT create a new scenario row — the existing draft row is promoted.
+**Commit** — updates each hotel's draft scenario status to `committed` (sets `effective_month`, `effective_year`, `committed_at`); writes new `salary_records` for the target month/year; automatically writes each hotel's `pct` and `flat` to `ihg-salary-increases` in localStorage (so the Inflation & Increase History table on the Methods page updates without manual entry); clears all draft state. Does NOT create a new scenario row — the existing draft row is promoted.
 
 **Threshold** — optional second tier within a hotel's scenario. `threshold` (basic salary amount) divides employees into two bands:
 - Basic **< threshold**: uses `belowPct`/`belowFlat` if set; otherwise **0** (no increase).
@@ -311,7 +321,7 @@ Grade-level exclusions (`excludedGrades`) and per-employee exclusions (`excluded
 
 **Dashboard** — `SalarySummaryTable` reads all `draft` scenario lines first (shows pending increases before commit). Falls back to the most recent `committed`/`applied` scenario if no drafts exist. The server-rendered hotel cards below also load the same scenario lines to show per-grade breakdowns with matching figures.
 
-**`InflationHistoryCard`** (`src/app/dashboard/InflationHistoryCard.tsx`) — `'use client'` card rendered on the dashboard between `SalarySummaryTable` and the hotel cards. Stores all data in `localStorage` (never in the DB):
+**`InflationHistoryCard`** (`src/app/dashboard/InflationHistoryCard.tsx`) — `'use client'` card rendered at the **bottom of the Methods page** (not the dashboard). Stores all data in `localStorage` (never in the DB):
 
 | Key | Content |
 |-----|---------|
@@ -398,7 +408,7 @@ All parsers are async and dynamically import `xlsx-js-style` (avoids SSR issues 
 
 ## Employee CSV Export / Round-trip
 
-Export: hotel selector + **Export CSV** button in the Employees page header. Downloads `{ShortCode}_employees_{YYYYMM}.csv` containing all employee fields plus full latest salary record for each employee (51 columns).
+Export: **Export CSV** button in the Employees page header — exports whichever hotel is currently selected in the page filter (no separate hotel dropdown). Downloads `{ShortCode}_employees_{YYYYMM}.csv` containing all employee fields plus full latest salary record for each employee (51 columns).
 
 Re-import: via Import page — select the same hotel, upload the CSV. Format is auto-detected. All employee fields and the complete salary record are written verbatim; run Calculate Burden or Methods → Save & Update afterwards to recalculate computed fields.
 
@@ -416,7 +426,7 @@ Default visible columns: Emp Code, Surname, First Name, Hotel, Department, Job T
 
 Column groups and membership:
 - **Employee**: Emp Code, Surname, First Name, Hotel, Department, Job Title, Grade (`structure` col → `grade_label`), Start Date, Yrs Service
-- **Salary**: Basic Salary, Structure (`structure_sal` col → shows `—`, placeholder for future salary-band import), Gross Salary, CTC
+- **Salary**: Basic Salary, Structure (`structure_sal` col → reads `allowances.structure` from the salary record), Gross Salary, CTC
 - **Benefits**: Medical (Co), Prov Fund (Co)
 - **Legislative**: UIF (Co), SDL, WCA
 - **Provisions**: Staff Meals, Bonus Provision, Incentive, Gratuity, Severance, Leave
@@ -432,12 +442,14 @@ Zero monetary values display as "—" (not "R0" or "P0").
 ## Grade Labels
 
 `employees.grade_label` is a free-text field set manually (not from VIP). Canonical values (enforced by `GRADE_MAP` in `import/page.tsx` on import):
-`ANO`, `FTC`, `DNQ`, `Frontline`, `Supervisory`, `Management`, `Executive`
+`ANO`, `FTC`, `DNQ`, `Frontline`, `Supervisory`, `Management`, `Executive`, `Flexible`, `Fixed Term`
 
-Free-text variants like `"front line"`, `"exec"`, `"supervisor"` are normalised to the canonical form on import. The salary review grade filter and dashboard grade badges use these same canonical values. `Unclassified` is displayed for employees whose `grade_label` is null.
+Free-text variants like `"front line"`, `"exec"`, `"supervisor"`, `"flexible"`, `"fixed term"`, `"fixed_term"` are normalised to the canonical form on import. The salary review grade filter and dashboard grade badges use these same canonical values. `Unclassified` is displayed for employees whose `grade_label` is null.
+
+`status` on `employees` has three DB values (`active`, `terminated`, `on_leave`) but **`on_leave` is removed from all UI dropdowns** — only `active` and `terminated` appear in forms. Existing DB records with `on_leave` are preserved and readable; the type in `database.ts` retains the union for backward compatibility.
 
 The canonical grade sort order used in `dashboard/page.tsx` for per-hotel grade breakdowns:
-`['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Unclassified']`
+`['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term', 'Unclassified']`
 
 ---
 
