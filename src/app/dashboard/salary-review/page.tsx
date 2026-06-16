@@ -488,6 +488,18 @@ export default function SalaryReviewPage() {
       }
     }
 
+    // Persist committed increases to Inflation & Increase History (localStorage)
+    try {
+      const raw = localStorage.getItem('ihg-salary-increases');
+      const stored: Record<string, Record<string, { pct: string; flat: string }>> =
+        raw ? JSON.parse(raw) : {};
+      for (const [hotelId, settings] of hotelSettings) {
+        if (!stored[hotelId]) stored[hotelId] = {};
+        stored[hotelId][String(commitYear)] = { pct: settings.pct, flat: settings.flat };
+      }
+      localStorage.setItem('ihg-salary-increases', JSON.stringify(stored));
+    } catch {}
+
     // Clear all draft state after commit
     hotelSettingsRef.current = new Map();
     setHotelSettings(new Map());

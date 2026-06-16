@@ -296,7 +296,8 @@ export default function MethodsPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8">
+      <div className="max-w-3xl">
       <div className="mb-7">
         <h1 className="text-2xl font-bold">Payroll Methods</h1>
         <p className="text-muted-foreground text-sm mt-1">
@@ -603,10 +604,11 @@ export default function MethodsPage() {
       ) : (
         <div className="text-sm text-muted-foreground">Loading…</div>
       )}
-
-      <div className="mt-10">
-        <InflationHistoryCard hotels={hotels} />
-      </div>
     </div>
+
+    <div className="mt-10">
+      <InflationHistoryCard hotels={hotels} />
+    </div>
+  </div>
   );
 }
