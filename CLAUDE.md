@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A web-based **HR salary management system** for 6 IHG CFE hotel properties, replacing an Excel-based salary review workflow. Built with Next.js (App Router) + Supabase + Shadcn UI. Multi-user access-controlled (admin + sub-user roles; username/password login via HMAC-signed cookie).
 
 Core workflows:
-- **Import** employee data from VIP Report 710 payroll files, tabular Excel CSV/TSV exports, Medical Aid update files, round-trip employee CSV exports, or CSL Payroll Schedule xlsx workbooks
+- **Import HR List** — update employee records (names, Omang/ID, grade, department, start date) from xlsx/CSV HR lists; also writes a minimal salary record so employees appear in Salary Review. Nav tab is "Import HR List". Also supports VIP Report 710 payroll files, Medical Aid update files, round-trip employee CSV exports, and CSL Payroll Schedule xlsx workbooks
 - **View & edit** employees across all 6 properties with flexible column visibility
 - **Export** employees per hotel as a CSV, edit offsite, and re-import
 - **Calculate payroll burden** automatically (provident fund, UIF, SDL, WCA, staff meals, leave accrual, bonus, incentive, severance, gratuity)
@@ -213,18 +213,23 @@ All rates have fallback constants used when the hotel hasn't had migration 009 a
 
 ## Import Formats
 
-The import page (`/dashboard/import`) auto-detects the file format on upload (hotel must be selected first).
+The import page (`/dashboard/import`) — nav label **"Import HR List"** — auto-detects the file format on upload (hotel must be selected first).
 
-Detection order: CSL Payroll Schedule xlsx (by file extension) → round-trip CSV → medical aid → employee details → VIP 710.
+Detection order: CSL Payroll Schedule xlsx (by file extension + sheet names) → round-trip CSV → medical aid → HR List / employee details → VIP 710.
+
+**Non-CSL xlsx files** fall through: after failing the CSL schedule detection, the first sheet is extracted as CSV via `xlsx-js-style` and fed into the text-based detectors below.
+
+**Import performance**: `confirmPayrollSchedule` and `confirmImport` both batch salary record upserts into a single Supabase call (not one per employee). Employee updates run in parallel via `Promise.all`. Both functions wrap in `try/catch/finally` — errors surface as a visible message rather than freezing the "Importing…" button.
 
 ### CSL Payroll Schedule (multi-sheet xlsx)
 
 - Parser: `src/lib/vip-parser.ts` → `parseCslPayrollSchedule(buffer: ArrayBuffer)`
-- Detected: file has `.xlsx`/`.xls` extension and sheet names match month patterns (e.g. "July25", "Jan 26")
+- Detected: file has `.xlsx`/`.xls` extension **and** sheet names match month patterns (e.g. "July25", "Jan 26")
 - Each sheet = one payroll month; header row and column positions are detected dynamically (vary across sheets)
 - Employee code column matched by cell value "EMP #", "EMP#", or "Code" in the first 10 rows, first 4 columns
+- Row filter: skips empty codes and summary rows (Total, Grand Total, Sub-) — does NOT require codes to start with "EMP"
 - UI shows a month selector dropdown; imports `basic_salary` only — run Calculate Burden afterwards
-- Matches by `employee_code`; unmatched codes are skipped (not created as new employees)
+- Matching: employee code first; falls back to surname + first_name for hotels whose DB codes are NULL (CSL, NL — cleared by migration 014). When matched by name and the file has a code, that code is written back to the DB for future imports.
 - Also dynamically imports `xlsx-js-style` (same SSR-safe pattern as recon parsers)
 
 ### VIP Report 710 (fixed-width payroll register)
@@ -233,12 +238,18 @@ Detection order: CSL Payroll Schedule xlsx (by file extension) → round-trip CS
 - Splits on `={10,}` separator lines; period detected from `TxDt:` field
 - Matched by `employee_code` within the selected hotel
 
-### Employee Details (CSV or TSV from Excel)
+### HR List / Employee Details (xlsx, CSV, or TSV)
+
+Previously called "Employee Details". The nav tab and page title are "Import HR List".
 
 - Parser: `src/lib/vip-parser.ts` → `parseTSVEmployeeFile()`
-- Detected: first line starts with "Surname" and contains "Gross"
-- Matched by surname + first_name (not employee code); salary period set manually in UI
-- If no DB match is found, a new employee is created with a synthetic code (`makeSyntheticCode` in `import/page.tsx`): first 3 chars of surname + first 3 chars of first name, uppercased, deduplicated with a numeric suffix if needed
+- Detected by `isTabularEmployeeFile()`: first line contains surname/first name indicators AND (gross/salary OR omang/ID OR dept+title). More flexible than "must contain Gross" so files with only HR fields (no salary) are accepted.
+- **No period selector** — period auto-sets to current month/year (HR lists are not payroll; period is only needed for the salary record anchor)
+- **Columns parsed**: Surname, First Name, Employee Code, Omang / National ID (`id_number`), Gross Salary, Medical Company, Department, Job Title, Grade, Start Date
+- **Matching**: employee code first (from file), falls back to surname + first_name. Synthetic code (`makeSyntheticCode` in `import/page.tsx`) only used when no match found: first 3 chars surname + first 3 chars first name, uppercased, deduplicated with numeric suffix.
+- **Update path** (existing employees): writes surname, first_name, job_title, department_code, employee_code (if in file), id_number (if in file), grade_label, employment_date. HR list is treated as authoritative for names — surname/first_name are updated.
+- **Salary record**: a minimal record is written for each employee with `basic_salary > 0` (gross from file, zeros for all contributions). This makes employees visible in Salary Review. Run **Calculate Burden** or **Methods → Save & Update** afterwards to populate contributions and provisions.
+- New employees are inserted and get an active status (DB default)
 
 ### Medical Aid Update (CSV from medical aid provider)
 
@@ -277,7 +288,7 @@ src/
       employees/
         page.tsx          — Employee list; column picker, hotel CSV export, Calculate Burden
         [id]/page.tsx     — Employee detail + edit form; salary section has Structure (stored in allowances.structure) + Total (Gross) inputs; Basic Salary = Total − Structure is derived read-only; provident fund uses basic for EE and ER (APA Director exception: 14% of gross)
-      import/page.tsx     — Multi-format import (VIP, Employee TSV, Medical Aid, Round-trip CSV, CSL Payroll Schedule xlsx)
+      import/page.tsx     — Multi-format import (HR List xlsx/CSV/TSV, VIP, Medical Aid, Round-trip CSV, CSL Payroll Schedule xlsx); nav label "Import HR List"; no period selector for HR List type
       methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All; InflationHistoryCard rendered at bottom
       settings/page.tsx   — Redirects to /dashboard/methods
       salary-review/page.tsx — Per-hotel increase builder; drafts persist to DB; commit to salary_records
@@ -286,7 +297,7 @@ src/
   lib/
     auth.ts               — UserContext, makeToken(), verifyToken(), hashPassword() — Edge-compatible
     payroll-calc.ts       — calculateBurden(); isBotswana(), isManager(); BurdenInput/BurdenResult
-    vip-parser.ts         — VIP 710, TSV employee details, medical aid parsers, parseCslPayrollSchedule
+    vip-parser.ts         — VIP 710, HR List (parseTSVEmployeeFile / isTabularEmployeeFile), medical aid parsers, parseCslPayrollSchedule
     employee-csv.ts       — Round-trip CSV export builder (buildEmployeeCsv) + import parser
     excel-export.ts       — Salary review Excel export (xlsx-js-style)
     reports-export.ts     — Reports Excel + PDF export (exportReport, exportPdf)
@@ -430,7 +441,7 @@ Persisted in `localStorage` under key `'ihg-salary-emp-cols-{hotelId}'` — **pe
 Default visible columns: Emp Code, Surname, First Name, Hotel, Department, Job Title, Grade, Basic Salary, Gross Salary, CTC.
 
 Column groups and membership:
-- **Employee**: Emp Code, Surname, First Name, Hotel, Department, Job Title, Grade (`structure` col → `grade_label`), Start Date, Yrs Service
+- **Employee**: Emp Code, Surname, First Name, Hotel, Department, Job Title, Start Date, Yrs Service, Grade (`structure` col → `grade_label`) — Yrs Service appears before Grade in column order
 - **Salary**: Basic Salary, Structure (`structure_sal` col → reads `allowances.structure` from the salary record), Gross Salary, CTC
 - **Benefits**: Medical (Co), Prov Fund (Co)
 - **Legislative**: UIF (Co), SDL, WCA
