@@ -65,7 +65,7 @@ async function getHotelStats() {
     }
   }
 
-  const GRADE_ORDER = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Unclassified'];
+  const GRADE_ORDER = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term', 'Unclassified'];
 
   return sortHotels((hotels ?? []) as Hotel[]).map((h: Hotel) => {
     const hotelEmps = empList.filter(e => e.hotel_id === h.id);

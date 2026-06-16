@@ -62,6 +62,9 @@ const GRADE_MAP: Record<string, string> = {
   'management':  'Management',
   'executive':   'Executive',
   'exec':        'Executive',
+  'flexible':    'Flexible',
+  'fixed term':  'Fixed Term',
+  'fixed_term':  'Fixed Term',
 };
 function normalizeGrade(g: string | null): string | null {
   if (!g) return null;

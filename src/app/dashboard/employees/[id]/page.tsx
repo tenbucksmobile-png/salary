@@ -9,8 +9,8 @@ import { ArrowLeft, Save } from 'lucide-react';
 import Link from 'next/link';
 import { isBotswana } from '@/lib/payroll-calc';
 
-const GRADE_OPTIONS = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive'];
-const STATUS_OPTIONS = ['active', 'terminated', 'on_leave'] as const;
+const GRADE_OPTIONS = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term'];
+const STATUS_OPTIONS = ['active', 'terminated'] as const;
 
 export default function EmployeeDetailPage() {
   const { id } = useParams<{ id: string }>();

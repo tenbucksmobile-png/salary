@@ -68,8 +68,8 @@ const HOTEL_FILTER_KEY   = 'ihg-salary-emp-hotel';
 
 const DEFAULT_VISIBLE = new Set(ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.id));
 
-const GRADE_OPTIONS  = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive'];
-const STATUS_OPTIONS = ['active', 'terminated', 'on_leave'] as const;
+const GRADE_OPTIONS  = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term'];
+const STATUS_OPTIONS = ['active', 'terminated'] as const;
 
 // Maps each display ColId to its CSV column name. ColIds with no direct CSV
 // column (hotel, years_service, structure_sal) are omitted — they are skipped
@@ -106,7 +106,7 @@ interface AddForm {
   job_title: string;
   department_code: string;
   grade_label: string;
-  status: 'active' | 'terminated' | 'on_leave';
+  status: 'active' | 'terminated';
   employment_date: string;
   basic_salary: number;
   total_earnings: number;

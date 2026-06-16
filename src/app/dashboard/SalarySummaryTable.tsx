@@ -6,7 +6,7 @@ import { Hotel, Employee, SalaryRecord, ScenarioLine } from '@/types/database';
 import { fmtZAR, fmtCurrency, sortHotels } from '@/lib/utils';
 
 const GRADE_OPTIONS = [
-  'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive',
+  'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term',
 ];
 
 interface RowData {

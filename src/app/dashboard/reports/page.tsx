@@ -178,7 +178,7 @@ function computeData(
   hotelIds: string[],
   fieldIds: string[],
   viewMode: 'individual' | 'summary',
-  statuses: ('active' | 'terminated' | 'on_leave')[],
+  statuses: ('active' | 'terminated')[],
   useLatest: boolean,
   periodYear: number,
   periodMonth: number,
@@ -324,7 +324,7 @@ export default function ReportsPage() {
   const [selectedHotels, setSelectedHotels] = useState<string[]>([]);
   const [selectedFields, setSelectedFields] = useState<string[]>(DEFAULT_FIELD_IDS);
   const [viewMode,       setViewMode]       = useState<'individual' | 'summary'>('individual');
-  const [statuses,       setStatuses]       = useState<('active' | 'terminated' | 'on_leave')[]>(['active']);
+  const [statuses,       setStatuses]       = useState<('active' | 'terminated')[]>(['active']);
   const [useLatest,      setUseLatest]      = useState(true);
   const [periodYear,     setPeriodYear]     = useState(CURRENT_YEAR);
   const [periodMonth,    setPeriodMonth]    = useState(CURRENT_MONTH);
@@ -381,7 +381,7 @@ export default function ReportsPage() {
     else    setSelectedFields(p => p.filter(id => !ids.includes(id)));
   }
 
-  function toggleStatus(s: 'active' | 'terminated' | 'on_leave') {
+  function toggleStatus(s: 'active' | 'terminated') {
     setStatuses(p => p.includes(s) ? p.filter(x => x !== s) : [...p, s]);
   }
 
@@ -554,7 +554,6 @@ export default function ReportsPage() {
             <div className="space-y-1.5">
               {([
                 ['active',     'Active'],
-                ['on_leave',   'On Leave'],
                 ['terminated', 'Terminated'],
               ] as const).map(([val, label]) => (
                 <label key={val} className="flex items-center gap-2 cursor-pointer">
