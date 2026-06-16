@@ -377,3 +377,110 @@ export function parseVIPReport(text: string): ParseResult {
 
   return { employees, errors, periodMonth, periodYear };
 }
+
+// ─── CSL / Payroll Schedule xlsx parser ──────────────────────────────────────
+// Multi-sheet workbook where each sheet is one payroll month.
+// Sheet names like "July25", "Aug25", "Jan 26", "April 26".
+// Column layout varies per sheet — detect header row and column positions dynamically.
+
+export interface PayrollScheduleRow {
+  empCode: string;
+  name: string;
+  surname: string;
+  department: string;
+  basic: number;
+}
+
+export interface PayrollSchedulePeriod {
+  month: number;
+  year: number;
+  sheetName: string;
+  rows: PayrollScheduleRow[];
+}
+
+const PAYROLL_MONTH_MAP: Record<string, number> = {
+  jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+  apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
+  aug: 8, august: 8, sep: 9, september: 9, oct: 10, october: 10,
+  nov: 11, november: 11, dec: 12, december: 12,
+};
+
+export async function parseCslPayrollSchedule(buffer: ArrayBuffer): Promise<PayrollSchedulePeriod[]> {
+  const XLSX = (await import('xlsx-js-style')).default;
+  const wb = XLSX.read(buffer, { type: 'array' });
+
+  const results: PayrollSchedulePeriod[] = [];
+
+  for (const sheetName of wb.SheetNames) {
+    const nameClean = sheetName.trim().toLowerCase();
+    const match = nameClean.match(/^([a-z]+)\s*(\d{2,4})$/);
+    if (!match) continue;
+
+    const month = PAYROLL_MONTH_MAP[match[1]];
+    if (!month) continue;
+
+    const yy = parseInt(match[2]);
+    const year = match[2].length <= 2 ? (yy < 50 ? 2000 + yy : 1900 + yy) : yy;
+
+    const ws = wb.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as unknown[][];
+
+    // Find header row: first row where col 0-3 contains "EMP #", "EMP#", or "CODE"
+    let headerRowIdx = -1;
+    let empCodeCol = -1;
+
+    for (let i = 0; i < Math.min(data.length, 10); i++) {
+      const row = data[i];
+      for (let col = 0; col < Math.min(row.length, 4); col++) {
+        const cell = String(row[col] ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
+        if (cell === 'EMP #' || cell === 'EMP#' || cell === 'CODE') {
+          headerRowIdx = i;
+          empCodeCol = col;
+          break;
+        }
+      }
+      if (headerRowIdx >= 0) break;
+    }
+
+    if (headerRowIdx < 0 || empCodeCol < 0) continue;
+
+    const headerRow = data[headerRowIdx];
+    let nameCol = -1, surnameCol = -1, deptCol = -1, basicCol = -1;
+
+    for (let i = 0; i < headerRow.length; i++) {
+      const h = String(headerRow[i] ?? '').toUpperCase().replace(/[^A-Z ]/g, '').trim().replace(/\s+/g, ' ');
+      if (h.includes('SURNAME'))                          { surnameCol = i; continue; }
+      if (h === 'NAME' && nameCol < 0)                   { nameCol = i; continue; }
+      if (h.includes('NAME') && !h.includes('SURNAME') && nameCol < 0) { nameCol = i; continue; }
+      if (h.includes('DEPARTMENT'))                       { deptCol = i; }
+      if (h.includes('BASIC') && h.includes('SALARY'))   { basicCol = i; }
+      else if (h === 'BASIC SALARY' || h === 'BASIC')     { if (basicCol < 0) basicCol = i; }
+    }
+
+    if (basicCol < 0) continue;
+
+    const sheetRows: PayrollScheduleRow[] = [];
+    for (let i = headerRowIdx + 1; i < data.length; i++) {
+      const row = data[i];
+      const rawCode = String(row[empCodeCol] ?? '').trim();
+      if (!rawCode.toUpperCase().startsWith('EMP')) continue;
+
+      const rawBasic = row[basicCol];
+      const basic = typeof rawBasic === 'number' ? rawBasic : parseFloat(String(rawBasic ?? '0')) || 0;
+
+      sheetRows.push({
+        empCode:    rawCode,
+        name:       nameCol >= 0    ? String(row[nameCol]    ?? '').trim() : '',
+        surname:    surnameCol >= 0 ? String(row[surnameCol] ?? '').trim() : '',
+        department: deptCol >= 0    ? String(row[deptCol]    ?? '').trim() : '',
+        basic,
+      });
+    }
+
+    if (sheetRows.length > 0) {
+      results.push({ month, year, sheetName, rows: sheetRows });
+    }
+  }
+
+  return results;
+}

@@ -2,14 +2,14 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile } from '@/lib/vip-parser';
+import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile, parseCslPayrollSchedule, type PayrollSchedulePeriod } from '@/lib/vip-parser';
 import { isEmployeeCsvExport, parseEmployeeCsvExport, type RoundtripRow } from '@/lib/employee-csv';
 import { Hotel } from '@/types/database';
 import { fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
 import { Upload, CheckCircle, FileText, ChevronRight } from 'lucide-react';
 
 type Step = 'select' | 'preview' | 'done';
-type ImportType = 'vip' | 'employee' | 'medical' | 'roundtrip';
+type ImportType = 'vip' | 'employee' | 'medical' | 'roundtrip' | 'payroll-schedule';
 
 interface ImportRow {
   importType: ImportType;
@@ -96,6 +96,8 @@ export default function ImportPage() {
   const [periodMonth, setPeriodMonth] = useState(new Date().getMonth() + 1);
   const [periodYear,  setPeriodYear]  = useState(new Date().getFullYear());
   const [roundtripRows, setRoundtripRows] = useState<RoundtripRow[]>([]);
+  const [payrollPeriods, setPayrollPeriods] = useState<PayrollSchedulePeriod[]>([]);
+  const [selectedPeriodIdx, setSelectedPeriodIdx] = useState(0);
   const [importMode, setImportMode] = useState<'update' | 'new'>('new');
   const [existingEmpData, setExistingEmpData] = useState<Map<string, Record<string, any>>>(new Map());
   const [loading,   setLoading]   = useState(false);
@@ -119,6 +121,23 @@ export default function ImportPage() {
     const file = e.target.files?.[0];
     if (!file || !hotelId) return;
     setLoading(true);
+
+    // ── CSL Payroll Schedule (.xlsx multi-sheet) ──────────────────────────────
+    if (file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls')) {
+      const buf = await file.arrayBuffer();
+      const periods = await parseCslPayrollSchedule(buf);
+      if (periods.length > 0) {
+        setPayrollPeriods(periods);
+        setImportType('payroll-schedule');
+        const last = periods[periods.length - 1];
+        setSelectedPeriodIdx(periods.length - 1);
+        setPeriodMonth(last.month);
+        setPeriodYear(last.year);
+        setLoading(false);
+        setStep('preview');
+        return;
+      }
+    }
 
     const text = await file.text();
     const firstLine = text.split('\n')[0] ?? '';
@@ -466,6 +485,66 @@ export default function ImportPage() {
     setStep('done');
   }
 
+  async function confirmPayrollSchedule() {
+    setImporting(true);
+    const sb2 = createClient();
+    const period = payrollPeriods[selectedPeriodIdx];
+
+    const { data: existing } = await sb2
+      .from('employees').select('id, employee_code').eq('hotel_id', hotelId);
+
+    const codeMap = new Map(
+      (existing ?? [])
+        .filter((e: any) => e.employee_code)
+        .map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string]),
+    );
+
+    const matched = period.rows.filter(r => codeMap.has(r.empCode.toUpperCase()));
+    const unmatched = period.rows.filter(r => !codeMap.has(r.empCode.toUpperCase()));
+
+    const { data: importRec } = await sb2.from('payroll_imports').insert({
+      hotel_id:           hotelId,
+      filename:           `Payroll_Schedule_${period.sheetName}`,
+      period_month:       period.month,
+      period_year:        period.year,
+      employees_added:    0,
+      employees_updated:  matched.length,
+      employees_flagged:  unmatched.length,
+      status:             'confirmed',
+    }).select().single();
+
+    const importId = (importRec as any)?.id;
+    let updated = 0;
+
+    for (const row of matched) {
+      const employeeId = codeMap.get(row.empCode.toUpperCase())!;
+      if (row.department) {
+        await sb2.from('employees').update({ department_code: row.department }).eq('id', employeeId);
+      }
+      await sb2.from('salary_records').upsert({
+        employee_id:           employeeId,
+        import_id:             importId,
+        period_month:          period.month,
+        period_year:           period.year,
+        basic_salary:          row.basic,
+        total_earnings:        row.basic,
+        net_salary:            row.basic,
+        ctc:                   row.basic,
+        allowances:            {},
+        tax_paye:              0, uif_employee:     0, medical_employee:  0,
+        ancilla_employee:      0, provident_employee: 0, total_deductions: 0,
+        uif_company:           0, medical_company:   0, provident_company: 0,
+        sdl_company:           0, ancilla_company:   0, total_company_contrib: 0,
+        total_payroll_burden:  0, total_cost:        row.basic,
+      }, { onConflict: 'employee_id,period_year,period_month' });
+      updated++;
+    }
+
+    setResult({ added: 0, updated });
+    setImporting(false);
+    setStep('done');
+  }
+
   async function confirmImport() {
     setImporting(true);
     const sb2 = createClient();
@@ -556,6 +635,8 @@ export default function ImportPage() {
     setRows([]);
     setMedicalRows([]);
     setRoundtripRows([]);
+    setPayrollPeriods([]);
+    setSelectedPeriodIdx(0);
     setErrors([]);
     setImportMode('new');
     setExistingEmpData(new Map());
@@ -632,9 +713,9 @@ export default function ImportPage() {
                   <Upload className="h-8 w-8 text-muted-foreground" />
                   <div className="text-center">
                     <p className="text-sm font-medium">Click to select file</p>
-                    <p className="text-xs text-muted-foreground mt-1">.csv  ·  .txt  ·  .prn  — VIP or Excel export</p>
+                    <p className="text-xs text-muted-foreground mt-1">.csv  ·  .txt  ·  .prn  ·  .xlsx  — VIP, Excel export, or Payroll Schedule</p>
                   </div>
-                  <input ref={fileRef} type="file" accept=".csv,.txt,.prn" onChange={handleFile} className="hidden" disabled={loading} />
+                  <input ref={fileRef} type="file" accept=".csv,.txt,.prn,.xlsx,.xls" onChange={handleFile} className="hidden" disabled={loading} />
                 </label>
                 {loading && <p className="text-sm text-muted-foreground mt-2 text-center">Detecting format and parsing…</p>}
               </div>
@@ -823,8 +904,97 @@ export default function ImportPage() {
         </div>
       )}
 
+      {/* Step 2: Preview — Payroll Schedule (xlsx) */}
+      {step === 'preview' && importType === 'payroll-schedule' && (() => {
+        const period = payrollPeriods[selectedPeriodIdx];
+        return (
+          <div className="space-y-4">
+            <div className="flex gap-3 flex-wrap items-center">
+              <span className="rounded-full px-3 py-1 text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">
+                Payroll Schedule (xlsx)
+              </span>
+              <span className="text-sm text-muted-foreground">
+                {payrollPeriods.length} sheet{payrollPeriods.length !== 1 ? 's' : ''} detected
+              </span>
+            </div>
+
+            {/* Period selector */}
+            <div className="flex items-center gap-3">
+              <label className="text-sm font-medium">Select month to import:</label>
+              <select
+                value={selectedPeriodIdx}
+                onChange={e => {
+                  const idx = Number(e.target.value);
+                  setSelectedPeriodIdx(idx);
+                  setPeriodMonth(payrollPeriods[idx].month);
+                  setPeriodYear(payrollPeriods[idx].year);
+                }}
+                className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
+              >
+                {payrollPeriods.map((p, i) => (
+                  <option key={i} value={i}>{p.sheetName} ({MONTH_NAMES[p.month - 1]} {p.year})</option>
+                ))}
+              </select>
+            </div>
+
+            {period && (() => {
+              const matched   = period.rows.filter(r => true); // shown in table; unmatched highlighted
+              return (
+                <div className="bg-white rounded-xl border overflow-x-auto">
+                  <table className="w-full text-sm whitespace-nowrap">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="text-left px-4 py-3 font-medium text-muted-foreground">Code</th>
+                        <th className="text-left px-4 py-3 font-medium text-muted-foreground">Name</th>
+                        <th className="text-left px-4 py-3 font-medium text-muted-foreground">Department</th>
+                        <th className="text-right px-4 py-3 font-medium text-muted-foreground">Basic Salary</th>
+                        <th className="text-left px-4 py-3 font-medium text-muted-foreground">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {matched.map((r, i) => {
+                        const isMatched = true; // will be resolved on confirm
+                        return (
+                          <tr key={i} className="border-b last:border-0 hover:bg-muted/10">
+                            <td className="px-4 py-2.5 font-mono text-xs">{r.empCode}</td>
+                            <td className="px-4 py-2.5 font-medium">{r.surname}{r.surname && r.name ? ', ' : ''}{r.name}</td>
+                            <td className="px-4 py-2.5 text-muted-foreground text-xs">{r.department}</td>
+                            <td className="px-4 py-2.5 text-right font-mono">{fmt(r.basic)}</td>
+                            <td className="px-4 py-2.5">
+                              <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-blue-50 text-blue-700">Update</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+
+            <p className="text-xs text-muted-foreground">
+              Only <strong>basic salary</strong> is imported. Run <em>Calculate Burden</em> or <em>Methods → Save &amp; Update</em> afterwards to recompute contributions and provisions.
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={confirmPayrollSchedule}
+                disabled={importing || !period}
+                className="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-5 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                <FileText className="h-4 w-4" />
+                {importing ? 'Importing…' : `Import ${period?.rows.length ?? 0} employees — ${period ? MONTH_NAMES[period.month - 1] + ' ' + period.year : ''}`}
+              </button>
+              <button onClick={reset} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+                Cancel
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Step 2: Preview — Employee / VIP */}
-      {step === 'preview' && importType !== 'medical' && importType !== 'roundtrip' && (
+      {step === 'preview' && importType !== 'medical' && importType !== 'roundtrip' && importType !== 'payroll-schedule' && (
         <div className="space-y-4">
           <div className="flex gap-3 flex-wrap items-center">
             <span className={`rounded-full px-3 py-1 text-xs font-medium ${importType === 'employee' ? 'bg-purple-50 text-purple-700 border border-purple-200' : 'bg-sky-50 text-sky-700 border border-sky-200'}`}>
