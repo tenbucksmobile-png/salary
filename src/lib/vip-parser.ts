@@ -194,6 +194,7 @@ export interface TSVEmployee {
   grossSalary: number;
   gradeLabel: string | null;
   medicalCompany: number;
+  idNumber: string;
 }
 
 function parseTSVDate(s: string): string | null {
@@ -296,7 +297,9 @@ export function isTabularEmployeeFile(firstLine: string): boolean {
   const l = firstLine.trim().toLowerCase().replace(/"/g, '');
   const hasName   = l.includes('surname') || l.includes('first name') || l.includes('firstname');
   const hasSalary = l.includes('gross')   || l.includes('salary');
-  return hasName && hasSalary;
+  const hasId     = l.includes('omang')   || l.includes('id number')  || l.includes('national id') || l.includes('identity');
+  const hasDept   = (l.includes('department') || l.includes('dept'))  && (l.includes('title') || l.includes('position'));
+  return hasName && (hasSalary || hasId || hasDept);
 }
 
 // Keep old export name for compatibility
@@ -332,6 +335,7 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
     gross:     header.findIndex(h => h.includes('gross') || (h.includes('salary') && !h.includes('net'))),
     grade:     header.findIndex(h => h === 'grade' || h === 'grade label' || h === 'gradelabel'),
     medical:   header.findIndex(h => h.includes('medical')),
+    idNumber:  header.findIndex(h => h === 'omang' || h === 'id number' || h === 'id_number' || h === 'id no' || h === 'national id' || h.includes('identity')),
   };
 
   for (let i = 1; i < lines.length; i++) {
@@ -349,6 +353,7 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
       grossSalary:    parseTabularAmount(get('gross')),
       gradeLabel:     get('grade') || null,
       medicalCompany: parseTabularAmount(get('medical')),
+      idNumber:       get('idNumber'),
     });
   }
   return { employees, errors };

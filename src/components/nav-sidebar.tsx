@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 const ADMIN_NAV = [
   { label: 'Dashboard',      href: '/dashboard',               icon: LayoutDashboard },
   { label: 'Employees',      href: '/dashboard/employees',     icon: Users },
-  { label: 'Import Payroll', href: '/dashboard/import',        icon: Upload },
+  { label: 'Import HR List', href: '/dashboard/import',        icon: Upload },
   { label: 'Salary Review',  href: '/dashboard/salary-review', icon: TrendingUp },
   { label: 'Reports',        href: '/dashboard/reports',       icon: BarChart2 },
   { label: 'Reconciliation', href: '/dashboard/reconciliation', icon: ClipboardCheck },
@@ -18,7 +18,7 @@ const ADMIN_NAV = [
 
 const SUB_NAV = [
   { label: 'Employees',      href: '/dashboard/employees',     icon: Users },
-  { label: 'Import Payroll', href: '/dashboard/import',        icon: Upload },
+  { label: 'Import HR List', href: '/dashboard/import',        icon: Upload },
 ];
 
 interface NavSidebarProps {

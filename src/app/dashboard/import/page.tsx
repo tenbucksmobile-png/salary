@@ -259,7 +259,7 @@ export default function ImportPage() {
           aka: '',
           department: emp.department,
           jobTitle: emp.jobTitle,
-          idNumber: '', paypoint: '', category: 0, jobGrade: 0,
+          idNumber: emp.idNumber, paypoint: '', category: 0, jobGrade: 0,
           allowances: {},
           basicSalary: emp.grossSalary,
           totalEarnings: emp.grossSalary,
@@ -599,6 +599,7 @@ export default function ImportPage() {
         await sb2.from('employees').update({
           job_title: row.jobTitle || null,
           department_code: row.department || null,
+          ...(row.idNumber ? { id_number: row.idNumber } : {}),
           ...(row.paypoint ? { paypoint: row.paypoint } : {}),
           ...(row.category ? { category: row.category } : {}),
           ...(row.jobGrade ? { job_grade: row.jobGrade } : {}),
@@ -609,7 +610,7 @@ export default function ImportPage() {
         updated++;
       }
 
-      if (employeeId) {
+      if (employeeId && importType !== 'employee') {
         await sb2.from('salary_records').upsert({
           employee_id: employeeId,
           import_id: importId,
@@ -662,9 +663,9 @@ export default function ImportPage() {
   return (
     <div className="p-8 max-w-5xl">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold">Import Employees</h1>
+        <h1 className="text-2xl font-bold">Import HR List</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Upload a VIP Report 710 payroll file <em>or</em> any tabular employee export (Excel CSV / TSV)
+          Upload a VIP Report 710 payroll file, a tabular HR list (Excel / CSV / TSV), or a CSL Payroll Schedule workbook
         </p>
       </div>
 
@@ -697,27 +698,6 @@ export default function ImportPage() {
 
           {hotelId && (
             <>
-              <div>
-                <label className="text-sm font-medium block mb-1">Payroll period</label>
-                <div className="flex gap-2">
-                  <select
-                    value={periodMonth}
-                    onChange={e => setPeriodMonth(Number(e.target.value))}
-                    className="flex-1 rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
-                  >
-                    {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
-                  </select>
-                  <select
-                    value={periodYear}
-                    onChange={e => setPeriodYear(Number(e.target.value))}
-                    className="w-28 rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
-                  >
-                    {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
-                  </select>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">VIP files detect the period automatically. Required for all other file types.</p>
-              </div>
-
               <div>
                 <label className="text-sm font-medium block mb-1">File</label>
                 <label className={`flex flex-col items-center justify-center gap-3 border-2 border-dashed rounded-xl p-8 cursor-pointer transition-colors ${loading ? 'opacity-50' : 'hover:border-primary hover:bg-muted/20'}`}>
@@ -1009,11 +989,13 @@ export default function ImportPage() {
         <div className="space-y-4">
           <div className="flex gap-3 flex-wrap items-center">
             <span className={`rounded-full px-3 py-1 text-xs font-medium ${importType === 'employee' ? 'bg-purple-50 text-purple-700 border border-purple-200' : 'bg-sky-50 text-sky-700 border border-sky-200'}`}>
-              {importType === 'employee' ? 'Employee Details (CSV/TSV)' : 'VIP Report 710'}
+              {importType === 'employee' ? 'HR List' : 'VIP Report 710'}
             </span>
-            <span className="rounded-lg bg-muted px-3 py-1.5 text-sm text-muted-foreground">
-              Period: <strong className="text-foreground">{MONTH_NAMES[periodMonth - 1]} {periodYear}</strong>
-            </span>
+            {importType === 'vip' && (
+              <span className="rounded-lg bg-muted px-3 py-1.5 text-sm text-muted-foreground">
+                Period: <strong className="text-foreground">{MONTH_NAMES[periodMonth - 1]} {periodYear}</strong>
+              </span>
+            )}
             <span className="rounded-lg bg-green-50 border border-green-200 px-3 py-1.5 text-sm text-green-700">
               <strong>{addCount}</strong> new
             </span>
@@ -1036,6 +1018,7 @@ export default function ImportPage() {
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Name</th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Department</th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Title</th>
+                  {importType === 'employee' && <th className="text-left px-4 py-3 font-medium text-muted-foreground">ID / Omang</th>}
                   {importType === 'employee' && <th className="text-left px-4 py-3 font-medium text-muted-foreground">Start Date</th>}
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Gross</th>
                   {importType === 'vip' && <th className="text-right px-4 py-3 font-medium text-muted-foreground">CTC</th>}
@@ -1054,6 +1037,9 @@ export default function ImportPage() {
                     <td className="px-4 py-2.5 font-medium">{r.surname}, {r.firstName}</td>
                     <td className="px-4 py-2.5 text-muted-foreground">{r.department || '—'}</td>
                     <td className="px-4 py-2.5">{r.jobTitle || '—'}</td>
+                    {importType === 'employee' && (
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground font-mono">{r.idNumber || '—'}</td>
+                    )}
                     {importType === 'employee' && (
                       <td className="px-4 py-2.5 text-xs text-muted-foreground">
                         {r.employmentDate ? new Date(r.employmentDate).toLocaleDateString('en-ZA') : '—'}
