@@ -193,7 +193,7 @@ function computeData(
 
   const emps = employees.filter(e =>
     (hotelIds.length === 0 || hotelIds.includes(e.hotel_id)) &&
-    (statuses.length  === 0 || statuses.includes(e.status))
+    (statuses.length  === 0 || (statuses as string[]).includes(e.status))
   );
 
   type EmpRec = { emp: Employee; sr: SalaryRecord | undefined };
