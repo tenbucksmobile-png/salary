@@ -6,6 +6,7 @@ import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { calculateBurden, isBotswana } from '@/lib/payroll-calc';
 import { sortHotels } from '@/lib/utils';
 import { RefreshCw, CheckCircle } from 'lucide-react';
+import InflationHistoryCard from '../InflationHistoryCard';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -602,6 +603,10 @@ export default function MethodsPage() {
       ) : (
         <div className="text-sm text-muted-foreground">Loading…</div>
       )}
+
+      <div className="mt-10">
+        <InflationHistoryCard hotels={hotels} />
+      </div>
     </div>
   );
 }

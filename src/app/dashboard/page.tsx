@@ -3,7 +3,7 @@ import { Hotel, SalaryRecord, Employee, PayrollImport, ScenarioLine } from '@/ty
 import { fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
 import { Calendar } from 'lucide-react';
 import SalarySummaryTable from './SalarySummaryTable';
-import InflationHistoryCard from './InflationHistoryCard';
+
 
 interface GradeStats {
   headcount:    number;
@@ -131,10 +131,6 @@ export default async function DashboardPage() {
       </div>
 
       <SalarySummaryTable />
-
-      <div className="mt-8">
-        <InflationHistoryCard hotels={stats.map(s => s.hotel)} />
-      </div>
 
       <div className="grid grid-cols-1 gap-4 mt-8">
         {stats.map(s => (
