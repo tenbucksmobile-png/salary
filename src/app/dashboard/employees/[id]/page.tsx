@@ -47,7 +47,7 @@ export default function EmployeeDetailPage() {
 
   const [salForm, setSalForm] = useState(() => {
     const d = new Date();
-    return { basic_salary: 0, total_earnings: 0, period_month: d.getMonth() + 1, period_year: d.getFullYear() };
+    return { structure: 0, total_earnings: 0, period_month: d.getMonth() + 1, period_year: d.getFullYear() };
   });
 
   useEffect(() => {
@@ -83,12 +83,17 @@ export default function EmployeeDetailPage() {
           gratuity_rate:        (e as any).gratuity_rate        ?? 0,
         });
         if (salList.length > 0) {
+          const sal = salList[0];
+          // Read stored structure, or infer it from existing basic/total (VIP-imported records)
+          const storedStructure = typeof (sal.allowances as any)?.structure === 'number'
+            ? (sal.allowances as any).structure
+            : Math.max(0, sal.total_earnings - sal.basic_salary);
           setSalForm(f => ({
             ...f,
-            basic_salary: salList[0].basic_salary,
-            total_earnings: salList[0].total_earnings,
-            period_month: salList[0].period_month,
-            period_year: salList[0].period_year,
+            total_earnings: sal.total_earnings,
+            structure: storedStructure,
+            period_month: sal.period_month,
+            period_year: sal.period_year,
           }));
         }
       }
@@ -122,17 +127,20 @@ export default function EmployeeDetailPage() {
     setSavingSal(true);
     setSaveSalError('');
     const existing = salaries[0];
+    const basicSalary = Math.max(0, salForm.total_earnings - salForm.structure);
 
     if (existing) {
+      const existingAllowances = (existing.allowances as Record<string, number>) ?? {};
       const { error } = await sb.from('salary_records').update({
-        basic_salary: salForm.basic_salary,
+        basic_salary: basicSalary,
         total_earnings: salForm.total_earnings,
+        allowances: { ...existingAllowances, structure: salForm.structure },
       }).eq('id', existing.id);
       setSavingSal(false);
       if (error) { setSaveSalError(error.message); return; }
       setSalaries(prev => prev.map(s =>
         s.id === existing.id
-          ? { ...s, basic_salary: salForm.basic_salary, total_earnings: salForm.total_earnings }
+          ? { ...s, basic_salary: basicSalary, total_earnings: salForm.total_earnings, allowances: { ...existingAllowances, structure: salForm.structure } }
           : s
       ));
     } else {
@@ -140,9 +148,9 @@ export default function EmployeeDetailPage() {
         employee_id: id,
         period_month: salForm.period_month,
         period_year: salForm.period_year,
-        basic_salary: salForm.basic_salary,
+        basic_salary: basicSalary,
         total_earnings: salForm.total_earnings,
-        allowances: {},
+        allowances: { structure: salForm.structure },
         tax_paye: 0, uif_employee: 0, medical_employee: 0,
         ancilla_employee: 0, provident_employee: 0, total_deductions: 0,
         uif_company: 0, medical_company: 0, provident_company: 0,
@@ -171,6 +179,7 @@ export default function EmployeeDetailPage() {
 
   const latestSal = salaries[0];
   const fmt = (n: number) => fmtCurrency(n, hotel?.country ?? '');
+  const derivedBasic = Math.max(0, salForm.total_earnings - salForm.structure);
 
   return (
     <div className="p-8 max-w-4xl">
@@ -408,19 +417,19 @@ export default function EmployeeDetailPage() {
               )}
 
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground shrink-0">Basic Salary</span>
+                <span className="text-muted-foreground shrink-0">Structure</span>
                 <input
                   type="number"
                   step="0.01"
                   min="0"
-                  value={salForm.basic_salary}
-                  onChange={e => setSalForm(f => ({ ...f, basic_salary: parseFloat(e.target.value) || 0 }))}
+                  value={salForm.structure}
+                  onChange={e => setSalForm(f => ({ ...f, structure: parseFloat(e.target.value) || 0 }))}
                   className="w-36 rounded-md border border-input px-2 py-1 text-sm text-right font-mono outline-none focus:ring-2 focus:ring-ring"
                 />
               </div>
 
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground shrink-0">Gross Salary</span>
+                <span className="text-muted-foreground shrink-0">Total (Gross)</span>
                 <input
                   type="number"
                   step="0.01"
@@ -429,6 +438,13 @@ export default function EmployeeDetailPage() {
                   onChange={e => setSalForm(f => ({ ...f, total_earnings: parseFloat(e.target.value) || 0 }))}
                   className="w-36 rounded-md border border-input px-2 py-1 text-sm text-right font-mono outline-none focus:ring-2 focus:ring-ring"
                 />
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground shrink-0">Basic Salary</span>
+                <span className="w-36 text-right text-sm font-mono px-2 py-1 text-muted-foreground">
+                  {fmt(derivedBasic)}
+                </span>
               </div>
 
               {latestSal && (

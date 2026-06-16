@@ -348,12 +348,12 @@ The salary review Excel export reads all five localStorage keys in `handleExport
 Re-uploading any slot replaces it (upsert on `period_id, upload_type`).
 
 **Parsers** (`src/lib/recon-parsers.ts`):
-- `parseAfritecXls` — detects header by keyword; col 5 = Employee Number, col 10 = Regular Instalment; totals row has no emp code
+- `parseAfritecXls` — detects header by keyword; col 5 = Employee Number, col 10 = Regular Instalment; totals row has no emp code. **Also used as the catch-all for CB Stores and Topline** — dispatch in `handleUpload`: `payroll`→`parsePayrollXlsx`, `furnmart`→`parseFurnmart`, `bodulo`→`parseBodulo`, all others (afritec/topline/cbstores)→`parseAfritecXls(buf, name, type)` with `uploadType` threaded through
 - `parseFurnmart` — header detected by "EMP NO"; col 11 (TOTAL) only populated on the last SEQ row per employee; employees with no code go to `unmatchedLines`
 - `parseBodulo` — header at row 0; col 4 = Custom Policy Number, col 9 = Premium Due; "TOTAL TO PAY" extracted from bottom summary block
 - `parsePayrollXlsx` — header detected by `col[0]="Code"`; all other columns detected by keyword (e.g. "furnmart", "cb stores", "funeral", "staff loan") — robust across hotel format variants
 
-All parsers are async and dynamically import `xlsx-js-style`.
+All parsers are async and dynamically import `xlsx-js-style` (avoids SSR issues — any new parser must follow this pattern).
 
 **Deductions Check tab**: requires payroll upload. Shows a summary table (statement total vs payroll total, difference) then a per-employee breakdown. Vendor filter buttons — **All / Furnmart / Loans / CB Stores / Bodulo** — narrow the employee table to the selected vendor's columns. Unmatched statement entries (no payroll code match) are shown in an orange callout. Afritec and Topline both map to the payroll `staffLoans` column and are summed together.
 
