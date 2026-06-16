@@ -600,7 +600,7 @@ export default function EmployeesPage() {
       case 'years_service':   return yrs != null ? `${yrs}` : '—';
       // Salary fields
       case 'structure':       return e.grade_label ?? '—';
-      case 'structure_sal':   return '—';
+      case 'structure_sal': { const s = (sal?.allowances as Record<string, number>)?.structure; return s ? fmt(s) : '—'; }
       case 'basic':           return sal?.basic_salary    ? fmt(sal.basic_salary)    : '—';
       case 'gross_salary':    return sal?.total_earnings  ? fmt(sal.total_earnings)  : '—';
       case 'ctc':             return sal?.ctc             ? fmt(sal.ctc)             : '—';
