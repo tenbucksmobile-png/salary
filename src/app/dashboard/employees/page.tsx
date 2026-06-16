@@ -187,7 +187,6 @@ export default function EmployeesPage() {
   const [showColPicker, setShowColPicker] = useState(false);
   const [calculating, setCalculating] = useState(false);
   const [calcDone, setCalcDone] = useState(false);
-  const [exportHotel, setExportHotel] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const [showAddModal, setShowAddModal] = useState(false);
@@ -200,10 +199,6 @@ export default function EmployeesPage() {
     if (hotelFilter) setVisibleCols(loadVisibleCols(hotelFilter));
   }, [hotelFilter]);
 
-  // Keep export hotel in sync with filter hotel
-  useEffect(() => {
-    if (hotelFilter) setExportHotel(hotelFilter);
-  }, [hotelFilter]);
 
   // Persist hotel filter selection
   useEffect(() => {
@@ -469,14 +464,14 @@ export default function EmployeesPage() {
   }
 
   function handleExportCSV() {
-    const hotel = hotelMap.get(exportHotel);
+    const hotel = hotelMap.get(hotelFilter);
     if (!hotel) return;
-    const hotelEmployees = employees.filter(e => e.hotel_id === exportHotel);
+    const hotelEmployees = employees.filter(e => e.hotel_id === hotelFilter);
 
     // Resolve which CSV columns to emit — use the saved column picker selection
     // for the export hotel, mapped through COL_TO_CSV. Columns with no CSV
     // equivalent (hotel, years_service, structure_sal) are silently skipped.
-    const savedCols = loadVisibleCols(exportHotel);
+    const savedCols = loadVisibleCols(hotelFilter);
     const csvCols = ALL_COLUMNS
       .filter(c => savedCols.has(c.id))
       .map(c => COL_TO_CSV[c.id])
@@ -639,24 +634,15 @@ export default function EmployeesPage() {
             </button>
           )}
           {/* Export CSV */}
-          <div className="flex items-center gap-1.5">
-            <select
-              value={exportHotel}
-              onChange={e => setExportHotel(e.target.value)}
-              className="rounded-md border border-input px-2 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
-            >
-              {hotels.map(h => <option key={h.id} value={h.id}>{h.short_code}</option>)}
-            </select>
-            <button
-              onClick={handleExportCSV}
-              disabled={loading || !exportHotel}
-              className="flex items-center gap-2 rounded-md border border-input bg-white px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
-              title="Export all employees for the selected hotel as a CSV that can be edited and re-imported"
-            >
-              <Download className="h-4 w-4" />
-              Export CSV
-            </button>
-          </div>
+          <button
+            onClick={handleExportCSV}
+            disabled={loading || !hotelFilter}
+            className="flex items-center gap-2 rounded-md border border-input bg-white px-3 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+            title="Export all employees for the selected hotel as a CSV that can be edited and re-imported"
+          >
+            <Download className="h-4 w-4" />
+            Export CSV
+          </button>
           {/* Calculate Burden */}
           <button
             onClick={runCalculateBurden}
