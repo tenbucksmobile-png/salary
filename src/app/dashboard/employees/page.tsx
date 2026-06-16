@@ -36,9 +36,9 @@ const ALL_COLUMNS: ColDef[] = [
   { id: 'hotel',           label: 'Hotel',             group: 'Employee',    defaultVisible: true },
   { id: 'department',      label: 'Department',        group: 'Employee',    defaultVisible: true },
   { id: 'title',           label: 'Job Title',         group: 'Employee',    defaultVisible: true },
-  { id: 'structure',       label: 'Grade',             group: 'Employee',    defaultVisible: true },
   { id: 'employment_date', label: 'Start Date',        group: 'Employee',    defaultVisible: false },
   { id: 'years_service',   label: 'Yrs Service',       group: 'Employee',    defaultVisible: false, align: 'right' },
+  { id: 'structure',       label: 'Grade',             group: 'Employee',    defaultVisible: true },
   // Core salary
   { id: 'basic',           label: 'Basic Salary',      group: 'Salary',      defaultVisible: true,  align: 'right' },
   { id: 'structure_sal',   label: 'Structure',         group: 'Salary',      defaultVisible: true },
