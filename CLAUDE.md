@@ -375,14 +375,27 @@ The salary review Excel export reads all five localStorage keys in `handleExport
 Re-uploading any slot replaces it (upsert on `period_id, upload_type`).
 
 **Parsers** (`src/lib/recon-parsers.ts`):
-- `parseAfritecXls` — detects header by keyword; col 5 = Employee Number, col 10 = Regular Instalment; totals row has no emp code. **Also used as the catch-all for CB Stores and Topline** — dispatch in `handleUpload`: `payroll`→`parsePayrollXlsx`, `furnmart`→`parseFurnmart`, `bodulo`→`parseBodulo`, all others (afritec/topline/cbstores)→`parseAfritecXls(buf, name, type)` with `uploadType` threaded through
+- `parseAfritecXls(buf, fileName, uploadType, hotelCode)` — detects header by keyword; col 5 = Employee Number, col 10 = Regular Instalment. **If the file contains a "CUSTOMER NAME" header row it delegates to `parseCbToplineFormat`** — so this function is the catch-all for afritec, topline, and cbstores. Dispatch in `handleUpload`: `payroll`→`parsePayrollXlsx`, `furnmart`→`parseFurnmart`, `bodulo`→`parseBodulo`, all others→`parseAfritecXls(buf, name, type, hotelCode)`
+- `parseCbToplineFormat` — handles the multi-section `CUSTOMER NAME / CUST.# / AMOUNT` format used by CB Stores and Topline. Sections are identified by `TO: <label>` rows above each header. `sectionMatchesHotel()` filters which sections to include per hotel (CSL→"CSL\*", NL→"NSL\*", CFE→"CFE\*"). Each employee line is stored with `empCode = nameKey(name)` (CUST.# ignored) and `section = sectionLabel`. Returns `matchByName: true`.
 - `parseFurnmart` — header detected by "EMP NO"; col 11 (TOTAL) only populated on the last SEQ row per employee; employees with no code go to `unmatchedLines`
 - `parseBodulo` — header at row 0; col 4 = Custom Policy Number, col 9 = Premium Due; "TOTAL TO PAY" extracted from bottom summary block
-- `parsePayrollXlsx` — header detected by `col[0]="Code"`; all other columns detected by keyword (e.g. "furnmart", "cb stores", "funeral", "staff loan") — robust across hotel format variants
+- `parsePayrollXlsx` — header detected by `col[0]="Code"`; all other columns detected by keyword (e.g. "furnmart", "cb stores", "funeral", "staff loan", "afritec", "topline") — robust across hotel format variants. `afritecFromStaff` flag: when payroll has a Topline column but no dedicated Afritec column, the Staff Loans column is used as Afritec amounts.
+
+**`nameKey(raw)`** (exported from `recon-parsers.ts`) — normalises a name to a sorted word-set key: `"BEAUTY LISEHU"` and `"LISEHU BEAUTY"` both produce `"BEAUTY|LISEHU"`. Used for order-agnostic name matching.
 
 All parsers are async and dynamically import `xlsx-js-style` (avoids SSR issues — any new parser must follow this pattern).
 
-**Deductions Check tab**: requires payroll upload. Shows a summary table (statement total vs payroll total, difference) then a per-employee breakdown. Vendor filter buttons — **All / Furnmart / Loans / CB Stores / Bodulo** — narrow the employee table to the selected vendor's columns. Unmatched statement entries (no payroll code match) are shown in an orange callout. Afritec and Topline both map to the payroll `staffLoans` column and are summed together.
+**Deductions Check tab**: requires payroll upload. Page loads on CSL by default. Shows:
+1. **Orange callout** (top) — statement entries that could not be matched to any payroll employee by code or name. Entries resolved by the second-pass name match are excluded from this callout.
+2. **Summary table** — statement total vs payroll total + difference per vendor.
+3. **Employee Detail table** — colour-coded vendor filter tabs (All / Furnmart / Afritec / Topline / CB Stores / Bodulo). Each tab filters both columns AND rows — clicking Furnmart shows only employees with a Furnmart deduction. Only employees with at least one non-zero deduction are shown.
+4. **Management (CFE) section** (below staff table) — employees from MGMT-labelled sections of CB Stores / Topline statements, shown separately (no payroll comparison; these are CFE Management employees on a separate payroll).
+
+**Employee matching in the Deductions Check tab** uses a two-pass strategy:
+- *Pass 1 (code-based)*: match statement `empCode` against payroll `empCode`. CB Stores / Topline with `matchByName=true` skip this and go to pass 2.
+- *Pass 2 (name-based)*: for all `unmatchedLines` from every statement (Afritec numeric codes, Furnmart no-code entries, old-format CB/Topline), try `nameKey(payrollEmployee.name)` lookup. Resolved entries populate the employee table. Truly absent entries (no payroll counterpart) are appended as extra rows (Code = —).
+
+**Upload label**: "Topline Loan Statement" was renamed to "Topline Deductions" in `UPLOAD_CONFIGS`.
 
 **Prior Month Changes tab**: compares uploaded payroll basic salaries against the previous month's `salary_records` in DB. Shows new employees, employees no longer in payroll, and basic salary changes.
 
