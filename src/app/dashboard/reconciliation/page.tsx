@@ -631,13 +631,13 @@ export default function ReconciliationPage() {
   // Separate management employees (from MGMT sections) into their own bucket
   const isMgt = (r: EmpRow) => /mgmt|management/i.test(r.section ?? '');
 
-  // Only show rows that have at least one deduction value (stmt or payroll) for an uploaded statement
+  // Only show rows that have at least one non-zero deduction value for an uploaded statement
   const hasAnyDeduction = (r: EmpRow) =>
-    (furnmartStmt != null && (r.furnmart_stmt != null || r.furnmart_pay != null)) ||
-    (afritecStmt  != null && (r.afritec_stmt  != null || r.afritec_pay  != null)) ||
-    (toplineStmt  != null && (r.topline_stmt  != null || r.topline_pay  != null)) ||
-    (cbStmt       != null && (r.cb_stmt       != null || r.cb_pay       != null)) ||
-    (boduloStmt   != null && (r.bodulo_stmt   != null || r.bodulo_pay   != null));
+    (furnmartStmt != null && ((r.furnmart_stmt ?? 0) > 0 || (r.furnmart_pay ?? 0) > 0)) ||
+    (afritecStmt  != null && ((r.afritec_stmt  ?? 0) > 0 || (r.afritec_pay  ?? 0) > 0)) ||
+    (toplineStmt  != null && ((r.topline_stmt  ?? 0) > 0 || (r.topline_pay  ?? 0) > 0)) ||
+    (cbStmt       != null && ((r.cb_stmt       ?? 0) > 0 || (r.cb_pay       ?? 0) > 0)) ||
+    (boduloStmt   != null && ((r.bodulo_stmt   ?? 0) > 0 || (r.bodulo_pay   ?? 0) > 0));
 
   const staffEmpRows = empRows.filter(r => !isMgt(r) && hasAnyDeduction(r));
   const mgtEmpRows   = empRows.filter(r => isMgt(r)  && hasAnyDeduction(r));
