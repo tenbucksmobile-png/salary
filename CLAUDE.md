@@ -104,7 +104,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev mach
 
 **Bootstrap**: if the `users` table is empty when login is attempted, the first login auto-creates an admin using the submitted credentials + `SITE_PASSWORD` check.
 
-**Composite types in `types/database.ts`**: `EmployeeWithSalary` extends `Employee` with optional `hotel?: Hotel` and `latest_salary?: SalaryRecord` — used across dashboard pages. `HotelStats` is the per-hotel aggregate shape used by the dashboard summary.
+**Composite types in `types/database.ts`**: `EmployeeWithSalary` extends `Employee` with optional `hotel?: Hotel` and `latest_salary?: SalaryRecord` — used across dashboard pages. `HotelStats` is defined in `database.ts` but is not actually imported by `dashboard/page.tsx` — the dashboard's `getHotelStats()` function returns an inferred type (`Awaited<ReturnType<typeof getHotelStats>>[0]`) that includes a richer `byGrade` breakdown (per-grade headcount + current/new basic/CTC + increase adjustment). The exported `HotelStats` type is a simpler legacy shape and should be considered stale.
 
 ---
 
@@ -278,6 +278,7 @@ src/
         logout/route.ts   — POST: clears cookie
         me/route.ts       — GET: returns current UserContext from cookie
       access/route.ts     — POST/PATCH/DELETE: admin-only user CRUD
+    page.tsx              — Root page; immediately redirects to /dashboard
     login/page.tsx        — Login form (username + password)
     dashboard/
       page.tsx            — Dashboard: SalarySummaryTable first; hotel cards below each with per-grade breakdown table
@@ -305,7 +306,7 @@ src/
     supabase/
       client.ts           — Browser Supabase client (used by all dashboard pages)
       server.ts           — Server-side Supabase client (used only in RSC `dashboard/page.tsx`)
-    utils.ts              — fmtZAR(), fmtCurrency(), MONTH_NAMES, sortHotels(), cn()
+    utils.ts              — fmtZAR(), fmtCurrency(), fmtNumber(), MONTH_NAMES, sortHotels(), hotelSortIndex(), cn()
   components/
     nav-sidebar.tsx       — Role-aware navigation; admin sees all tabs, sub sees Employees + Import only
   middleware.ts           — HMAC cookie auth gate; blocks sub-users from Methods, Salary Review, Reports, Reconciliation, Access

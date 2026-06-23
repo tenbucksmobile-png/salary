@@ -26,7 +26,9 @@ export interface PayrollLine {
   pensionEe: number;
   paye: number;
   medAidEe: number;
-  staffLoans: number;
+  afritecLoans: number;   // Afritec-specific column (0 if not present in payroll)
+  toplineLoans: number;   // Topline-specific column (0 if not present in payroll)
+  staffLoans: number;     // Combined: afritecLoans + toplineLoans (or single combined col)
   deductionTotal: number;
   nettPay: number;
 }
@@ -65,21 +67,45 @@ export async function parseAfritecXls(
   const unmatchedLines: ReconLine[] = [];
   let stmtTotal = 0;
 
-  // Find header row (contains "Employee Number" or "Surname")
+  // Find header row — matches Afritec/Topline ("Employee Number/No") and
+  // CB Stores-style files ("Emp No", "Staff No", "Payroll No")
   const headerIdx = rows.findIndex(r =>
-    r.some((c: any) => /employee.?number|employee.?no/i.test(String(c || ''))),
+    r.some((c: any) =>
+      /employee.?n(?:umber|o\.?)|emp\.?\s*no\.?|staff\.?\s*no\.?|payroll\.?\s*no\.?/i.test(String(c || '')),
+    ),
   );
   const dataStart = headerIdx >= 0 ? headerIdx + 1 : 3;
 
   // Detect column indices from header
   const hRow = rows[headerIdx >= 0 ? headerIdx : 2] || [];
-  const colEmp = hRow.findIndex((c: any) => /employee.?number|employee.?no/i.test(String(c || '')));
-  const colAmt = hRow.findIndex((c: any) => /regular.?instal|instalment/i.test(String(c || '')));
+  const colEmp = hRow.findIndex((c: any) =>
+    /employee.?n(?:umber|o\.?)|emp\.?\s*no\.?|staff\.?\s*no\.?|payroll\.?\s*no\.?/i.test(String(c || '')),
+  );
+  // Afritec/Topline: "Regular Instalment"; CB Stores: "Amount", "Deduction", "Monthly Amount" etc.
+  const colAmt = hRow.findIndex((c: any) =>
+    /regular.?instal|instalment|^amount$|^deduction$|^monthly\s+(?:amount|inst)|amount\s+due|^due$/i.test(String(c || '')),
+  );
   const colSur = hRow.findIndex((c: any) => /surname/i.test(String(c || '')));
   const colFirst = hRow.findIndex((c: any) => /first.?name|forename/i.test(String(c || '')));
+  // CB Stores may use a single "Name" or "Employee Name" column instead of surname + first name
+  const colFullName = hRow.findIndex((c: any) => /^(?:full\s*)?name$|^employee\s*name$/i.test(String(c || '')));
 
   const eCol = colEmp >= 0 ? colEmp : 5;
-  const aCol = colAmt >= 0 ? colAmt : 10;
+  // If amount col not found and file has fewer than 10 cols, scan for last numeric column
+  let aCol = colAmt >= 0 ? colAmt : -1;
+  if (aCol < 0) {
+    // Try col 10 first (Afritec default); if the sheet is shorter, find rightmost numeric col
+    const sampleRow = rows[dataStart] || [];
+    if (sampleRow.length > 10 && Number(sampleRow[10]) > 0) {
+      aCol = 10;
+    } else {
+      // Walk right-to-left to find a column with numeric values
+      for (let c = sampleRow.length - 1; c >= 1; c--) {
+        if (Number(sampleRow[c]) > 0) { aCol = c; break; }
+      }
+      if (aCol < 0) aCol = 10; // last-resort fallback
+    }
+  }
   const sCol = colSur >= 0 ? colSur : 1;
   const fCol = colFirst >= 0 ? colFirst : 2;
 
@@ -95,7 +121,9 @@ export async function parseAfritecXls(
     }
     if (!rawCode || amount <= 0) continue;
 
-    const name = `${String(row[fCol] || '')} ${String(row[sCol] || '')}`.trim();
+    const name = colFullName >= 0
+      ? String(row[colFullName] || '').trim()
+      : `${String(row[fCol] || '')} ${String(row[sCol] || '')}`.trim();
     const line: ReconLine = { empCode: normalizeCode(rawCode), name, amount };
 
     // Unmatched = code doesn't look like a hotel employee code (no letters, or just digits)
@@ -260,9 +288,13 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
   const colPension     = col(/pension.?ee|4010/);
   const colPaye        = col(/paye|8001/);
   const colMedAid      = col(/med.*aid|8090/);
+  const colAfritec     = col(/afritec/);
+  const colTopline     = col(/topline/);
   const colStaffLoans  = col(/staff.?loan|8150/);
   const colDedTotal    = col('deduction total');
   const colNett        = col('nett pay');
+  // True when payroll spreadsheet has separate columns per lender
+  const hasSeparateLoanCols = colAfritec >= 0 || colTopline >= 0;
 
   function n(row: any[], c: number): number {
     return c >= 0 ? Number(row[c]) || 0 : 0;
@@ -277,6 +309,8 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
     const name = String(row[1] || '').trim();
 
     if (!code && name.toLowerCase() === 'total') {
+      const afritecLoans = n(row, colAfritec);
+      const toplineLoans = n(row, colTopline);
       totals = {
         basic: n(row, colBasic),
         incomeTotal: n(row, colIncome),
@@ -286,7 +320,11 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
         pensionEe: n(row, colPension),
         paye: n(row, colPaye),
         medAidEe: n(row, colMedAid),
-        staffLoans: n(row, colStaffLoans),
+        afritecLoans,
+        toplineLoans,
+        staffLoans: hasSeparateLoanCols
+          ? afritecLoans + toplineLoans
+          : n(row, colStaffLoans),
         deductionTotal: n(row, colDedTotal),
         nettPay: n(row, colNett),
       };
@@ -295,6 +333,8 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
 
     if (!code) continue; // Department header or blank row
 
+    const afritecLoans = n(row, colAfritec);
+    const toplineLoans = n(row, colTopline);
     lines.push({
       empCode: normalizeCode(code),
       name,
@@ -306,7 +346,11 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
       pensionEe: n(row, colPension),
       paye: n(row, colPaye),
       medAidEe: n(row, colMedAid),
-      staffLoans: n(row, colStaffLoans),
+      afritecLoans,
+      toplineLoans,
+      staffLoans: hasSeparateLoanCols
+        ? afritecLoans + toplineLoans
+        : n(row, colStaffLoans),
       deductionTotal: n(row, colDedTotal),
       nettPay: n(row, colNett),
     });

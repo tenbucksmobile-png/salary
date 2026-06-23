@@ -47,8 +47,8 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
     payrollKey: 'staffLoans',
   },
   {
-    type: 'topline', label: 'Topline Loan Statement', required: false,
-    accept: '.xls,.xlsx', desc: 'Monthly loan instalment schedule (.xls)',
+    type: 'topline', label: 'Topline Deductions', required: false,
+    accept: '.xls,.xlsx', desc: 'Monthly Topline deduction statement (.xls)',
     payrollKey: 'staffLoans',
   },
   {
@@ -68,7 +68,6 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
   },
 ];
 
-const LOAN_TYPES: ReconUploadType[] = ['afritec', 'topline'];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -113,7 +112,7 @@ export default function ReconciliationPage() {
   const [uploads, setUploads] = useState<ReconUpload[]>([]);
   const [queries, setQueries] = useState<ReconQuery[]>([]);
   const [tab, setTab] = useState<'upload' | 'deductions' | 'changes' | 'queries'>('upload');
-  const [dedFilter, setDedFilter] = useState<'all' | 'furnmart' | 'loans' | 'cbstores' | 'bodulo'>('all');
+  const [dedFilter, setDedFilter] = useState<'all' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo'>('all');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
@@ -358,12 +357,15 @@ export default function ReconciliationPage() {
   const cbStmt       = getStmt('cbstores');
   const boduloStmt   = getStmt('bodulo');
 
-  // Combined loan (afritec + topline both map to staffLoans in payroll)
+  // Determine if payroll has separate columns per lender (vs one combined staffLoans)
+  const payrollHasSeparateLoanCols =
+    (payroll?.totals.afritecLoans ?? 0) > 0 || (payroll?.totals.toplineLoans ?? 0) > 0;
   const loanStmtTotal = (afritecStmt?.total ?? 0) + (toplineStmt?.total ?? 0);
-  const hasLoan = afritecStmt || toplineStmt;
+  const bothLenders = !!afritecStmt && !!toplineStmt;
 
   // Summary rows for the deductions tab
-  type SummaryRow = { label: string; stmt: number; pay: number; diff: number };
+  // pay/diff are null when payroll has no comparable column (statement shown for reference only)
+  type SummaryRow = { label: string; stmt: number; pay: number | null; diff: number | null; isCombined?: boolean };
   const summaryRows: SummaryRow[] = [];
   if (payroll) {
     if (furnmartStmt) summaryRows.push({
@@ -372,18 +374,52 @@ export default function ReconciliationPage() {
       pay: payroll.totals.furnmart ?? 0,
       diff: furnmartStmt.total - (payroll.totals.furnmart ?? 0),
     });
-    if (hasLoan) summaryRows.push({
-      label: 'Afritec / Topline Loans',
-      stmt: loanStmtTotal,
-      pay: payroll.totals.staffLoans ?? 0,
-      diff: loanStmtTotal - (payroll.totals.staffLoans ?? 0),
-    });
+
+    // Afritec Loans
+    if (afritecStmt) {
+      const afritecPay = payrollHasSeparateLoanCols
+        ? (payroll.totals.afritecLoans ?? 0)
+        : (!toplineStmt ? (payroll.totals.staffLoans ?? 0) : null);
+      summaryRows.push({
+        label: 'Afritec Loans',
+        stmt: afritecStmt.total,
+        pay: afritecPay,
+        diff: afritecPay != null ? afritecStmt.total - afritecPay : null,
+      });
+    }
+
     if (cbStmt) summaryRows.push({
       label: 'CB Stores',
       stmt: cbStmt.total,
       pay: payroll.totals.cbStores ?? 0,
       diff: cbStmt.total - (payroll.totals.cbStores ?? 0),
     });
+
+    // Topline
+    if (toplineStmt) {
+      const toplinePay = payrollHasSeparateLoanCols
+        ? (payroll.totals.toplineLoans ?? 0)
+        : (!afritecStmt ? (payroll.totals.staffLoans ?? 0) : null);
+      summaryRows.push({
+        label: 'Topline',
+        stmt: toplineStmt.total,
+        pay: toplinePay,
+        diff: toplinePay != null ? toplineStmt.total - toplinePay : null,
+      });
+    }
+
+    // Combined loan reconciliation row — only needed when both lenders present
+    // but payroll has no separate columns (each row above shows stmt only in that case)
+    if (bothLenders && !payrollHasSeparateLoanCols) {
+      summaryRows.push({
+        label: 'Total Loans',
+        stmt: loanStmtTotal,
+        pay: payroll.totals.staffLoans ?? 0,
+        diff: loanStmtTotal - (payroll.totals.staffLoans ?? 0),
+        isCombined: true,
+      });
+    }
+
     if (boduloStmt) summaryRows.push({
       label: 'Bodulo Funeral',
       stmt: boduloStmt.total,
@@ -397,9 +433,10 @@ export default function ReconciliationPage() {
     empCode: string;
     name: string;
     furnmart_stmt: number | null; furnmart_pay: number | null;
-    loan_stmt: number | null;    loan_pay: number | null;
-    cb_stmt: number | null;      cb_pay: number | null;
-    bodulo_stmt: number | null;  bodulo_pay: number | null;
+    afritec_stmt: number | null;  afritec_pay: number | null;
+    topline_stmt: number | null;  topline_pay: number | null;
+    cb_stmt: number | null;       cb_pay: number | null;
+    bodulo_stmt: number | null;   bodulo_pay: number | null;
   }
 
   function buildEmpMap<T extends ReconLine>(lines?: T[]): Map<string, T> {
@@ -410,10 +447,8 @@ export default function ReconciliationPage() {
 
   const payMap     = new Map((payroll?.lines ?? []).map(l => [l.empCode, l]));
   const furnMap    = buildEmpMap(furnmartStmt?.lines);
-  const loanMap    = new Map<string, number>();
-  [...(afritecStmt?.lines ?? []), ...(toplineStmt?.lines ?? [])].forEach(l => {
-    loanMap.set(l.empCode, (loanMap.get(l.empCode) ?? 0) + l.amount);
-  });
+  const afritecMap = buildEmpMap(afritecStmt?.lines);
+  const toplineMap = buildEmpMap(toplineStmt?.lines);
   const cbMap      = buildEmpMap(cbStmt?.lines);
   const boduloMap  = buildEmpMap(boduloStmt?.lines);
 
@@ -431,19 +466,31 @@ export default function ReconciliationPage() {
     .sort()
     .map(code => {
       const pay = payMap.get(code);
+      // Per-employee loan payroll amounts — null when payroll has no separate column
+      // and both lenders are present (can't split combined staffLoans per employee)
+      const afritecPay = pay == null ? null
+        : payrollHasSeparateLoanCols ? pay.afritecLoans
+        : !toplineStmt ? pay.staffLoans
+        : null;
+      const toplinePay = pay == null ? null
+        : payrollHasSeparateLoanCols ? pay.toplineLoans
+        : !afritecStmt ? pay.staffLoans
+        : null;
       return {
         empCode: code,
         name: pay?.name
           ?? furnMap.get(code)?.name
-          ?? afritecStmt?.lines.find(l => l.empCode === code)?.name
-          ?? toplineStmt?.lines.find(l => l.empCode === code)?.name
+          ?? afritecMap.get(code)?.name
+          ?? toplineMap.get(code)?.name
           ?? cbMap.get(code)?.name
           ?? boduloMap.get(code)?.name
           ?? code,
         furnmart_stmt: furnmartStmt ? (furnMap.get(code)?.amount ?? null) : null,
         furnmart_pay: furnmartStmt && pay ? pay.furnmart : null,
-        loan_stmt: hasLoan ? (loanMap.get(code) ?? null) : null,
-        loan_pay: hasLoan && pay ? pay.staffLoans : null,
+        afritec_stmt: afritecStmt ? (afritecMap.get(code)?.amount ?? null) : null,
+        afritec_pay: afritecStmt ? afritecPay : null,
+        topline_stmt: toplineStmt ? (toplineMap.get(code)?.amount ?? null) : null,
+        topline_pay: toplineStmt ? toplinePay : null,
         cb_stmt: cbStmt ? (cbMap.get(code)?.amount ?? null) : null,
         cb_pay: cbStmt && pay ? pay.cbStores : null,
         bodulo_stmt: boduloStmt ? (boduloMap.get(code)?.amount ?? null) : null,
@@ -681,6 +728,28 @@ export default function ReconciliationPage() {
               <p className="text-muted-foreground text-sm">Upload the payroll spreadsheet first to enable cross-checks.</p>
             ) : (
               <>
+                {/* Unmatched entries — shown first so they aren't missed */}
+                {[furnmartStmt, afritecStmt, toplineStmt, cbStmt, boduloStmt].some(s => (s?.unmatchedLines.length ?? 0) > 0) && (
+                  <div className="rounded border border-orange-200 bg-orange-50 p-4">
+                    <p className="text-xs font-semibold text-orange-800 mb-2">
+                      Unmatched statement entries (no payroll employee code found)
+                    </p>
+                    {[
+                      { stmt: furnmartStmt, label: 'Furnmart' },
+                      { stmt: afritecStmt,  label: 'Afritec' },
+                      { stmt: toplineStmt,  label: 'Topline' },
+                      { stmt: cbStmt,       label: 'CB Stores' },
+                      { stmt: boduloStmt,   label: 'Bodulo' },
+                    ].map(({ stmt, label }) =>
+                      (stmt?.unmatchedLines ?? []).map((l, i) => (
+                        <div key={`${label}-${i}`} className="text-xs text-orange-700">
+                          {label}: {l.name || '(no name)'} — {fmt(l.amount, country)}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+
                 {/* Summary cards */}
                 {summaryRows.length > 0 && (
                   <div>
@@ -698,18 +767,20 @@ export default function ReconciliationPage() {
                       </thead>
                       <tbody>
                         {summaryRows.map((row, i) => (
-                          <tr key={row.label} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
-                            <td className="px-4 py-2 font-medium">{row.label}</td>
+                          <tr key={row.label} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${row.isCombined ? 'border-t border-muted' : ''}`}>
+                            <td className={`px-4 py-2 font-medium ${row.isCombined ? 'pl-8 text-muted-foreground italic text-xs' : ''}`}>
+                              {row.isCombined ? `↳ ${row.label}` : row.label}
+                            </td>
                             <td className="px-4 py-2 text-right tabular-nums">{fmt(row.stmt, country)}</td>
-                            <td className="px-4 py-2 text-right tabular-nums">{fmt(row.pay, country)}</td>
-                            <td className={`px-4 py-2 text-right tabular-nums ${diffClass(row.diff)}`}>
-                              {fmtDiff(row.diff, country)}
+                            <td className="px-4 py-2 text-right tabular-nums">{row.pay != null ? fmt(row.pay, country) : '—'}</td>
+                            <td className={`px-4 py-2 text-right tabular-nums ${row.diff != null ? diffClass(row.diff) : 'text-muted-foreground'}`}>
+                              {row.diff != null ? fmtDiff(row.diff, country) : '—'}
                             </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
-                    {summaryRows.some(r => Math.abs(r.diff) > 0.01) && (
+                    {summaryRows.some(r => r.diff != null && Math.abs(r.diff) > 0.01) && (
                       <p className="mt-2 text-xs text-orange-600">
                         Positive difference = statement amount exceeds payroll (potential under-capture). Negative = payroll exceeds statement.
                       </p>
@@ -734,7 +805,8 @@ export default function ReconciliationPage() {
                         {([
                           { key: 'all',      label: 'All' },
                           furnmartStmt ? { key: 'furnmart', label: 'Furnmart' }  : null,
-                          hasLoan      ? { key: 'loans',    label: 'Loans' }     : null,
+                          afritecStmt  ? { key: 'afritec',  label: 'Afritec' }  : null,
+                          toplineStmt  ? { key: 'topline',  label: 'Topline' }  : null,
                           cbStmt       ? { key: 'cbstores', label: 'CB Stores' } : null,
                           boduloStmt   ? { key: 'bodulo',   label: 'Bodulo' }    : null,
                         ]).filter(Boolean).map((f: any) => (
@@ -763,9 +835,14 @@ export default function ReconciliationPage() {
                               <th className="px-3 py-2 text-right">Furnmart Pay</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
-                            {hasLoan && (dedFilter === 'all' || dedFilter === 'loans') && <>
-                              <th className="px-3 py-2 text-right">Loans Stmt</th>
-                              <th className="px-3 py-2 text-right">Loans Pay</th>
+                            {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
+                              <th className="px-3 py-2 text-right">Afritec Stmt</th>
+                              <th className="px-3 py-2 text-right">Afritec Pay</th>
+                              <th className="px-3 py-2 text-right">±</th>
+                            </>}
+                            {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
+                              <th className="px-3 py-2 text-right">Topline Stmt</th>
+                              <th className="px-3 py-2 text-right">Topline Pay</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
@@ -782,19 +859,22 @@ export default function ReconciliationPage() {
                         </thead>
                         <tbody>
                           {empRows.map((row, i) => {
-                            const furnDiff = row.furnmart_stmt != null && row.furnmart_pay != null
+                            const furnDiff    = row.furnmart_stmt != null && row.furnmart_pay != null
                               ? row.furnmart_stmt - row.furnmart_pay : null;
-                            const loanDiff = row.loan_stmt != null && row.loan_pay != null
-                              ? row.loan_stmt - row.loan_pay : null;
-                            const cbDiff = row.cb_stmt != null && row.cb_pay != null
+                            const afritecDiff = row.afritec_stmt != null && row.afritec_pay != null
+                              ? row.afritec_stmt - row.afritec_pay : null;
+                            const toplineDiff = row.topline_stmt != null && row.topline_pay != null
+                              ? row.topline_stmt - row.topline_pay : null;
+                            const cbDiff      = row.cb_stmt != null && row.cb_pay != null
                               ? row.cb_stmt - row.cb_pay : null;
-                            const bodDiff = row.bodulo_stmt != null && row.bodulo_pay != null
+                            const bodDiff     = row.bodulo_stmt != null && row.bodulo_pay != null
                               ? row.bodulo_stmt - row.bodulo_pay : null;
                             const hasDiscrep =
-                              (furnDiff != null && Math.abs(furnDiff) > 0.01) ||
-                              (loanDiff != null && Math.abs(loanDiff) > 0.01) ||
-                              (cbDiff != null && Math.abs(cbDiff) > 0.01) ||
-                              (bodDiff != null && Math.abs(bodDiff) > 0.01);
+                              (furnDiff    != null && Math.abs(furnDiff)    > 0.01) ||
+                              (afritecDiff != null && Math.abs(afritecDiff) > 0.01) ||
+                              (toplineDiff != null && Math.abs(toplineDiff) > 0.01) ||
+                              (cbDiff      != null && Math.abs(cbDiff)      > 0.01) ||
+                              (bodDiff     != null && Math.abs(bodDiff)     > 0.01);
                             return (
                               <tr key={row.empCode} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${hasDiscrep ? 'ring-1 ring-inset ring-orange-200' : ''}`}>
                                 <td className="px-3 py-1.5 font-mono text-xs">{row.empCode}</td>
@@ -806,11 +886,18 @@ export default function ReconciliationPage() {
                                     {furnDiff != null ? fmtDiff(furnDiff, country) : '—'}
                                   </td>
                                 </>}
-                                {hasLoan && (dedFilter === 'all' || dedFilter === 'loans') && <>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.loan_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.loan_pay, country)}</td>
-                                  <td className={`px-3 py-1.5 text-right tabular-nums ${loanDiff != null ? diffClass(loanDiff) : ''}`}>
-                                    {loanDiff != null ? fmtDiff(loanDiff, country) : '—'}
+                                {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.afritec_stmt, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.afritec_pay, country)}</td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${afritecDiff != null ? diffClass(afritecDiff) : 'text-muted-foreground'}`}>
+                                    {afritecDiff != null ? fmtDiff(afritecDiff, country) : '—'}
+                                  </td>
+                                </>}
+                                {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.topline_stmt, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.topline_pay, country)}</td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${toplineDiff != null ? diffClass(toplineDiff) : 'text-muted-foreground'}`}>
+                                    {toplineDiff != null ? fmtDiff(toplineDiff, country) : '—'}
                                   </td>
                                 </>}
                                 {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
@@ -834,27 +921,6 @@ export default function ReconciliationPage() {
                       </table>
                     </div>
 
-                    {/* Unmatched entries */}
-                    {[furnmartStmt, afritecStmt, toplineStmt, cbStmt, boduloStmt].some(s => s?.unmatchedLines.length) && (
-                      <div className="mt-4 rounded border border-orange-200 bg-orange-50 p-4">
-                        <p className="text-xs font-semibold text-orange-800 mb-2">
-                          Unmatched statement entries (no payroll employee code found)
-                        </p>
-                        {[
-                          { stmt: furnmartStmt, label: 'Furnmart' },
-                          { stmt: afritecStmt, label: 'Afritec' },
-                          { stmt: toplineStmt, label: 'Topline' },
-                          { stmt: cbStmt, label: 'CB Stores' },
-                          { stmt: boduloStmt, label: 'Bodulo' },
-                        ].map(({ stmt, label }) =>
-                          (stmt?.unmatchedLines ?? []).map((l, i) => (
-                            <div key={`${label}-${i}`} className="text-xs text-orange-700">
-                              {label}: {l.name || '(no name)'} — {fmt(l.amount, country)}
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
                   </div>
                 )}
               </>
