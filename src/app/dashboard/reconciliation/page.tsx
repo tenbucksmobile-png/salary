@@ -630,8 +630,17 @@ export default function ReconciliationPage() {
 
   // Separate management employees (from MGMT sections) into their own bucket
   const isMgt = (r: EmpRow) => /mgmt|management/i.test(r.section ?? '');
-  const staffEmpRows = empRows.filter(r => !isMgt(r));
-  const mgtEmpRows   = empRows.filter(r => isMgt(r));
+
+  // Only show rows that have at least one deduction value (stmt or payroll) for an uploaded statement
+  const hasAnyDeduction = (r: EmpRow) =>
+    (furnmartStmt != null && (r.furnmart_stmt != null || r.furnmart_pay != null)) ||
+    (afritecStmt  != null && (r.afritec_stmt  != null || r.afritec_pay  != null)) ||
+    (toplineStmt  != null && (r.topline_stmt  != null || r.topline_pay  != null)) ||
+    (cbStmt       != null && (r.cb_stmt       != null || r.cb_pay       != null)) ||
+    (boduloStmt   != null && (r.bodulo_stmt   != null || r.bodulo_pay   != null));
+
+  const staffEmpRows = empRows.filter(r => !isMgt(r) && hasAnyDeduction(r));
+  const mgtEmpRows   = empRows.filter(r => isMgt(r)  && hasAnyDeduction(r));
 
   // ── Prior-month changes ───────────────────────────────────────────────────
 
