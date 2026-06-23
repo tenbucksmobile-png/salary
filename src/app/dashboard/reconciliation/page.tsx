@@ -434,6 +434,7 @@ export default function ReconciliationPage() {
   interface EmpRow {
     empCode: string;
     name: string;
+    section?: string; // section label from CB/Topline multi-section files
     furnmart_stmt: number | null; furnmart_pay: number | null;
     afritec_stmt: number | null;  afritec_pay: number | null;
     topline_stmt: number | null;  topline_pay: number | null;
@@ -536,7 +537,7 @@ export default function ReconciliationPage() {
     for (const [key, line] of cbMap) {
       if (!matchedCbKeys.has(key)) {
         empRows.push({
-          empCode: '', name: line.name,
+          empCode: '', name: line.name, section: line.section,
           furnmart_stmt: null, furnmart_pay: null,
           afritec_stmt: null,  afritec_pay: null,
           topline_stmt: null,  topline_pay: null,
@@ -550,7 +551,7 @@ export default function ReconciliationPage() {
     for (const [key, line] of toplineMap) {
       if (!matchedToplineKeys.has(key)) {
         empRows.push({
-          empCode: '', name: line.name,
+          empCode: '', name: line.name, section: line.section,
           furnmart_stmt: null, furnmart_pay: null,
           afritec_stmt: null,  afritec_pay: null,
           topline_stmt: line.amount, topline_pay: null,
@@ -560,6 +561,77 @@ export default function ReconciliationPage() {
       }
     }
   }
+
+  // ── Second-pass: name-match ALL statement unmatchedLines against payroll ──────
+  // Afritec/Furnmart put unrecognised-code entries into unmatchedLines; CB/Topline
+  // (old-format uploads) also store everything in unmatchedLines. Cross-check them
+  // against payroll employees by sorted-word name key before surfacing in the callout.
+
+  const empRowByNameKey = new Map<string, EmpRow>(
+    empRows.filter(r => r.empCode && r.name).map(r => [nameKey(r.name), r]),
+  );
+
+  const resolvedFurnmart  = new Set<string>();
+  const resolvedAfritec   = new Set<string>();
+  const resolvedCb        = new Set<string>();
+  const resolvedTopline   = new Set<string>();
+  const resolvedBodulo    = new Set<string>();
+
+  function tryResolveByName(
+    lines: ReconLine[],
+    resolved: Set<string>,
+    setter: (row: EmpRow, line: ReconLine) => void,
+  ) {
+    for (const line of lines) {
+      if (!line.name) continue;
+      const k = nameKey(line.name);
+      const row = empRowByNameKey.get(k);
+      if (row) { setter(row, line); resolved.add(k); }
+    }
+  }
+
+  if (furnmartStmt) tryResolveByName(furnmartStmt.unmatchedLines, resolvedFurnmart,
+    (r, l) => { if (r.furnmart_stmt == null) r.furnmart_stmt = l.amount; });
+  if (afritecStmt) tryResolveByName(afritecStmt.unmatchedLines, resolvedAfritec,
+    (r, l) => { if (r.afritec_stmt == null) r.afritec_stmt = l.amount; });
+  if (cbStmt) tryResolveByName(cbStmt.unmatchedLines, resolvedCb,
+    (r, l) => { if (r.cb_stmt == null) { r.cb_stmt = l.amount; if (!r.section) r.section = l.section; } });
+  if (toplineStmt) tryResolveByName(toplineStmt.unmatchedLines, resolvedTopline,
+    (r, l) => { if (r.topline_stmt == null) { r.topline_stmt = l.amount; if (!r.section) r.section = l.section; } });
+  if (boduloStmt) tryResolveByName(boduloStmt.unmatchedLines, resolvedBodulo,
+    (r, l) => { if (r.bodulo_stmt == null) r.bodulo_stmt = l.amount; });
+
+  // Add entries that are truly absent from payroll (no match by code or name)
+  function addNoPayrollRow(
+    lines: ReconLine[],
+    resolved: Set<string>,
+    patch: (l: ReconLine) => Partial<EmpRow>,
+  ) {
+    for (const line of lines) {
+      const k = nameKey(line.name);
+      if (resolved.has(k) || empRowByNameKey.has(k)) continue;
+      empRows.push({
+        empCode: '', name: line.name, section: line.section,
+        furnmart_stmt: null, furnmart_pay: null,
+        afritec_stmt: null,  afritec_pay: null,
+        topline_stmt: null,  topline_pay: null,
+        cb_stmt: null,       cb_pay: null,
+        bodulo_stmt: null,   bodulo_pay: null,
+        ...patch(line),
+      });
+    }
+  }
+
+  addNoPayrollRow(furnmartStmt?.unmatchedLines ?? [], resolvedFurnmart, l => ({ furnmart_stmt: l.amount }));
+  addNoPayrollRow(afritecStmt?.unmatchedLines ?? [], resolvedAfritec, l => ({ afritec_stmt: l.amount }));
+  addNoPayrollRow(cbStmt?.unmatchedLines ?? [], resolvedCb, l => ({ cb_stmt: l.amount }));
+  addNoPayrollRow(toplineStmt?.unmatchedLines ?? [], resolvedTopline, l => ({ topline_stmt: l.amount }));
+  addNoPayrollRow(boduloStmt?.unmatchedLines ?? [], resolvedBodulo, l => ({ bodulo_stmt: l.amount }));
+
+  // Separate management employees (from MGMT sections) into their own bucket
+  const isMgt = (r: EmpRow) => /mgmt|management/i.test(r.section ?? '');
+  const staffEmpRows = empRows.filter(r => !isMgt(r));
+  const mgtEmpRows   = empRows.filter(r => isMgt(r));
 
   // ── Prior-month changes ───────────────────────────────────────────────────
 
@@ -791,27 +863,33 @@ export default function ReconciliationPage() {
               <p className="text-muted-foreground text-sm">Upload the payroll spreadsheet first to enable cross-checks.</p>
             ) : (
               <>
-                {/* Unmatched entries — shown first so they aren't missed */}
-                {[furnmartStmt, afritecStmt, toplineStmt, cbStmt, boduloStmt].some(s => (s?.unmatchedLines.length ?? 0) > 0) && (
-                  <div className="rounded border border-orange-200 bg-orange-50 p-4">
-                    <p className="text-xs font-semibold text-orange-800 mb-2">
-                      Unmatched statement entries (no payroll employee code found)
-                    </p>
-                    {[
-                      { stmt: furnmartStmt, label: 'Furnmart' },
-                      { stmt: afritecStmt,  label: 'Afritec' },
-                      { stmt: toplineStmt,  label: 'Topline' },
-                      { stmt: cbStmt,       label: 'CB Stores' },
-                      { stmt: boduloStmt,   label: 'Bodulo' },
-                    ].map(({ stmt, label }) =>
-                      (stmt?.unmatchedLines ?? []).map((l, i) => (
-                        <div key={`${label}-${i}`} className="text-xs text-orange-700">
-                          {label}: {l.name || '(no name)'} — {fmt(l.amount, country)}
+                {/* Unmatched entries — truly absent from payroll (not resolved by code or name) */}
+                {(() => {
+                  const truly = [
+                    { stmt: furnmartStmt, label: 'Furnmart', resolved: resolvedFurnmart },
+                    { stmt: afritecStmt,  label: 'Afritec',  resolved: resolvedAfritec },
+                    { stmt: toplineStmt,  label: 'Topline',  resolved: resolvedTopline },
+                    { stmt: cbStmt,       label: 'CB Stores',resolved: resolvedCb },
+                    { stmt: boduloStmt,   label: 'Bodulo',   resolved: resolvedBodulo },
+                  ].flatMap(({ stmt, label, resolved }) =>
+                    (stmt?.unmatchedLines ?? [])
+                      .filter(l => !resolved.has(nameKey(l.name)) && !empRowByNameKey.has(nameKey(l.name)))
+                      .map(l => ({ label, line: l }))
+                  );
+                  if (!truly.length) return null;
+                  return (
+                    <div className="rounded border border-orange-200 bg-orange-50 p-4">
+                      <p className="text-xs font-semibold text-orange-800 mb-2">
+                        Unmatched statement entries (not found in payroll by code or name)
+                      </p>
+                      {truly.map(({ label, line }, i) => (
+                        <div key={i} className="text-xs text-orange-700">
+                          {label}: {line.name || '(no name)'} — {fmt(line.amount, country)}
                         </div>
-                      ))
-                    )}
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  );
+                })()}
 
                 {/* Summary cards */}
                 {summaryRows.length > 0 && (
@@ -857,8 +935,8 @@ export default function ReconciliationPage() {
                   </p>
                 )}
 
-                {/* Per-employee table */}
-                {empRows.length > 0 && summaryRows.length > 0 && (
+                {/* Per-employee table — staff only */}
+                {staffEmpRows.length > 0 && summaryRows.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between mb-3">
                       <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
@@ -921,7 +999,7 @@ export default function ReconciliationPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {empRows.map((row, i) => {
+                          {staffEmpRows.map((row, i) => {
                             const furnDiff    = row.furnmart_stmt != null && row.furnmart_pay != null
                               ? row.furnmart_stmt - row.furnmart_pay : null;
                             const afritecDiff = row.afritec_stmt != null && row.afritec_pay != null
@@ -939,7 +1017,7 @@ export default function ReconciliationPage() {
                               (cbDiff      != null && Math.abs(cbDiff)      > 0.01) ||
                               (bodDiff     != null && Math.abs(bodDiff)     > 0.01);
                             return (
-                              <tr key={row.empCode} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${hasDiscrep ? 'ring-1 ring-inset ring-orange-200' : ''}`}>
+                              <tr key={`${row.empCode || 'x'}-${row.name}-${i}`} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${hasDiscrep ? 'ring-1 ring-inset ring-orange-200' : ''}`}>
                                 <td className="px-3 py-1.5 font-mono text-xs">{row.empCode || '—'}</td>
                                 <td className="px-3 py-1.5 max-w-[140px] truncate">{row.name}</td>
                                 {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
@@ -984,6 +1062,46 @@ export default function ReconciliationPage() {
                       </table>
                     </div>
 
+                  </div>
+                )}
+
+                {/* Management section — CFE employees from MGMT sections in statements */}
+                {mgtEmpRows.length > 0 && (
+                  <div>
+                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                      Management (CFE)
+                    </h2>
+                    <p className="text-xs text-muted-foreground mb-3">
+                      Employees from management sections of the deduction statements — cross-referenced against CFE Management hotel records.
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="text-xs border rounded w-full whitespace-nowrap">
+                        <thead>
+                          <tr className="bg-[#2D6A4F] text-white">
+                            <th className="px-3 py-2 text-left">Name</th>
+                            <th className="px-3 py-2 text-left">Section</th>
+                            {cbStmt      && <th className="px-3 py-2 text-right">CB Stores</th>}
+                            {toplineStmt && <th className="px-3 py-2 text-right">Topline</th>}
+                            {afritecStmt && <th className="px-3 py-2 text-right">Afritec</th>}
+                            {furnmartStmt && <th className="px-3 py-2 text-right">Furnmart</th>}
+                            {boduloStmt  && <th className="px-3 py-2 text-right">Bodulo</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {mgtEmpRows.map((row, i) => (
+                            <tr key={`mgt-${row.name}-${i}`} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
+                              <td className="px-3 py-1.5 font-medium">{row.name}</td>
+                              <td className="px-3 py-1.5 text-muted-foreground text-xs">{row.section ?? '—'}</td>
+                              {cbStmt      && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.cb_stmt, country)}</td>}
+                              {toplineStmt && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.topline_stmt, country)}</td>}
+                              {afritecStmt && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.afritec_stmt, country)}</td>}
+                              {furnmartStmt && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_stmt, country)}</td>}
+                              {boduloStmt  && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_stmt, country)}</td>}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </>

@@ -5,6 +5,7 @@ export interface ReconLine {
   empCode: string;
   name: string;
   amount: number;
+  section?: string; // section label from multi-section files (e.g. "CSL STAFF", "CSL MGMNT")
 }
 
 export interface ParsedStatement {
@@ -118,6 +119,7 @@ function parseCbToplineFormat(
           empCode: nameKey(c0), // sorted word-set key — CUST.# ignored
           name: c0,
           amount: c2,
+          section: sectionLabel,
         });
       }
       i++;
