@@ -1008,7 +1008,14 @@ export default function ReconciliationPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {staffEmpRows.map((row, i) => {
+                          {(dedFilter === 'all' ? staffEmpRows : staffEmpRows.filter(row => {
+                            if (dedFilter === 'furnmart') return (row.furnmart_stmt ?? 0) > 0 || (row.furnmart_pay ?? 0) > 0;
+                            if (dedFilter === 'afritec')  return (row.afritec_stmt  ?? 0) > 0 || (row.afritec_pay  ?? 0) > 0;
+                            if (dedFilter === 'topline')  return (row.topline_stmt  ?? 0) > 0 || (row.topline_pay  ?? 0) > 0;
+                            if (dedFilter === 'cbstores') return (row.cb_stmt       ?? 0) > 0 || (row.cb_pay       ?? 0) > 0;
+                            if (dedFilter === 'bodulo')   return (row.bodulo_stmt   ?? 0) > 0 || (row.bodulo_pay   ?? 0) > 0;
+                            return true;
+                          })).map((row, i) => {
                             const furnDiff    = row.furnmart_stmt != null && row.furnmart_pay != null
                               ? row.furnmart_stmt - row.furnmart_pay : null;
                             const afritecDiff = row.afritec_stmt != null && row.afritec_pay != null
