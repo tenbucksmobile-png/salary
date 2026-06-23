@@ -13,6 +13,7 @@ export interface ParsedStatement {
   unmatchedLines: ReconLine[]; // employees with no recognisable code
   total: number;
   fileName: string;
+  matchByName?: boolean; // CB Stores / Topline: empCode is a name-sort key, match against payroll by name
 }
 
 export interface PayrollLine {
@@ -43,6 +44,14 @@ function normalizeCode(code: string): string {
   return String(code || '').trim().toUpperCase().replace(/\s+/g, '');
 }
 
+// Sorts the words in a name so "BEAUTY LISEHU" and "LISEHU BEAUTY" produce the same key.
+// Used for name-based matching where the statement may store names as First Last or Last First.
+export function nameKey(raw: string): string {
+  return (raw || '').toUpperCase()
+    .replace(/[^A-Z\s]/g, '').trim()
+    .split(/\s+/).filter(Boolean).sort().join('|');
+}
+
 async function getXLSX() {
   const mod = await import('xlsx-js-style');
   return (mod as any).default ?? mod;
@@ -66,7 +75,8 @@ function sectionMatchesHotel(label: string, hotelCode: string): boolean {
 function parseCbToplineFormat(
   rows: any[][], fileName: string, uploadType: string, hotelCode: string,
 ): ParsedStatement {
-  const unmatchedLines: ReconLine[] = [];
+  // empCode = nameKey(name) — CUST.# is ignored; matching is done by name in the page
+  const lines: ReconLine[] = [];
   let stmtTotal = 0;
   let i = 0;
 
@@ -104,8 +114,8 @@ function parseCbToplineFormat(
       if (/^from\s*:/i.test(c0)) break;
 
       if (c0 && c2 > 0 && include) {
-        unmatchedLines.push({
-          empCode: c1 ? normalizeCode(c1) : normalizeCode(c0),
+        lines.push({
+          empCode: nameKey(c0), // sorted word-set key — CUST.# ignored
           name: c0,
           amount: c2,
         });
@@ -114,8 +124,8 @@ function parseCbToplineFormat(
     }
   }
 
-  if (!stmtTotal) stmtTotal = unmatchedLines.reduce((s, l) => s + l.amount, 0);
-  return { uploadType, lines: [], unmatchedLines, total: stmtTotal, fileName };
+  if (!stmtTotal) stmtTotal = lines.reduce((s, l) => s + l.amount, 0);
+  return { uploadType, lines, unmatchedLines: [], total: stmtTotal, fileName, matchByName: true };
 }
 
 // ── Afritec / Topline .xls loan schedule ─────────────────────────────────────

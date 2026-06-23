@@ -15,6 +15,7 @@ import {
   parseFurnmart,
   parseBodulo,
   parsePayrollXlsx,
+  nameKey,
 } from '@/lib/recon-parsers';
 import type { ParsedStatement, ParsedPayroll, ReconLine } from '@/lib/recon-parsers';
 
@@ -449,18 +450,25 @@ export default function ReconciliationPage() {
   const payMap     = new Map((payroll?.lines ?? []).map(l => [l.empCode, l]));
   const furnMap    = buildEmpMap(furnmartStmt?.lines);
   const afritecMap = buildEmpMap(afritecStmt?.lines);
+  // CB Stores / Topline may use matchByName — their empCode is a nameKey, not a hotel code.
+  // Build the same way; lookups switch from payroll empCode to nameKey(payroll name).
   const toplineMap = buildEmpMap(toplineStmt?.lines);
   const cbMap      = buildEmpMap(cbStmt?.lines);
   const boduloMap  = buildEmpMap(boduloStmt?.lines);
 
+  // Code-based allCodes excludes name-matched statements (their keys aren't hotel emp codes)
   const allCodes = new Set<string>([
     ...(payroll?.lines ?? []).map(l => l.empCode),
     ...(furnmartStmt?.lines ?? []).map(l => l.empCode),
     ...(afritecStmt?.lines ?? []).map(l => l.empCode),
-    ...(toplineStmt?.lines ?? []).map(l => l.empCode),
-    ...(cbStmt?.lines ?? []).map(l => l.empCode),
+    ...(!toplineStmt?.matchByName ? (toplineStmt?.lines ?? []).map(l => l.empCode) : []),
+    ...(!cbStmt?.matchByName      ? (cbStmt?.lines      ?? []).map(l => l.empCode) : []),
     ...(boduloStmt?.lines ?? []).map(l => l.empCode),
   ]);
+
+  // Track which name-matched statement lines were consumed during code-based pass
+  const matchedCbKeys      = new Set<string>();
+  const matchedToplineKeys = new Set<string>();
 
   const empRows: EmpRow[] = Array.from(allCodes)
     .filter(c => c)
@@ -477,27 +485,81 @@ export default function ReconciliationPage() {
         : payrollHasSeparateLoanCols ? pay.toplineLoans
         : !afritecStmt ? pay.staffLoans
         : null;
+
+      // CB Stores: name-based lookup using payroll employee name
+      let cb_stmt: number | null = null;
+      if (cbStmt) {
+        if (cbStmt.matchByName && pay) {
+          const key = nameKey(pay.name);
+          const match = cbMap.get(key);
+          if (match) { cb_stmt = match.amount; matchedCbKeys.add(key); }
+        } else if (!cbStmt.matchByName) {
+          cb_stmt = cbMap.get(code)?.amount ?? null;
+        }
+      }
+
+      // Topline: name-based lookup using payroll employee name
+      let topline_stmt: number | null = null;
+      if (toplineStmt) {
+        if (toplineStmt.matchByName && pay) {
+          const key = nameKey(pay.name);
+          const match = toplineMap.get(key);
+          if (match) { topline_stmt = match.amount; matchedToplineKeys.add(key); }
+        } else if (!toplineStmt.matchByName) {
+          topline_stmt = toplineMap.get(code)?.amount ?? null;
+        }
+      }
+
       return {
         empCode: code,
         name: pay?.name
           ?? furnMap.get(code)?.name
           ?? afritecMap.get(code)?.name
-          ?? toplineMap.get(code)?.name
-          ?? cbMap.get(code)?.name
           ?? boduloMap.get(code)?.name
           ?? code,
         furnmart_stmt: furnmartStmt ? (furnMap.get(code)?.amount ?? null) : null,
         furnmart_pay: furnmartStmt && pay ? pay.furnmart : null,
         afritec_stmt: afritecStmt ? (afritecMap.get(code)?.amount ?? null) : null,
         afritec_pay: afritecStmt ? afritecPay : null,
-        topline_stmt: toplineStmt ? (toplineMap.get(code)?.amount ?? null) : null,
+        topline_stmt: toplineStmt ? topline_stmt : null,
         topline_pay: toplineStmt ? toplinePay : null,
-        cb_stmt: cbStmt ? (cbMap.get(code)?.amount ?? null) : null,
+        cb_stmt: cbStmt ? cb_stmt : null,
         cb_pay: cbStmt && pay ? pay.cbStores : null,
         bodulo_stmt: boduloStmt ? (boduloMap.get(code)?.amount ?? null) : null,
         bodulo_pay: boduloStmt && pay ? pay.bodulo : null,
       };
     });
+
+  // Append name-matched statement entries that had no payroll counterpart
+  // (in statement but not in payroll — payroll side shows —)
+  if (cbStmt?.matchByName) {
+    for (const [key, line] of cbMap) {
+      if (!matchedCbKeys.has(key)) {
+        empRows.push({
+          empCode: '', name: line.name,
+          furnmart_stmt: null, furnmart_pay: null,
+          afritec_stmt: null,  afritec_pay: null,
+          topline_stmt: null,  topline_pay: null,
+          cb_stmt: line.amount, cb_pay: null,
+          bodulo_stmt: null,   bodulo_pay: null,
+        });
+      }
+    }
+  }
+  if (toplineStmt?.matchByName) {
+    for (const [key, line] of toplineMap) {
+      if (!matchedToplineKeys.has(key)) {
+        empRows.push({
+          empCode: '', name: line.name,
+          furnmart_stmt: null, furnmart_pay: null,
+          afritec_stmt: null,  afritec_pay: null,
+          topline_stmt: line.amount, topline_pay: null,
+          cb_stmt: null,       cb_pay: null,
+          bodulo_stmt: null,   bodulo_pay: null,
+        });
+      }
+    }
+  }
 
   // ── Prior-month changes ───────────────────────────────────────────────────
 
@@ -878,7 +940,7 @@ export default function ReconciliationPage() {
                               (bodDiff     != null && Math.abs(bodDiff)     > 0.01);
                             return (
                               <tr key={row.empCode} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${hasDiscrep ? 'ring-1 ring-inset ring-orange-200' : ''}`}>
-                                <td className="px-3 py-1.5 font-mono text-xs">{row.empCode}</td>
+                                <td className="px-3 py-1.5 font-mono text-xs">{row.empCode || '—'}</td>
                                 <td className="px-3 py-1.5 max-w-[140px] truncate">{row.name}</td>
                                 {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_stmt, country)}</td>
