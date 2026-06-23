@@ -953,20 +953,18 @@ export default function ReconciliationPage() {
                       </h2>
                       <div className="flex gap-1">
                         {([
-                          { key: 'all',      label: 'All' },
-                          furnmartStmt ? { key: 'furnmart', label: 'Furnmart' }  : null,
-                          afritecStmt  ? { key: 'afritec',  label: 'Afritec' }  : null,
-                          toplineStmt  ? { key: 'topline',  label: 'Topline' }  : null,
-                          cbStmt       ? { key: 'cbstores', label: 'CB Stores' } : null,
-                          boduloStmt   ? { key: 'bodulo',   label: 'Bodulo' }    : null,
+                          { key: 'all',      label: 'All',      active: 'bg-slate-700 text-white',      inactive: 'bg-slate-100 text-slate-700 hover:bg-slate-200' },
+                          furnmartStmt ? { key: 'furnmart', label: 'Furnmart',  active: 'bg-blue-600 text-white',       inactive: 'bg-blue-50 text-blue-700 hover:bg-blue-100' }  : null,
+                          afritecStmt  ? { key: 'afritec',  label: 'Afritec',   active: 'bg-amber-600 text-white',      inactive: 'bg-amber-50 text-amber-700 hover:bg-amber-100' }  : null,
+                          toplineStmt  ? { key: 'topline',  label: 'Topline',   active: 'bg-purple-600 text-white',     inactive: 'bg-purple-50 text-purple-700 hover:bg-purple-100' }  : null,
+                          cbStmt       ? { key: 'cbstores', label: 'CB Stores', active: 'bg-emerald-600 text-white',    inactive: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' } : null,
+                          boduloStmt   ? { key: 'bodulo',   label: 'Bodulo',    active: 'bg-rose-600 text-white',       inactive: 'bg-rose-50 text-rose-700 hover:bg-rose-100' }    : null,
                         ]).filter(Boolean).map((f: any) => (
                           <button
                             key={f.key}
                             onClick={() => setDedFilter(f.key)}
                             className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-                              dedFilter === f.key
-                                ? 'bg-primary text-primary-foreground'
-                                : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                              dedFilter === f.key ? f.active : f.inactive
                             }`}
                           >
                             {f.label}
