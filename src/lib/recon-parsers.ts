@@ -48,20 +48,97 @@ async function getXLSX() {
   return (mod as any).default ?? mod;
 }
 
+// ── CB Stores / Topline multi-section format ──────────────────────────────────
+// Each file has one or more hotel sections:
+//   FROM: <vendor>  /  TO: <HOTEL CODE>  / blank / CUSTOMER NAME | CUST.# | AMOUNT
+// Data rows: [name, cust_num, amount]. Section subtotal: ["","",total].
+// hotelCode filters which sections to include (CSL → "CSL*", NL → "NSL*", etc.)
+
+function sectionMatchesHotel(label: string, hotelCode: string): boolean {
+  if (!hotelCode) return true;
+  const l = label.toUpperCase().replace(/\s+/g, ' ');
+  if (hotelCode === 'CSL') return l.startsWith('CSL');
+  if (hotelCode === 'NL')  return l.startsWith('NSL') || l.startsWith('NL ');
+  if (hotelCode === 'CFE') return l.startsWith('CFE');
+  return true;
+}
+
+function parseCbToplineFormat(
+  rows: any[][], fileName: string, uploadType: string, hotelCode: string,
+): ParsedStatement {
+  const unmatchedLines: ReconLine[] = [];
+  let stmtTotal = 0;
+  let i = 0;
+
+  while (i < rows.length) {
+    const c0 = String(rows[i][0] || '').trim();
+
+    // Look for "CUSTOMER NAME" header = start of a data section
+    if (!/^customer\s*name$/i.test(c0)) { i++; continue; }
+
+    // Back-search up to 5 rows for the "TO: LABEL" row
+    let sectionLabel = '';
+    for (let k = i - 1; k >= Math.max(0, i - 5); k--) {
+      const label = String(rows[k][0] || '').trim();
+      if (/^to\s*:/i.test(label)) {
+        sectionLabel = label.replace(/^to\s*:\s*/i, '').trim();
+        break;
+      }
+    }
+    const include = sectionMatchesHotel(sectionLabel, hotelCode);
+
+    i++; // skip header row, read data rows
+    while (i < rows.length) {
+      const row = rows[i];
+      const c0 = String(row[0] || '').trim();
+      const c1 = String(row[1] || '').trim();
+      const c2 = Number(row[2]) || 0;
+
+      // Section totals row: empty name + code, positive amount
+      if (!c0 && !c1 && c2 > 0) {
+        if (include) stmtTotal += c2;
+        i++;
+        break;
+      }
+      // Next section boundary
+      if (/^from\s*:/i.test(c0)) break;
+
+      if (c0 && c2 > 0 && include) {
+        unmatchedLines.push({
+          empCode: c1 ? normalizeCode(c1) : normalizeCode(c0),
+          name: c0,
+          amount: c2,
+        });
+      }
+      i++;
+    }
+  }
+
+  if (!stmtTotal) stmtTotal = unmatchedLines.reduce((s, l) => s + l.amount, 0);
+  return { uploadType, lines: [], unmatchedLines, total: stmtTotal, fileName };
+}
+
 // ── Afritec / Topline .xls loan schedule ─────────────────────────────────────
 // Row 0-1: title rows; Row 2: header; Data rows start at row 3.
 // Col 5 = Employee Number; Col 10 = Regular Instalment (monthly deduction)
 // Totals row: col 5 is empty, col 10 has the total
+// hotelCode is forwarded to the CB/Topline multi-section parser when that format is detected.
 
 export async function parseAfritecXls(
   buf: ArrayBuffer,
   fileName: string,
   uploadType = 'afritec',
+  hotelCode = '',
 ): Promise<ParsedStatement> {
   const XLSX = await getXLSX();
   const wb = XLSX.read(buf, { type: 'array' });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+  // CB Stores / Topline multi-section format (CUSTOMER NAME / CUST.# / AMOUNT)
+  if (rows.some(r => /^customer\s*name$/i.test(String(r[0] || '').trim()))) {
+    return parseCbToplineFormat(rows, fileName, uploadType, hotelCode);
+  }
 
   const lines: ReconLine[] = [];
   const unmatchedLines: ReconLine[] = [];
@@ -295,6 +372,9 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
   const colNett        = col('nett pay');
   // True when payroll spreadsheet has separate columns per lender
   const hasSeparateLoanCols = colAfritec >= 0 || colTopline >= 0;
+  // When payroll has a Topline column but no dedicated Afritec column,
+  // treat the Staff Loans column as the Afritec amount (it was previously combined)
+  const afritecFromStaff = colAfritec < 0 && colTopline >= 0 && colStaffLoans >= 0;
 
   function n(row: any[], c: number): number {
     return c >= 0 ? Number(row[c]) || 0 : 0;
@@ -309,8 +389,10 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
     const name = String(row[1] || '').trim();
 
     if (!code && name.toLowerCase() === 'total') {
-      const afritecLoans = n(row, colAfritec);
       const toplineLoans = n(row, colTopline);
+      const afritecLoans = colAfritec >= 0 ? n(row, colAfritec)
+        : afritecFromStaff ? n(row, colStaffLoans)
+        : 0;
       totals = {
         basic: n(row, colBasic),
         incomeTotal: n(row, colIncome),
@@ -333,8 +415,10 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
 
     if (!code) continue; // Department header or blank row
 
-    const afritecLoans = n(row, colAfritec);
     const toplineLoans = n(row, colTopline);
+    const afritecLoans = colAfritec >= 0 ? n(row, colAfritec)
+      : afritecFromStaff ? n(row, colStaffLoans)
+      : 0;
     lines.push({
       empCode: normalizeCode(code),
       name,

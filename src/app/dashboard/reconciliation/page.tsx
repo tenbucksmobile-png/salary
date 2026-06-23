@@ -140,8 +140,8 @@ export default function ReconciliationPage() {
         const RECON_CODES = ['CFE', 'CSL', 'NL'];
         const filtered = sortHotels(data as Hotel[]).filter(h => RECON_CODES.includes(h.short_code));
         setHotels(filtered);
-        const nl = filtered.find(h => h.short_code === 'NL') || filtered[0];
-        if (nl) setHotelId(nl.id);
+        const csl = filtered.find(h => h.short_code === 'CSL') || filtered[0];
+        if (csl) setHotelId(csl.id);
       }
       setLoading(false);
     });
@@ -247,10 +247,11 @@ export default function ReconciliationPage() {
 
       let parsed: ParsedStatement | ParsedPayroll;
 
+      const hotelCode = hotels.find(h => h.id === hotelId)?.short_code ?? '';
       if (type === 'payroll')   parsed = await parsePayrollXlsx(buf, file.name);
       else if (type === 'furnmart') parsed = await parseFurnmart(buf, file.name);
       else if (type === 'bodulo')   parsed = await parseBodulo(buf, file.name);
-      else                          parsed = await parseAfritecXls(buf, file.name, type);
+      else                          parsed = await parseAfritecXls(buf, file.name, type, hotelCode);
 
       const pid = await ensurePeriod();
       const isStmt = type !== 'payroll';
