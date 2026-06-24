@@ -103,6 +103,7 @@ export default function ImportPage() {
   const [loading,   setLoading]   = useState(false);
   const [importing, setImporting] = useState(false);
   const [result, setResult]       = useState({ added: 0, updated: 0 });
+  const [importAsFtc, setImportAsFtc] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -626,7 +627,7 @@ export default function ImportPage() {
             paypoint: row.paypoint || null,
             category: row.category || null,
             job_grade: row.jobGrade || null,
-            grade_label: row.gradeLabel || null,
+            grade_label: importAsFtc ? 'FTC' : (row.gradeLabel || null),
             ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
           }).select().single();
           employeeId = (newEmp as any)?.id;
@@ -643,7 +644,7 @@ export default function ImportPage() {
             ...(row.paypoint ? { paypoint: row.paypoint } : {}),
             ...(row.category ? { category: row.category } : {}),
             ...(row.jobGrade ? { job_grade: row.jobGrade } : {}),
-            ...(row.gradeLabel ? { grade_label: row.gradeLabel } : {}),
+            ...(importAsFtc ? { grade_label: 'FTC' } : row.gradeLabel ? { grade_label: row.gradeLabel } : {}),
             ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
             updated_at: new Date().toISOString(),
           }).eq('id', employeeId!);
@@ -725,7 +726,9 @@ export default function ImportPage() {
 
   const addCount       = rows.filter(r => r.action === 'add').length;
   const updateCount    = rows.filter(r => r.action === 'update').length;
-  const selectedCountry = hotels.find(h => h.id === hotelId)?.country ?? '';
+  const selectedHotelImport = hotels.find(h => h.id === hotelId);
+  const selectedCountry = selectedHotelImport?.country ?? '';
+  const isFtcHotel  = selectedHotelImport?.short_code === 'CSL' || selectedHotelImport?.short_code === 'NL';
   const fmt = (n: number) => fmtCurrency(n, selectedCountry);
 
   return (
@@ -756,13 +759,39 @@ export default function ImportPage() {
             <label className="text-sm font-medium block mb-1">Hotel</label>
             <select
               value={hotelId}
-              onChange={e => setHotelId(e.target.value)}
+              onChange={e => { setHotelId(e.target.value); setImportAsFtc(false); }}
               className="w-full rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
             >
               <option value="">— Select hotel —</option>
               {hotels.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
             </select>
           </div>
+
+          {/* Employee type toggle — CSL and NL only */}
+          {hotelId && isFtcHotel && (
+            <div>
+              <label className="text-sm font-medium block mb-1">Employee Type</label>
+              <div className="flex rounded-md border border-input overflow-hidden w-fit">
+                <button
+                  type="button"
+                  onClick={() => setImportAsFtc(false)}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${!importAsFtc ? 'bg-primary text-primary-foreground' : 'bg-white text-muted-foreground hover:bg-muted'}`}
+                >
+                  Permanent
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImportAsFtc(true)}
+                  className={`px-4 py-2 text-sm font-medium border-l border-input transition-colors ${importAsFtc ? 'bg-primary text-primary-foreground' : 'bg-white text-muted-foreground hover:bg-muted'}`}
+                >
+                  Fixed Term (FTC)
+                </button>
+              </div>
+              {importAsFtc && (
+                <p className="text-xs text-amber-700 mt-1.5">All imported employees will be tagged as Fixed Term Contract.</p>
+              )}
+            </div>
+          )}
 
           {hotelId && (
             <>

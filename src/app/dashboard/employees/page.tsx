@@ -71,6 +71,9 @@ const DEFAULT_VISIBLE = new Set(ALL_COLUMNS.filter(c => c.defaultVisible).map(c 
 const GRADE_OPTIONS  = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term'];
 const STATUS_OPTIONS = ['active', 'terminated'] as const;
 
+// Grade labels that identify fixed-term/casual contract workers
+const FTC_GRADES = new Set(['FTC', 'Fixed Term']);
+
 // Maps each display ColId to its CSV column name. ColIds with no direct CSV
 // column (hotel, years_service, structure_sal) are omitted — they are skipped
 // when building the filtered export.
@@ -181,6 +184,7 @@ export default function EmployeesPage() {
 
   const [hotelFilter,  setHotelFilter]  = useState('');
   const [search,       setSearch]       = useState('');
+  const [ftcFilter,    setFtcFilter]    = useState<'permanent' | 'ftc'>('permanent');
 
   const [visibleCols, setVisibleCols] = useState<Set<ColId>>(DEFAULT_VISIBLE);
   const [draftCols,   setDraftCols]   = useState<Set<ColId>>(DEFAULT_VISIBLE);
@@ -200,10 +204,11 @@ export default function EmployeesPage() {
   }, [hotelFilter]);
 
 
-  // Persist hotel filter selection
+  // Persist hotel filter selection; reset FTC tab on hotel change
   useEffect(() => {
     if (hotelFilter) {
       try { localStorage.setItem(HOTEL_FILTER_KEY, hotelFilter); } catch {}
+      setFtcFilter('permanent');
     }
   }, [hotelFilter]);
 
@@ -240,7 +245,8 @@ export default function EmployeesPage() {
   useEffect(() => { load(); }, []);
 
   function openAddModal() {
-    setAddForm(emptyAddForm(hotelFilter));
+    const defaultGrade = showFtcToggle && ftcFilter === 'ftc' ? 'FTC' : '';
+    setAddForm({ ...emptyAddForm(hotelFilter), grade_label: defaultGrade });
     setAddError('');
     setShowAddModal(true);
   }
@@ -387,6 +393,9 @@ export default function EmployeesPage() {
 
   const hotelMap = useMemo(() => new Map((hotels).map(h => [h.id, h])), [hotels]);
 
+  const selectedHotel  = useMemo(() => hotels.find(h => h.id === hotelFilter), [hotels, hotelFilter]);
+  const showFtcToggle  = selectedHotel?.short_code === 'CSL' || selectedHotel?.short_code === 'NL';
+
   const latestSalary = useMemo(() => {
     const map = new Map<string, SalaryRecord>();
     for (const sr of salaries) {
@@ -401,8 +410,13 @@ export default function EmployeesPage() {
 
   const filtered = useMemo(() => employees
     .filter(e => !hotelFilter || e.hotel_id === hotelFilter)
+    .filter(e => {
+      if (!showFtcToggle) return true;
+      const isFtc = FTC_GRADES.has(e.grade_label ?? '');
+      return ftcFilter === 'ftc' ? isFtc : !isFtc;
+    })
     .filter(e => !search || `${e.surname} ${e.first_name} ${e.employee_code ?? ''} ${e.job_title ?? ''}`.toLowerCase().includes(search.toLowerCase())),
-    [employees, hotelFilter, search]);
+    [employees, hotelFilter, search, ftcFilter, showFtcToggle]);
 
   useEffect(() => { setSelected(new Set()); }, [hotelFilter, search]);
 
@@ -466,7 +480,13 @@ export default function EmployeesPage() {
   function handleExportCSV() {
     const hotel = hotelMap.get(hotelFilter);
     if (!hotel) return;
-    const hotelEmployees = employees.filter(e => e.hotel_id === hotelFilter);
+    const hotelEmployees = employees
+      .filter(e => e.hotel_id === hotelFilter)
+      .filter(e => {
+        if (!showFtcToggle) return true;
+        const isFtc = FTC_GRADES.has(e.grade_label ?? '');
+        return ftcFilter === 'ftc' ? isFtc : !isFtc;
+      });
 
     // Resolve which CSV columns to emit — use the saved column picker selection
     // for the export hotel, mapped through COL_TO_CSV. Columns with no CSV
@@ -486,7 +506,8 @@ export default function EmployeesPage() {
       ? `${firstSal.period_year}${String(firstSal.period_month).padStart(2, '0')}`
       : new Date().toISOString().slice(0, 7).replace('-', '');
     a.href = url;
-    a.download = `${hotel.short_code}_employees_${ym}.csv`;
+    const tabSuffix = showFtcToggle ? (ftcFilter === 'ftc' ? '_ftc' : '_permanent') : '';
+    a.download = `${hotel.short_code}${tabSuffix}_employees_${ym}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -620,7 +641,9 @@ export default function EmployeesPage() {
       <div className="mb-6 flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold">Employees</h1>
-          <p className="text-muted-foreground text-sm mt-1">{filtered.length} records</p>
+          <p className="text-muted-foreground text-sm mt-1">
+            {filtered.length} {showFtcToggle ? (ftcFilter === 'ftc' ? 'FTC' : 'permanent') + ' ' : ''}employee{filtered.length !== 1 ? 's' : ''}
+          </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           {/* Batch delete */}
@@ -685,6 +708,24 @@ export default function EmployeesPage() {
         >
           {hotels.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
         </select>
+
+        {/* Permanent / FTC toggle — CSL and NL only */}
+        {showFtcToggle && (
+          <div className="flex rounded-md border border-input overflow-hidden">
+            <button
+              onClick={() => setFtcFilter('permanent')}
+              className={`px-3 py-2 text-sm font-medium transition-colors ${ftcFilter === 'permanent' ? 'bg-primary text-primary-foreground' : 'bg-white text-muted-foreground hover:bg-muted'}`}
+            >
+              Permanent
+            </button>
+            <button
+              onClick={() => setFtcFilter('ftc')}
+              className={`px-3 py-2 text-sm font-medium border-l border-input transition-colors ${ftcFilter === 'ftc' ? 'bg-primary text-primary-foreground' : 'bg-white text-muted-foreground hover:bg-muted'}`}
+            >
+              Fixed Term
+            </button>
+          </div>
+        )}
 
         {/* Column picker trigger */}
         <div className="relative">
