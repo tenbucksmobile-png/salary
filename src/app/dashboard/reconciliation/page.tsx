@@ -141,10 +141,17 @@ export default function ReconciliationPage() {
   }, []);
 
   useEffect(() => {
-    supabase.from('hotels').select('*').then(({ data }) => {
+    Promise.all([
+      supabase.from('hotels').select('*'),
+      fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
+    ]).then(([{ data }, me]) => {
       if (data) {
         const RECON_CODES = ['CFE', 'CSL', 'NL'];
-        const filtered = sortHotels(data as Hotel[]).filter(h => RECON_CODES.includes(h.short_code));
+        let filtered = sortHotels(data as Hotel[]).filter(h => RECON_CODES.includes(h.short_code));
+        const meData = me as { role: string; hotelIds: string[] | null } | null;
+        if (meData?.role === 'sub' && meData.hotelIds?.length) {
+          filtered = filtered.filter(h => meData.hotelIds!.includes(h.id));
+        }
         setHotels(filtered);
         const csl = filtered.find(h => h.short_code === 'CSL') || filtered[0];
         if (csl) setHotelId(csl.id);

@@ -5,7 +5,6 @@ const SUB_BLOCKED = [
   '/dashboard/methods',
   '/dashboard/salary-review',
   '/dashboard/reports',
-  '/dashboard/reconciliation',
   '/dashboard/access',
   '/dashboard/settings',
 ];

@@ -19,6 +19,7 @@ const ADMIN_NAV = [
 const SUB_NAV = [
   { label: 'Employees',      href: '/dashboard/employees',     icon: Users },
   { label: 'Import HR List', href: '/dashboard/import',        icon: Upload },
+  { label: 'Reconciliation', href: '/dashboard/reconciliation', icon: ClipboardCheck },
 ];
 
 interface NavSidebarProps {
