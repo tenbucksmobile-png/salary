@@ -41,9 +41,11 @@ export interface ExportHotel {
 
 // ── Style constants ───────────────────────────────────────────────────────────
 
-const NAVY  = '1B3A5C';
-const LGRAY = 'E8ECF0';
-const GREEN = '15623A';
+const NAVY   = '1B3A5C';
+const LGRAY  = 'E8ECF0';
+const GREEN  = '15623A';
+const AMBER  = 'FFE082';  // header background for editable columns
+const YELLOW = 'FFFDE7';  // cell background for editable input cells
 
 function hdr(v: string) {
   return {
@@ -51,6 +53,19 @@ function hdr(v: string) {
     s: {
       font:      { bold: true, color: { rgb: 'FFFFFF' } },
       fill:      { patternType: 'solid', fgColor: { rgb: NAVY } },
+      alignment: { horizontal: 'center', wrapText: true, vertical: 'center' },
+      border:    { bottom: { style: 'thin', color: { rgb: 'AAAAAA' } } },
+    },
+  };
+}
+
+// Header for user-editable columns — amber background signals "you can change this"
+function hdrEdit(v: string) {
+  return {
+    v, t: 's',
+    s: {
+      font:      { bold: true, color: { rgb: '5C3A00' } },
+      fill:      { patternType: 'solid', fgColor: { rgb: AMBER } },
       alignment: { horizontal: 'center', wrapText: true, vertical: 'center' },
       border:    { bottom: { style: 'thin', color: { rgb: 'AAAAAA' } } },
     },
@@ -76,6 +91,44 @@ function pctNum(v: number) {
   return {
     v: +(v * 100).toFixed(1), t: 'n', z: '0.0"%"',
     s: { alignment: { horizontal: 'right' }, font: { color: { rgb: GREEN } } },
+  };
+}
+
+// Editable input cell — yellow background, same number format as num/pctNum
+function inp(v: number, isPct = false) {
+  return {
+    v: isPct ? +(v * 100).toFixed(1) : (v || 0),
+    t: 'n',
+    z: isPct ? '0.0"%"' : '#,##0',
+    s: {
+      alignment: { horizontal: 'right' },
+      fill: { patternType: 'solid', fgColor: { rgb: YELLOW } },
+      font: { color: { rgb: isPct ? GREEN : '000000' } },
+    },
+  };
+}
+
+// Formula cell — value computed by Excel when opened
+function fml(formula: string, bold = false, green = false) {
+  return {
+    f: formula, t: 'n', z: '#,##0',
+    s: {
+      alignment: { horizontal: 'right' },
+      ...(bold  ? { font: { bold: true } } : {}),
+      ...(green ? { font: { color: { rgb: GREEN } } } : {}),
+    },
+  };
+}
+
+// Formula cell in the totals row
+function totFml(formula: string, green = false) {
+  return {
+    f: formula, t: 'n', z: '#,##0',
+    s: {
+      fill:      { patternType: 'solid', fgColor: { rgb: LGRAY } },
+      font:      { bold: true, ...(green ? { color: { rgb: GREEN } } : {}) },
+      alignment: { horizontal: 'right' },
+    },
   };
 }
 
@@ -141,48 +194,59 @@ function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
   const bw  = hotel.country.toLowerCase().includes('botswana');
   const sym = bw ? 'P' : 'R';
 
+  // Column layout (1-indexed):  A-E=names  F=CurGross  G=%Inc  H=FlatAdj
+  //   I=NewGross  J=MonthlyInc  K=CurCTC  L=NewCTC  M=MonthlyCtcΔ  N=AnnualCtcΔ
+  // Header is row 1; data rows 2…(n+1); totals row (n+2)
+  const n = hotel.rows.length;
+  const lastData = n + 1;  // last data row (Excel row number)
+
   const headers = [
     hdr('Surname'), hdr('First Name'), hdr('Job Title'), hdr('Grade'), hdr('Department'),
-    hdr(`Current Gross (${sym})`), hdr('% Increase'), hdr(`Flat Adj (${sym})`),
+    hdr(`Current Gross (${sym})`),
+    hdrEdit('% Increase'),          // G — user-editable, amber header
+    hdrEdit(`Flat Adj (${sym})`),   // H — user-editable, amber header
     hdr(`New Gross (${sym})`), hdr(`Monthly Inc (${sym})`),
     hdr(`Current CTC (${sym})`), hdr(`New CTC (${sym})`),
     hdr(`Monthly CTC Δ (${sym})`), hdr(`Annual CTC Δ (${sym})`),
   ];
 
-  const dataRows = hotel.rows.map(r => [
-    str(r.surname),
-    str(r.firstName),
-    str(r.jobTitle),
-    str(r.grade),
-    str(r.department),
-    num(r.currentGross),
-    pctNum(r.effectivePct),
-    num(r.effectiveFlat),
-    num(r.currentGross + (r.newBasic - r.currentBasic), true),   // new gross
-    num(r.newBasic - r.currentBasic, false, true),               // increase amount
-    num(r.currentCtc),
-    num(r.newCtc, true),
-    num(r.newCtc - r.currentCtc, false, true),
-    num((r.newCtc - r.currentCtc) * 12, false, true),
-  ]);
+  const dataRows = hotel.rows.map((r, i) => {
+    const row = i + 2;  // Excel row number for this employee
+    return [
+      str(r.surname),
+      str(r.firstName),
+      str(r.jobTitle),
+      str(r.grade),
+      str(r.department),
+      num(r.currentGross),                    // F: Current Gross — static (from DB)
+      inp(r.effectivePct, true),              // G: % Increase — yellow, editable
+      inp(r.effectiveFlat),                   // H: Flat Adj — yellow, editable
+      // I: New Gross — live formula (G stores pct as 6.0, not 0.06 — hence /100)
+      fml(`ROUND(F${row}*(1+G${row}/100)+H${row},-1)`, true),
+      fml(`I${row}-F${row}`, false, true),    // J: Monthly Inc
+      num(r.currentCtc),                      // K: Current CTC — static (burden calc needed)
+      num(r.newCtc, true),                    // L: New CTC — static
+      fml(`L${row}-K${row}`, false, true),    // M: Monthly CTC Δ
+      fml(`(L${row}-K${row})*12`, false, true), // N: Annual CTC Δ
+    ];
+  });
 
   const sumCurGross = hotel.rows.reduce((s, r) => s + r.currentGross, 0);
-  const sumNewGross = hotel.rows.reduce((s, r) => s + r.currentGross + (r.newBasic - r.currentBasic), 0);
-  const sumCurBasic = hotel.rows.reduce((s, r) => s + r.currentBasic, 0);
-  const sumNewBasic = hotel.rows.reduce((s, r) => s + r.newBasic, 0);
   const sumCurCtc   = hotel.rows.reduce((s, r) => s + r.currentCtc, 0);
   const sumNewCtc   = hotel.rows.reduce((s, r) => s + r.newCtc, 0);
 
   const totRow = [
-    tot(`Total  (${hotel.rows.length} employees)`, false),
+    tot(`Total  (${n} employees)`, false),
     tot('', false), tot('', false), tot('', false), tot('', false),
-    tot(sumCurGross), tot('', false), tot('', false),
-    tot(sumNewGross),
-    tot(sumNewBasic - sumCurBasic),
-    tot(sumCurCtc),
-    tot(sumNewCtc),
-    tot(sumNewCtc - sumCurCtc),
-    tot((sumNewCtc - sumCurCtc) * 12),
+    tot(sumCurGross),                          // F: static — Current Gross doesn't change
+    tot('', false),                            // G: blank
+    tot('', false),                            // H: blank
+    totFml(`SUM(I2:I${lastData})`),            // I: New Gross sum
+    totFml(`SUM(J2:J${lastData})`, true),      // J: Monthly Inc sum
+    tot(sumCurCtc),                            // K: Current CTC static sum
+    tot(sumNewCtc),                            // L: New CTC static sum
+    totFml(`SUM(M2:M${lastData})`, true),      // M: Monthly CTC Δ sum
+    totFml(`SUM(N2:N${lastData})`, true),      // N: Annual CTC Δ sum
   ];
 
   const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows, totRow]);
