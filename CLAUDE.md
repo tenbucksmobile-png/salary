@@ -354,6 +354,46 @@ NMW indicator shows only for SA hotels where `short_code !== 'APA'` and `!isBots
 
 The salary review Excel export reads all five localStorage keys in `handleExport()` and passes a `BenchmarkData` object to `exportSalaryReview()`, which prepends a CPI table, historic increases table (with NMW row), and optional notes above the summary table in the **Overview** sheet.
 
+### Excel export structure (`src/lib/excel-export.ts`)
+
+**Per-hotel sheets** (one per hotel with rows):
+
+| Col | Content | Behaviour |
+|-----|---------|-----------|
+| F — Current Gross | Static (DB value) | Read-only |
+| G — % Increase | Editable input | **Amber header + yellow cell** — change here to model scenarios |
+| H — Flat Adj | Editable input | Same — amber/yellow |
+| I — New Gross | `=ROUND(F*(1+G/100)+H,-1)` | Recalculates live |
+| J — Monthly Inc | `=I-F` | Live |
+| K — Current CTC | Static | Too complex for Excel formulas |
+| L — New CTC | Static | Same |
+| M — Monthly CTC Δ | `=L-K` | Live |
+| N — Annual CTC Δ | `=(L-K)*12` | Live |
+
+Totals row uses `SUM(col_first:col_last)` formulas for I, J, M, N.  
+AutoFilter on `A1:N1` — use column D (Grade) dropdown to filter by grade.
+
+**`% Increase` stored as display value** (e.g. `6.0`, not `0.06`) with format `'0.0"%"'` — formulas must divide by 100: `F*(1+G/100)`.
+
+**Overview sheet** — 14 columns A–N:
+
+| Col | Content |
+|-----|---------|
+| A–D | Hotel, Short Code, Currency, Headcount |
+| E | Increase % — configured rate (`settings.pct` + `settings.flat`) from `ExportHotel.increase` |
+| F | Current Gross (static) |
+| G | New Gross — `='SheetName'!I{totRow}` — cross-sheet formula, updates when hotel tab edited |
+| H | Monthly Inc — `='SheetName'!J{totRow}` |
+| I | Annual Inc — `='SheetName'!J{totRow}*12` |
+| J–M | CTC columns (static) |
+| N | % Change — `=IFERROR((G/F-1)*100,0)` within Overview |
+
+Grand Total row uses `SUM(G{first}:G{last})` etc. so it aggregates live hotel values.
+
+`exportSalaryReview` builds the `sheetNames: Map<string, string>` first (short code, single quotes stripped) and passes it to `buildSummarySheet` so cross-sheet formula strings are correct. Sheet names strip `[:\\/?\*\[\]']` and truncate at 31 chars.
+
+**`ExportHotel` interface** — `increase?: IncreaseEntry` carries the hotel-level configured rate. `ExportHotelRow` carries both `currentGross` (formula base) and `currentBasic` (needed for increase-amount column).
+
 ---
 
 ## Reconciliation
