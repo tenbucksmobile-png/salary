@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { MONTH_NAMES, sortHotels, fmtCurrency } from '@/lib/utils';
-import type { Hotel } from '@/types/database';
+import type { Hotel, Employee } from '@/types/database';
 import type {
   ReconciliationPeriod,
   ReconUpload,
@@ -129,6 +129,7 @@ export default function ReconciliationPage() {
     basic_salary: number;
     employees: { employee_code: string | null; surname: string; first_name: string };
   }>>([]);
+  const [cfeEmployees, setCfeEmployees] = useState<Employee[]>([]);
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -156,6 +157,13 @@ export default function ReconciliationPage() {
         setHotels(filtered);
         const csl = filtered.find(h => h.short_code === 'CSL') || filtered[0];
         if (csl) setHotelId(csl.id);
+
+        // Load CFE employees for management cross-reference (all users, unfiltered)
+        const cfeHotel = (data as Hotel[]).find(h => h.short_code === 'CFE');
+        if (cfeHotel) {
+          supabase.from('employees').select('*').eq('hotel_id', cfeHotel.id)
+            .then(({ data: emps }) => setCfeEmployees((emps ?? []) as Employee[]));
+        }
       }
       setLoading(false);
     });
@@ -396,7 +404,7 @@ export default function ReconciliationPage() {
 
   // Summary rows for the deductions tab
   // pay/diff are null when payroll has no comparable column (statement shown for reference only)
-  type SummaryRow = { label: string; stmt: number; pay: number | null; diff: number | null; isCombined?: boolean };
+  type SummaryRow = { label: string; stmt: number; pay: number | null; diff: number | null; isCombined?: boolean; isMgmt?: boolean };
   const summaryRows: SummaryRow[] = [];
   if (hasAnyPayroll) {
     if (furnmartStmt) summaryRows.push({
@@ -674,6 +682,49 @@ export default function ReconciliationPage() {
   const staffEmpRows = empRows.filter(r => !isMgt(r) && hasAnyDeduction(r));
   const mgtEmpRows   = empRows.filter(r => isMgt(r)  && hasAnyDeduction(r));
 
+  // Per-vendor management amounts — used to split summary rows into Staff + Mgmt sub-rows
+  const mgtVendorTotals = {
+    furnmart: mgtEmpRows.reduce((s, r) => s + (r.furnmart_stmt ?? 0), 0),
+    afritec:  mgtEmpRows.reduce((s, r) => s + (r.afritec_stmt  ?? 0), 0),
+    topline:  mgtEmpRows.reduce((s, r) => s + (r.topline_stmt  ?? 0), 0),
+    cb:       mgtEmpRows.reduce((s, r) => s + (r.cb_stmt       ?? 0), 0),
+    bodulo:   mgtEmpRows.reduce((s, r) => s + (r.bodulo_stmt   ?? 0), 0),
+  };
+
+  // CFE employee name map for management cross-reference (surname+first name → Employee)
+  const cfeNameMap = new Map<string, Employee>();
+  cfeEmployees.forEach(e => cfeNameMap.set(nameKey(`${e.surname} ${e.first_name}`), e));
+
+  // Map vendor label → management amount so we can split summary rows
+  const VENDOR_MGT: Record<string, number> = {
+    'Furnmart':       mgtVendorTotals.furnmart,
+    'Afritec Loans':  mgtVendorTotals.afritec,
+    'CB Stores':      mgtVendorTotals.cb,
+    'Topline':        mgtVendorTotals.topline,
+    'Bodulo Funeral': mgtVendorTotals.bodulo,
+    'Total Loans':    mgtVendorTotals.afritec + mgtVendorTotals.topline,
+  };
+
+  // Expand each vendor summary row: when management amounts exist, split into
+  // a staff sub-row (stmt vs payroll → should reconcile) + a management sub-row
+  // (stmt only — CFE payroll is separate). The staff stmt already excludes mgmt.
+  const expandedSummaryRows: SummaryRow[] = [];
+  for (const row of summaryRows) {
+    const mgtAmt = row.isCombined ? 0 : (VENDOR_MGT[row.label] ?? 0);
+    if (mgtAmt > 0) {
+      const staffStmt = row.stmt - mgtAmt;
+      expandedSummaryRows.push({
+        ...row,
+        stmt: staffStmt,
+        pay: row.pay,
+        diff: row.pay != null ? staffStmt - row.pay : null,
+      });
+      expandedSummaryRows.push({ label: row.label, stmt: mgtAmt, pay: null, diff: null, isMgmt: true });
+    } else {
+      expandedSummaryRows.push(row);
+    }
+  }
+
   // ── Prior-month changes ───────────────────────────────────────────────────
 
   const prevMap = new Map(prevRecords.map(r => [
@@ -948,13 +999,22 @@ export default function ReconciliationPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {summaryRows.map((row, i) => (
-                          <tr key={row.label} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${row.isCombined ? 'border-t border-muted' : ''}`}>
-                            <td className={`px-4 py-2 font-medium ${row.isCombined ? 'pl-8 text-muted-foreground italic text-xs' : ''}`}>
-                              {row.isCombined ? `↳ ${row.label}` : row.label}
+                        {expandedSummaryRows.map((row, i) => (
+                          <tr
+                            key={`${row.label}-${row.isMgmt ? 'mgmt' : i}`}
+                            className={`${row.isMgmt ? 'bg-teal-50/60' : row.isCombined ? '' : i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${row.isCombined ? 'border-t border-muted' : ''}`}
+                          >
+                            <td className={`px-4 py-2 font-medium ${row.isCombined ? 'pl-8 text-muted-foreground italic text-xs' : ''} ${row.isMgmt ? 'pl-8 text-teal-700 text-sm font-normal' : ''}`}>
+                              {row.isCombined
+                                ? `↳ ${row.label}`
+                                : row.isMgmt
+                                  ? '↳ Mgmt (CFE)'
+                                  : row.label}
                             </td>
                             <td className="px-4 py-2 text-right tabular-nums">{fmt(row.stmt, country)}</td>
-                            <td className="px-4 py-2 text-right tabular-nums">{row.pay != null ? fmt(row.pay, country) : '—'}</td>
+                            <td className={`px-4 py-2 text-right tabular-nums ${row.isMgmt ? 'text-muted-foreground' : ''}`}>
+                              {row.pay != null ? fmt(row.pay, country) : '—'}
+                            </td>
                             <td className={`px-4 py-2 text-right tabular-nums ${row.diff != null ? diffClass(row.diff) : 'text-muted-foreground'}`}>
                               {row.diff != null ? fmtDiff(row.diff, country) : '—'}
                             </td>
@@ -962,7 +1022,7 @@ export default function ReconciliationPage() {
                         ))}
                       </tbody>
                     </table>
-                    {summaryRows.some(r => r.diff != null && Math.abs(r.diff) > 0.01) && (
+                    {expandedSummaryRows.some(r => r.diff != null && Math.abs(r.diff) > 0.01) && (
                       <p className="mt-2 text-xs text-orange-600">
                         Positive difference = statement amount exceeds payroll (potential under-capture). Negative = payroll exceeds statement.
                       </p>
@@ -1119,40 +1179,112 @@ export default function ReconciliationPage() {
                 {/* Management section — CFE employees from MGMT sections in statements */}
                 {mgtEmpRows.length > 0 && (
                   <div>
-                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
-                      Management (CFE)
-                    </h2>
-                    <p className="text-xs text-muted-foreground mb-3">
-                      Employees from management sections of the deduction statements — cross-referenced against CFE Management hotel records.
-                    </p>
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                          Management (CFE)
+                        </h2>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          On CFE Management payroll — statement amounts shown. Reconcile via the CFE tab.
+                          {cfeEmployees.length > 0 && (
+                            <span className="ml-2 text-teal-700">
+                              {mgtEmpRows.filter(r => cfeNameMap.has(nameKey(r.name))).length}/{mgtEmpRows.length} matched in CFE records
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
                     <div className="overflow-x-auto">
                       <table className="text-xs border rounded w-full whitespace-nowrap">
                         <thead>
                           <tr className="bg-[#2D6A4F] text-white">
+                            <th className="px-3 py-2 text-left">Code</th>
                             <th className="px-3 py-2 text-left">Name</th>
-                            <th className="px-3 py-2 text-left">Section</th>
-                            {cbStmt      && <th className="px-3 py-2 text-right">CB Stores</th>}
-                            {toplineStmt && <th className="px-3 py-2 text-right">Topline</th>}
-                            {afritecStmt && <th className="px-3 py-2 text-right">Afritec</th>}
-                            {furnmartStmt && <th className="px-3 py-2 text-right">Furnmart</th>}
-                            {boduloStmt  && <th className="px-3 py-2 text-right">Bodulo</th>}
+                            {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
+                              <th className="px-3 py-2 text-right">Furnmart Stmt</th>
+                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">±</th>
+                            </>}
+                            {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
+                              <th className="px-3 py-2 text-right">Afritec Stmt</th>
+                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">±</th>
+                            </>}
+                            {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
+                              <th className="px-3 py-2 text-right">Topline Stmt</th>
+                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">±</th>
+                            </>}
+                            {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
+                              <th className="px-3 py-2 text-right">CB Stores Stmt</th>
+                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">±</th>
+                            </>}
+                            {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
+                              <th className="px-3 py-2 text-right">Bodulo Stmt</th>
+                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">±</th>
+                            </>}
                           </tr>
                         </thead>
                         <tbody>
-                          {mgtEmpRows.map((row, i) => (
-                            <tr key={`mgt-${row.name}-${i}`} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
-                              <td className="px-3 py-1.5 font-medium">{row.name}</td>
-                              <td className="px-3 py-1.5 text-muted-foreground text-xs">{row.section ?? '—'}</td>
-                              {cbStmt      && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.cb_stmt, country)}</td>}
-                              {toplineStmt && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.topline_stmt, country)}</td>}
-                              {afritecStmt && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.afritec_stmt, country)}</td>}
-                              {furnmartStmt && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_stmt, country)}</td>}
-                              {boduloStmt  && <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_stmt, country)}</td>}
-                            </tr>
-                          ))}
+                          {(dedFilter === 'all' ? mgtEmpRows : mgtEmpRows.filter(row => {
+                            if (dedFilter === 'furnmart') return (row.furnmart_stmt ?? 0) > 0;
+                            if (dedFilter === 'afritec')  return (row.afritec_stmt  ?? 0) > 0;
+                            if (dedFilter === 'topline')  return (row.topline_stmt  ?? 0) > 0;
+                            if (dedFilter === 'cbstores') return (row.cb_stmt       ?? 0) > 0;
+                            if (dedFilter === 'bodulo')   return (row.bodulo_stmt   ?? 0) > 0;
+                            return true;
+                          })).map((row, i) => {
+                            const cfeMatch = cfeNameMap.get(nameKey(row.name));
+                            return (
+                              <tr key={`mgt-${row.name}-${i}`} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
+                                <td className="px-3 py-1.5 font-mono text-xs">
+                                  {cfeMatch?.employee_code
+                                    ? <span className="text-emerald-700 font-medium">{cfeMatch.employee_code}</span>
+                                    : <span className="text-muted-foreground">—</span>
+                                  }
+                                </td>
+                                <td className="px-3 py-1.5">
+                                  <span className="font-medium">{row.name}</span>
+                                  {!cfeMatch && cfeEmployees.length > 0 && (
+                                    <span className="ml-1.5 text-xs text-orange-500 font-normal">unmatched</span>
+                                  )}
+                                </td>
+                                {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_stmt, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                </>}
+                                {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.afritec_stmt, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                </>}
+                                {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.topline_stmt, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                </>}
+                                {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.cb_stmt, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                </>}
+                                {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_stmt, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                </>}
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      CFE payroll not uploaded in this context — Payroll column shows — for all management employees.
+                    </p>
                   </div>
                 )}
               </>
