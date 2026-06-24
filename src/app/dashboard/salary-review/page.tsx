@@ -533,6 +533,7 @@ export default function SalaryReviewPage() {
             name:      h.name,
             shortCode: h.short_code ?? h.name,
             country:   h.country,
+            increase:  { pct: settings.pct, flat: settings.flat },
             rows: [...rows].sort((a, b) => {
               const s = a.employee.surname.localeCompare(b.employee.surname, undefined, { sensitivity: 'base' });
               return s !== 0 ? s : a.employee.first_name.localeCompare(b.employee.first_name, undefined, { sensitivity: 'base' });

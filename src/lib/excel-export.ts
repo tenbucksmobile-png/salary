@@ -36,6 +36,7 @@ export interface ExportHotel {
   name: string;
   shortCode: string;
   country: string;
+  increase?: IncreaseEntry;  // hotel-level configured rate shown in Overview
   rows: ExportHotelRow[];
 }
 
@@ -128,6 +129,18 @@ function totFml(formula: string, green = false) {
       fill:      { patternType: 'solid', fgColor: { rgb: LGRAY } },
       font:      { bold: true, ...(green ? { color: { rgb: GREEN } } : {}) },
       alignment: { horizontal: 'right' },
+    },
+  };
+}
+
+// Formula cell in the Overview summary data rows (normal weight, no fill)
+function fmlOv(formula: string, bold = false, green = false) {
+  return {
+    f: formula, t: 'n', z: '#,##0',
+    s: {
+      alignment: { horizontal: 'right' },
+      ...(bold  ? { font: { bold: true } } : {}),
+      ...(green ? { font: { color: { rgb: GREEN } } } : {}),
     },
   };
 }
@@ -257,20 +270,33 @@ function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
     { wch: 14 }, { wch: 14 },
     { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 16 },
   ];
-  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+  ws['!freeze']     = { xSplit: 0, ySplit: 1 };
+  ws['!autofilter'] = { ref: 'A1:N1' };  // enables filter dropdowns; use col D for Grade
   return ws;
 }
 
 // ── Overview sheet (benchmark + summary) ─────────────────────────────────────
+//
+// Column layout (A–N, 14 cols):
+//   A=Hotel  B=ShortCode  C=Currency  D=Headcount  E=Increase%
+//   F=CurGross  G=NewGross  H=MonthlyInc  I=AnnualInc
+//   J=CurCTC  K=NewCTC  L=MonthlyCtcΔ  M=AnnualCtcΔ  N=%Change
+//
+// G, H, I, N use cross-sheet formulas pointing at each hotel tab's totals row,
+// so edits the user makes in the hotel tabs flow back to the Overview.
 
-function buildSummarySheet(hotels: ExportHotel[], benchmark: BenchmarkData | null, XLSX: any): any {
+function buildSummarySheet(
+  hotels: ExportHotel[],
+  benchmark: BenchmarkData | null,
+  sheetNames: Map<string, string>,
+  XLSX: any,
+): any {
   // ── Benchmark block ───────────────────────────────────────────────────────
   const benchmarkRows: any[][] = [];
 
   if (benchmark) {
     const yrs = BENCHMARK_YEARS;
 
-    // CPI section
     const cpiTitle = benchmark.cpiMonth
       ? `CPI — Annual Average % as @ ${benchmark.cpiMonth}`
       : 'CPI — Annual Average %';
@@ -279,9 +305,8 @@ function buildSummarySheet(hotels: ExportHotel[], benchmark: BenchmarkData | nul
     for (const [country, yearData] of Object.entries(benchmark.cpi)) {
       benchmarkRows.push([str(country), ...yrs.map(y => bmark(yearData[y]))]);
     }
-    benchmarkRows.push([]); // blank separator
+    benchmarkRows.push([]);
 
-    // Historic increases section
     benchmarkRows.push([sectionHdr('Historic Salary Increases — % Applied')]);
     benchmarkRows.push([hdrSm('Hotel'), ...yrs.map(y => hdrSm(y))]);
     for (const { id, name } of benchmark.hotels) {
@@ -289,26 +314,24 @@ function buildSummarySheet(hotels: ExportHotel[], benchmark: BenchmarkData | nul
       benchmarkRows.push([str(name), ...yrs.map(y => incCell(inc[y]))]);
     }
 
-    // NMW row — only if any value is present
     const hasNmw = Object.values(benchmark.nmw ?? {}).some(v => v && v.trim());
     if (hasNmw) {
-      const AMBER = 'FFF3CD';
+      const NMW_AMBER = 'FFF3CD';
       const nmwLabel = {
         v: 'NMW (SA)', t: 's',
-        s: { font: { bold: true, color: { rgb: '92610A' } }, fill: { patternType: 'solid', fgColor: { rgb: AMBER } }, alignment: { horizontal: 'left' } },
+        s: { font: { bold: true, color: { rgb: '92610A' } }, fill: { patternType: 'solid', fgColor: { rgb: NMW_AMBER } }, alignment: { horizontal: 'left' } },
       };
       const nmwCells = yrs.map(y => {
         const v = benchmark.nmw[y];
         const n = parseFloat(v ?? '');
-        if (isNaN(n)) return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, fill: { patternType: 'solid', fgColor: { rgb: AMBER } }, font: { color: { rgb: 'BBBBBB' } } } };
-        return { v: +n.toFixed(2), t: 'n', z: '#,##0.00', s: { alignment: { horizontal: 'center' }, fill: { patternType: 'solid', fgColor: { rgb: AMBER } }, font: { color: { rgb: '92610A' } } } };
+        if (isNaN(n)) return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, fill: { patternType: 'solid', fgColor: { rgb: NMW_AMBER } }, font: { color: { rgb: 'BBBBBB' } } } };
+        return { v: +n.toFixed(2), t: 'n', z: '#,##0.00', s: { alignment: { horizontal: 'center' }, fill: { patternType: 'solid', fgColor: { rgb: NMW_AMBER } }, font: { color: { rgb: '92610A' } } } };
       });
       benchmarkRows.push([nmwLabel, ...nmwCells]);
     }
 
-    benchmarkRows.push([]); // blank separator
+    benchmarkRows.push([]);
 
-    // Notes (only if present)
     if (benchmark.notes.trim()) {
       benchmarkRows.push([
         { v: 'Notes:', t: 's', s: { font: { bold: true } } },
@@ -317,71 +340,116 @@ function buildSummarySheet(hotels: ExportHotel[], benchmark: BenchmarkData | nul
       benchmarkRows.push([]);
     }
 
-    // Salary review summary section header
     benchmarkRows.push([sectionHdr('Salary Review Summary')]);
     benchmarkRows.push([]);
   }
 
+  // ── Row-number arithmetic (1-indexed) ─────────────────────────────────────
+  // benchmarkRows occupy rows 1…benchmarkRows.length
+  // summary header = benchmarkRows.length + 1
+  // first hotel data row = benchmarkRows.length + 2
+  const firstDataRow = benchmarkRows.length + 2;
+  const lastDataRow  = firstDataRow + hotels.length - 1;
+  const grandTotRow  = lastDataRow + 1;
+
   // ── Summary table ─────────────────────────────────────────────────────────
   const headers = [
     hdr('Hotel'), hdr('Short Code'), hdr('Currency'), hdr('Headcount'),
-    hdr('Current Gross'), hdr('New Gross'), hdr('Monthly Increase'), hdr('Annual Increase'),
-    hdr('Current CTC'), hdr('New CTC'), hdr('Monthly CTC Δ'), hdr('Annual CTC Δ'), hdr('% Change'),
+    hdr('Increase %'),                                              // E — configured rate
+    hdr('Current Gross'), hdr('New Gross'),                        // F, G
+    hdr('Monthly Increase'), hdr('Annual Increase'),               // H, I
+    hdr('Current CTC'), hdr('New CTC'),                            // J, K
+    hdr('Monthly CTC Δ'), hdr('Annual CTC Δ'),                     // L, M
+    hdr('% Change'),                                                // N
   ];
 
-  let totHC = 0, totCurGross = 0, totNewGross = 0, totCurCtc = 0, totNewCtc = 0;
+  let totHC = 0, totCurGross = 0, totCurCtc = 0, totNewCtc = 0;
 
-  const dataRows = hotels.map(h => {
+  const dataRows = hotels.map((h, idx) => {
+    const overviewRow = firstDataRow + idx;  // this hotel's row number in Overview
+    const sheetName   = sheetNames.get(h.id);
+    const hotelTotRow = h.rows.length + 2;   // totals row in the hotel sheet
+    const hasSheet    = h.rows.length > 0 && !!sheetName;
+
     const cur  = h.rows.reduce((s, r) => s + r.currentGross, 0);
-    const nw   = h.rows.reduce((s, r) => s + r.currentGross + (r.newBasic - r.currentBasic), 0);
     const curC = h.rows.reduce((s, r) => s + r.currentCtc, 0);
     const nwC  = h.rows.reduce((s, r) => s + r.newCtc, 0);
-    const pch  = cur > 0 ? (nw - cur) / cur * 100 : 0;
     const bw   = h.country.toLowerCase().includes('botswana');
 
     totHC       += h.rows.length;
-    totCurGross += cur;  totNewGross += nw;
-    totCurCtc   += curC; totNewCtc   += nwC;
+    totCurGross += cur;
+    totCurCtc   += curC;
+    totNewCtc   += nwC;
+
+    // G: New Gross — cross-sheet from hotel totals col I, or static fallback
+    const newGrossCell = hasSheet
+      ? fmlOv(`'${sheetName}'!I${hotelTotRow}`, true)
+      : num(h.rows.reduce((s, r) => s + r.currentGross + (r.newBasic - r.currentBasic), 0), true);
+
+    // H: Monthly Inc — cross-sheet from hotel totals col J
+    const monthlyIncCell = hasSheet
+      ? fmlOv(`'${sheetName}'!J${hotelTotRow}`, false, true)
+      : num(h.rows.reduce((s, r) => s + (r.newBasic - r.currentBasic), 0), false, true);
+
+    // I: Annual Inc — hotel J totals × 12
+    const annualIncCell = hasSheet
+      ? fmlOv(`'${sheetName}'!J${hotelTotRow}*12`, false, true)
+      : num(h.rows.reduce((s, r) => s + (r.newBasic - r.currentBasic) * 12, 0), false, true);
+
+    // N: % Change — computed within Overview so it stays live when G updates
+    const pchCell = {
+      f: `IFERROR((G${overviewRow}/F${overviewRow}-1)*100,0)`,
+      t: 'n', z: '0.0"%"',
+      s: { alignment: { horizontal: 'right' }, font: { color: { rgb: GREEN } } },
+    };
 
     return [
-      str(h.name, true),
-      { v: h.shortCode, t: 's', s: { alignment: { horizontal: 'center' } } },
-      { v: bw ? 'BWP (P)' : 'ZAR (R)', t: 's', s: { alignment: { horizontal: 'center' } } },
-      { v: h.rows.length, t: 'n', s: { alignment: { horizontal: 'center' } } },
-      num(cur), num(nw, true), num(nw - cur, false, true), num((nw - cur) * 12, false, true),
-      num(curC), num(nwC, true), num(nwC - curC, false, true), num((nwC - curC) * 12, false, true),
-      { v: +pch.toFixed(1), t: 'n', z: '0.0"%"', s: { alignment: { horizontal: 'right' }, font: { color: { rgb: GREEN } } } },
+      str(h.name, true),                                                          // A
+      { v: h.shortCode ?? '', t: 's', s: { alignment: { horizontal: 'center' } } }, // B
+      { v: bw ? 'BWP (P)' : 'ZAR (R)', t: 's', s: { alignment: { horizontal: 'center' } } }, // C
+      { v: h.rows.length, t: 'n', s: { alignment: { horizontal: 'center' } } },  // D
+      incCell(h.increase),     // E: Increase % (configured rate from salary review)
+      num(cur),                // F: Current Gross (static — never changes)
+      newGrossCell,            // G: New Gross (cross-sheet formula)
+      monthlyIncCell,          // H: Monthly Inc (cross-sheet formula)
+      annualIncCell,           // I: Annual Inc (cross-sheet formula)
+      num(curC),               // J: Current CTC (static)
+      num(nwC, true),          // K: New CTC (static)
+      num(nwC - curC, false, true),         // L: Monthly CTC Δ (static)
+      num((nwC - curC) * 12, false, true),  // M: Annual CTC Δ (static)
+      pchCell,                 // N: % Change (formula within Overview)
     ];
   });
 
-  const pchTot = totCurGross > 0 ? (totNewGross - totCurGross) / totCurGross * 100 : 0;
+  // Grand Total row — SUM formulas for live columns; static for CTC
   const totRow = [
     tot('Grand Total', false),
     { v: '', t: 's', s: { fill: { patternType: 'solid', fgColor: { rgb: LGRAY } } } },
     { v: 'Mixed', t: 's', s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, alignment: { horizontal: 'center' } } },
     { v: totHC, t: 'n', s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, alignment: { horizontal: 'center' } } },
-    tot(totCurGross), tot(totNewGross),
-    tot(totNewGross - totCurGross), tot((totNewGross - totCurGross) * 12),
-    tot(totCurCtc), tot(totNewCtc),
-    tot(totNewCtc - totCurCtc), tot((totNewCtc - totCurCtc) * 12),
-    { v: +pchTot.toFixed(1), t: 'n', z: '0.0"%"', s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, alignment: { horizontal: 'right' } } },
+    tot('', false),                                                           // E: blank
+    tot(totCurGross),                                                         // F: static
+    totFml(`SUM(G${firstDataRow}:G${lastDataRow})`),                          // G: New Gross
+    totFml(`SUM(H${firstDataRow}:H${lastDataRow})`, true),                    // H: Monthly Inc
+    totFml(`SUM(I${firstDataRow}:I${lastDataRow})`, true),                    // I: Annual Inc
+    tot(totCurCtc),                                                            // J: Cur CTC
+    tot(totNewCtc),                                                            // K: New CTC
+    tot(totNewCtc - totCurCtc),                                                // L: Monthly CTC Δ
+    tot((totNewCtc - totCurCtc) * 12),                                         // M: Annual CTC Δ
+    // N: % Change for grand total — uses the G and F values in this same row
+    { f: `IFERROR((G${grandTotRow}/F${grandTotRow}-1)*100,0)`, t: 'n', z: '0.0"%"',
+      s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, alignment: { horizontal: 'right' } } },
   ];
 
   const aoa = [...benchmarkRows, headers, ...dataRows, totRow];
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const ws  = XLSX.utils.aoa_to_sheet(aoa);
 
   ws['!cols'] = [
-    { wch: 28 }, { wch: 12 }, { wch: 12 }, { wch: 10 },
-    { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 18 },
-    { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 10 },
+    { wch: 28 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 14 },  // A–E
+    { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 18 },                 // F–I
+    { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 10 },   // J–N
   ];
-
-  // Freeze on the summary table header row (after benchmark rows, if any)
-  if (!benchmark) {
-    ws['!freeze'] = { xSplit: 0, ySplit: 1 };
-  } else {
-    ws['!freeze'] = { xSplit: 0, ySplit: benchmarkRows.length + 1 };
-  }
+  ws['!freeze'] = { xSplit: 0, ySplit: benchmarkRows.length + 1 };
 
   return ws;
 }
@@ -398,15 +466,22 @@ export async function exportSalaryReview(
 
   const wb = XLSX.utils.book_new();
 
-  // Overview sheet first (benchmark block + summary table)
-  XLSX.utils.book_append_sheet(wb, buildSummarySheet(hotels, benchmark ?? null, XLSX), 'Overview');
+  // Build sheet names first — needed for cross-sheet formula references in Overview.
+  // Strip single quotes too so they don't break formula syntax.
+  const sheetNames = new Map<string, string>();
+  for (const h of hotels) {
+    if (h.rows.length === 0) continue;
+    const name = (h.shortCode || h.name).replace(/[:\\/?\*\[\]']/g, '').slice(0, 31);
+    sheetNames.set(h.id, name);
+  }
+
+  // Overview sheet first (benchmark block + summary table with cross-sheet refs)
+  XLSX.utils.book_append_sheet(wb, buildSummarySheet(hotels, benchmark ?? null, sheetNames, XLSX), 'Overview');
 
   // One sheet per hotel (only hotels with rows)
   for (const h of hotels) {
     if (h.rows.length === 0) continue;
-    // Sheet names: max 31 chars, no special chars
-    const name = (h.shortCode || h.name).replace(/[:\\/?\*\[\]]/g, '').slice(0, 31);
-    XLSX.utils.book_append_sheet(wb, buildHotelSheet(h, XLSX), name);
+    XLSX.utils.book_append_sheet(wb, buildHotelSheet(h, XLSX), sheetNames.get(h.id)!);
   }
 
   XLSX.writeFile(wb, filename);
