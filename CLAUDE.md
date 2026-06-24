@@ -330,9 +330,11 @@ src/
 
 **Commit** — updates each hotel's draft scenario status to `committed` (sets `effective_month`, `effective_year`, `committed_at`); writes new `salary_records` for the target month/year; automatically writes each hotel's `pct` and `flat` to `ihg-salary-increases` in localStorage (so the Inflation & Increase History table on the Methods page updates without manual entry); clears all draft state. Does NOT create a new scenario row — the existing draft row is promoted.
 
-**Threshold** — optional second tier within a hotel's scenario. `threshold` (basic salary amount) divides employees into two bands:
-- Basic **< threshold**: uses `belowPct`/`belowFlat` if set; otherwise **0** (no increase).
-- Basic **≥ threshold**: uses `abovePct`/`aboveFlat` if set; otherwise falls back to the global `pct`/`flat`.
+**Increase calculation** — all % increases are applied to `total_earnings` (Gross salary), not `basic_salary`. The resulting amount is added to `basic_salary`; allowances remain unchanged. Formula: `increase = total_earnings × pct + flat → newBasic = round(basic + increase, 10)`. `ForecastRow.currentGross` = `total_earnings`; the table shows "Current Gross" / "New Gross" columns and the Excel export uses the same labels.
+
+**Threshold** — optional second tier within a hotel's scenario. `threshold` compares against `basic_salary` (not gross). Divides employees into two bands:
+- Basic **< threshold**: uses `belowPct`/`belowFlat` applied to gross; otherwise **0** (no increase).
+- Basic **≥ threshold**: uses `abovePct`/`aboveFlat` applied to gross; otherwise falls back to the global `pct`/`flat`.
 
 Grade-level exclusions (`excludedGrades`) and per-employee exclusions (`excluded`) both set `isExcluded = true` — excluded employees are kept in the table with 0 increase and are included in totals/consolidations but receive no salary change on Commit.
 
@@ -358,7 +360,7 @@ The salary review Excel export reads all five localStorage keys in `handleExport
 
 `/dashboard/reconciliation` — admin-only monthly payroll cross-check for **CSL, NL, and CFE** only (hotel tabs are filtered to these three short codes).
 
-**Workflow**: Upload tab → Deductions Check tab → Prior Month Changes tab → Queries tab. Status moves Open → Submitted → Approved.
+**Workflow**: Upload tab → Deductions Check tab → **Employees tab** → Prior Month Changes tab → Queries tab. Status moves Open → Submitted → Approved.
 
 **Upload tab**: Period selector (month/year) is the first element. File slots:
 
@@ -376,7 +378,7 @@ Re-uploading any slot replaces it (upsert on `period_id, upload_type`).
 
 **Parsers** (`src/lib/recon-parsers.ts`):
 - `parseAfritecXls(buf, fileName, uploadType, hotelCode)` — detects header by keyword; col 5 = Employee Number, col 10 = Regular Instalment. **If the file contains a "CUSTOMER NAME" header row it delegates to `parseCbToplineFormat`** — so this function is the catch-all for afritec, topline, and cbstores. Dispatch in `handleUpload`: `payroll`→`parsePayrollXlsx`, `furnmart`→`parseFurnmart`, `bodulo`→`parseBodulo`, all others→`parseAfritecXls(buf, name, type, hotelCode)`
-- `parseCbToplineFormat` — handles the multi-section `CUSTOMER NAME / CUST.# / AMOUNT` format used by CB Stores and Topline. Sections are identified by `TO: <label>` rows above each header. `sectionMatchesHotel()` filters which sections to include per hotel (CSL→"CSL\*", NL→"NSL\*", CFE→"CFE\*"). Each employee line is stored with `empCode = nameKey(name)` (CUST.# ignored) and `section = sectionLabel`. Returns `matchByName: true`.
+- `parseCbToplineFormat` — handles the multi-section `CUSTOMER NAME / CUST.# / AMOUNT` format used by CB Stores and Topline. Sections are identified by `TO: <label>` rows above each header. `sectionMatchesHotel()` filters which sections to include per hotel (CSL→"CSL\*", NL→"NSL\*", CFE→"CFE\*"). **MGMT/Management sections are always passed through regardless of hotel** — they appear on CSL/NL statements but are separated downstream by `isMgt()` into the Management section. Each employee line is stored with `empCode = nameKey(name)` (CUST.# ignored) and `section = sectionLabel`. Returns `matchByName: true`.
 - `parseFurnmart` — header detected by "EMP NO"; col 11 (TOTAL) only populated on the last SEQ row per employee; employees with no code go to `unmatchedLines`
 - `parseBodulo` — header at row 0; col 4 = Custom Policy Number, col 9 = Premium Due; "TOTAL TO PAY" extracted from bottom summary block
 - `parsePayrollXlsx` — header detected by `col[0]="Code"`; all other columns detected by keyword (e.g. "furnmart", "cb stores", "funeral", "staff loan", "afritec", "topline") — robust across hotel format variants. `afritecFromStaff` flag: when payroll has a Topline column but no dedicated Afritec column, the Staff Loans column is used as Afritec amounts.
@@ -399,7 +401,13 @@ All parsers are async and dynamically import `xlsx-js-style` (avoids SSR issues 
 
 **Upload label**: "Topline Loan Statement" was renamed to "Topline Deductions" in `UPLOAD_CONFIGS`.
 
-**Prior Month Changes tab**: compares uploaded payroll basic salaries against the previous month's `salary_records` in DB. Shows new employees, employees no longer in payroll, and basic salary changes.
+**Employees tab** — cross-reference between the uploaded payroll and the DB `employees` table for CSL and NL. Always visible (not conditional on which hotel is selected in the main selector). Contains [CSL | NL] sub-tabs; each loads data independently. Data reloads whenever the tab is opened or year/month/hotels changes.
+
+Per hotel: loads active `employees` + `salary_records` from DB, plus payroll lines from the hotel's own `recon_uploads` for the current period (permanent + `ftc_payroll` merged, then deduplicated by `nameKey`). Cross-reference output type `CrossRefRow`: `{ name, dbEmployee, dbBasic, payBasic, ftc }`. Filter chips: All / Basic Mismatch / Not in DB / Not in Payroll. The badge on the main "Employees" tab shows the combined discrepancy count across both CSL and NL.
+
+State: `cslXRef: HotelXRefData`, `nlXRef: HotelXRefData`, `crossRefSubTab: 'CSL' | 'NL'`. `HotelXRefData = { employees, salaryRecords, payrollLines, loaded }`. `buildCrossRef(xref)` is a pure function that produces `CrossRefRow[]` from a `HotelXRefData` — called for both the active sub-tab (for rendering) and both hotels (for badge counts).
+
+**Prior Month Changes tab**: compares current payroll against the previous month. **Data source preference**: queries the previous period's `recon_uploads` (payroll + ftc_payroll types) first — this is the only reliable source for CSL/NL whose employee codes are NULL in the DB. Falls back to `salary_records` only if no recon upload exists for the prior period. Both sources are unified into `PrevEmp = { empCode: string; name: string; basic: number }` before comparison.
 
 **Queries tab**: thread-style queries with author name + timestamp; each can be resolved with a response.
 
