@@ -15,6 +15,7 @@ import {
   parseFurnmart,
   parseBodulo,
   parsePayrollXlsx,
+  parseFtcPayrollXls,
   nameKey,
 } from '@/lib/recon-parsers';
 import type { ParsedStatement, ParsedPayroll, ReconLine } from '@/lib/recon-parsers';
@@ -39,7 +40,7 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
   },
   {
     type: 'ftc_payroll', label: 'Fixed Term Contract Payroll', required: false,
-    accept: '.xlsx', desc: 'Separate FTC payroll spreadsheet (same format as main payroll)',
+    accept: '.xls,.xlsx', desc: 'FTC / casual pay register (.xls or .xlsx)',
     payrollKey: null,
   },
   {
@@ -261,7 +262,8 @@ export default function ReconciliationPage() {
       let parsed: ParsedStatement | ParsedPayroll;
 
       const hotelCode = hotels.find(h => h.id === hotelId)?.short_code ?? '';
-      if (type === 'payroll' || type === 'ftc_payroll') parsed = await parsePayrollXlsx(buf, file.name);
+      if (type === 'payroll') parsed = await parsePayrollXlsx(buf, file.name);
+      else if (type === 'ftc_payroll') parsed = await parseFtcPayrollXls(buf, file.name, month, year);
       else if (type === 'furnmart') parsed = await parseFurnmart(buf, file.name);
       else if (type === 'bodulo')   parsed = await parseBodulo(buf, file.name);
       else                          parsed = await parseAfritecXls(buf, file.name, type, hotelCode);
@@ -1063,7 +1065,7 @@ export default function ReconciliationPage() {
                             return (
                               <tr key={`${row.empCode || 'x'}-${row.name}-${i}`} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${hasDiscrep ? 'ring-1 ring-inset ring-orange-200' : ''}`}>
                                 <td className="px-3 py-1.5 font-mono text-xs">
-                                  {row.empCode || '—'}
+                                  {row.empCode && !row.empCode.includes('|') ? row.empCode : '—'}
                                   {row.empCode && ftcCodes.has(row.empCode) && (
                                     <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
                                   )}
@@ -1190,7 +1192,7 @@ export default function ReconciliationPage() {
                         {newEmps.map(e => (
                           <tr key={e.empCode} className="border-t">
                             <td className="px-3 py-1.5 font-mono text-xs">
-                              {e.empCode}
+                              {e.empCode && !e.empCode.includes('|') ? e.empCode : '—'}
                               {ftcCodes.has(e.empCode) && (
                                 <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
                               )}
@@ -1258,7 +1260,7 @@ export default function ReconciliationPage() {
                           return (
                             <tr key={e.empCode} className="border-t">
                               <td className="px-3 py-1.5 font-mono text-xs">
-                                {e.empCode}
+                                {e.empCode && !e.empCode.includes('|') ? e.empCode : '—'}
                                 {ftcCodes.has(e.empCode) && (
                                   <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
                                 )}

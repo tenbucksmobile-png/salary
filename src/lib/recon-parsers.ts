@@ -454,3 +454,107 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
 
   return { lines, totals, fileName };
 }
+
+// ── FTC / Casual Pay Register parser ─────────────────────────────────────────
+// Handles the bespoke multi-sheet "FIXED SERVICE PAY" xls format.
+// Column count and positions vary across sheets (3–14 cols); detection finds
+// "NAME"/"FULL NAME" and "TOTAL PAY"/"GROSS SALARY" header cells each time.
+// No employee codes — empCode is set to nameKey(name) for name-based matching.
+
+const FTC_MONTH_NAMES = [
+  'jan','feb','mar','apr','may','jun',
+  'jul','aug','sep','oct','nov','dec',
+];
+
+function pickFtcSheet(sheetNames: string[], month: number, year: number): string {
+  if (sheetNames.length === 1) return sheetNames[0];
+  if (!month || !year) return sheetNames[0];
+
+  const mAbbrev = FTC_MONTH_NAMES[month - 1];
+  const yStr = String(year);
+  const yShort = yStr.slice(2);
+
+  for (const name of sheetNames) {
+    const lower = name.toLowerCase().replace(/\s+/g, '');
+    if (lower.includes(mAbbrev) && (lower.includes(yStr) || lower.includes(yShort))) {
+      return name;
+    }
+  }
+  return sheetNames[sheetNames.length - 1]; // default to most recent sheet
+}
+
+function findFtcHeader(
+  rows: any[][],
+  startRow: number,
+): { found: boolean; nameCol: number; totalCol: number; rowIdx: number } {
+  for (let i = startRow; i < Math.min(startRow + 15, rows.length); i++) {
+    let nameCol = -1, totalCol = -1;
+    rows[i].forEach((cell: any, j: number) => {
+      const s = String(cell ?? '').trim().toLowerCase();
+      if (/^(full\s+)?name$/.test(s)) nameCol = j;
+      if (/total.+pay|gross.+salary/.test(s)) totalCol = j;
+    });
+    if (nameCol >= 0 && totalCol >= 0) return { found: true, nameCol, totalCol, rowIdx: i };
+  }
+  return { found: false, nameCol: 0, totalCol: -1, rowIdx: startRow };
+}
+
+export async function parseFtcPayrollXls(
+  buf: ArrayBuffer,
+  fileName: string,
+  targetMonth = 0,
+  targetYear = 0,
+): Promise<ParsedPayroll> {
+  const XLSX = await getXLSX();
+  const wb = XLSX.read(buf, { type: 'array' });
+
+  const sheetName = pickFtcSheet(wb.SheetNames, targetMonth, targetYear);
+  const ws = wb.Sheets[sheetName];
+  const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+  // Locate first header row to determine column positions for the whole sheet
+  const { found, nameCol, totalCol, rowIdx: headerIdx } = findFtcHeader(rows, 0);
+  if (!found) return { lines: [], totals: {}, fileName };
+
+  const lines: PayrollLine[] = [];
+  let grandTotal = 0;
+
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    const rawName = String(row[nameCol] ?? '').trim();
+    if (!rawName) continue;
+    if (/^(prepared|checked|authorised|total)/i.test(rawName)) continue;
+
+    const total = Number(row[totalCol]) || 0;
+    // Second header rows (when two blocks share a sheet) have a non-numeric total
+    if (total <= 0) continue;
+
+    const key = nameKey(rawName);
+    const existing = lines.find(l => l.empCode === key);
+    if (existing) {
+      // Same employee appearing in a second block on the same sheet — sum totals
+      existing.basic += total;
+      existing.incomeTotal += total;
+      existing.nettPay += total;
+    } else {
+      lines.push({
+        empCode: key, // nameKey-format; display as "—" in the UI
+        name: rawName,
+        basic: total,
+        incomeTotal: total,
+        furnmart: 0, cbStores: 0, bodulo: 0,
+        pensionEe: 0, paye: 0, medAidEe: 0,
+        afritecLoans: 0, toplineLoans: 0, staffLoans: 0,
+        deductionTotal: 0,
+        nettPay: total,
+      });
+    }
+    grandTotal += total;
+  }
+
+  return {
+    lines,
+    totals: { basic: grandTotal, incomeTotal: grandTotal, nettPay: grandTotal },
+    fileName,
+  };
+}
