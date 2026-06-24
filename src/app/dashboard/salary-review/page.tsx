@@ -31,6 +31,7 @@ interface HotelSettings {
 interface ForecastRow {
   employee: Employee;
   hotel: Hotel;
+  currentGross: number;     // total_earnings — the base on which % increase is applied
   currentBasic: number;
   newBasic: number;
   newTotalEarnings: number;
@@ -67,11 +68,12 @@ function computeRows(
       if (!sal || !hotel) return null;
 
       const currentBasic = sal.basic_salary;
+      const currentGross = sal.total_earnings;   // Gross = base on which % increase is calculated
       const currentCtc   = sal.ctc;
       const isExcluded   = settings.excluded.has(e.id) || settings.excludedGrades.has(e.grade_label ?? '');
       const ov           = settings.overrides.get(e.id);
 
-      // Below threshold → belowPct/belowFlat (or 0 if empty); above → abovePct/aboveFlat (falls back to global)
+      // Threshold compares against basic salary (the threshold field is labelled "Threshold Basic")
       const inLower  = hasThreshold && currentBasic < thresh;
       const belowPctVal  = settings.belowPct  !== '' ? parseFloat(settings.belowPct)  / 100 || 0 : 0;
       const belowFlatVal = settings.belowFlat !== '' ? parseFloat(settings.belowFlat) || 0        : 0;
@@ -83,8 +85,10 @@ function computeRows(
       const effectivePct  = isExcluded ? 0 : (ov && ov.pct  !== '' ? (parseFloat(ov.pct)  || 0) / 100 : basePct);
       const effectiveFlat = isExcluded ? 0 : (ov && ov.flat !== '' ? (parseFloat(ov.flat) || 0)        : baseFlat);
 
-      const newBasic         = isExcluded ? currentBasic : Math.round((currentBasic * (1 + effectivePct) + effectiveFlat) / 10) * 10;
-      const newTotalEarnings = sal.total_earnings + (newBasic - currentBasic);
+      // Increase is calculated on Gross (total_earnings) and added to basic_salary
+      const increaseOnGross  = currentGross * effectivePct + effectiveFlat;
+      const newBasic         = isExcluded ? currentBasic : Math.round((currentBasic + increaseOnGross) / 10) * 10;
+      const newTotalEarnings = currentGross + (newBasic - currentBasic);
 
       const empYrs = e.employment_date
         ? Math.floor((Date.now() - new Date(e.employment_date).getTime()) / (1000 * 60 * 60 * 24 * 365.25))
@@ -127,7 +131,7 @@ function computeRows(
       });
 
       return {
-        employee: e, hotel, currentBasic, newBasic, newTotalEarnings,
+        employee: e, hotel, currentGross, currentBasic, newBasic, newTotalEarnings,
         increaseAmount: newBasic - currentBasic, currentCtc,
         newCtc: burden.ctc,
         effectivePct, effectiveFlat, hasOverride: !!ov && !isExcluded, isExcluded, burden,
@@ -269,12 +273,14 @@ export default function SalaryReviewPage() {
   }, [hotelFilter, pct, flat, excludedGrades, threshold, belowPct, belowFlat, abovePct, aboveFlat, overrides, excluded, employees, hotelMap, latestSalary]);
 
   const totals = useMemo(() => ({
-    currentBasic:   forecastRows.reduce((s, r) => s + r.currentBasic,   0),
-    newBasic:       forecastRows.reduce((s, r) => s + r.newBasic,        0),
-    increaseAmount: forecastRows.reduce((s, r) => s + r.increaseAmount,  0),
-    totalFlat:      forecastRows.reduce((s, r) => s + r.effectiveFlat,   0),
-    currentCtc:     forecastRows.reduce((s, r) => s + r.currentCtc,      0),
-    newCtc:         forecastRows.reduce((s, r) => s + r.newCtc,          0),
+    currentGross:   forecastRows.reduce((s, r) => s + r.currentGross,    0),
+    newGross:       forecastRows.reduce((s, r) => s + r.newTotalEarnings, 0),
+    currentBasic:   forecastRows.reduce((s, r) => s + r.currentBasic,    0),
+    newBasic:       forecastRows.reduce((s, r) => s + r.newBasic,         0),
+    increaseAmount: forecastRows.reduce((s, r) => s + r.increaseAmount,   0),
+    totalFlat:      forecastRows.reduce((s, r) => s + r.effectiveFlat,    0),
+    currentCtc:     forecastRows.reduce((s, r) => s + r.currentCtc,       0),
+    newCtc:         forecastRows.reduce((s, r) => s + r.newCtc,           0),
     count:          forecastRows.length,
     excludedCount:  forecastRows.filter(r => r.isExcluded).length,
   }), [forecastRows]);
@@ -536,6 +542,7 @@ export default function SalaryReviewPage() {
               jobTitle:      r.employee.job_title ?? '',
               grade:         r.employee.grade_label ?? '',
               department:    r.employee.department_code ?? '',
+              currentGross:  r.currentGross,
               currentBasic:  r.currentBasic,
               effectivePct:  r.effectivePct,
               effectiveFlat: r.effectiveFlat,
@@ -934,11 +941,11 @@ export default function SalaryReviewPage() {
 
         {threshold && (belowPct || belowFlat || abovePct || aboveFlat) && (
           <p className="mt-3 text-xs text-muted-foreground">
-            Threshold rule:
+            Threshold rule (applied to gross):
             <span className="font-mono ml-1 text-foreground">
-              Basic &lt; {threshold} → {belowPct ? `${belowPct}%` : '0%'}{belowFlat ? ` + ${belowFlat} flat` : ''}
+              Basic &lt; {threshold} → {belowPct ? `${belowPct}%` : '0%'}{belowFlat ? ` + ${belowFlat} flat` : ''} of gross
               {' · '}
-              Basic ≥ {threshold} → {abovePct ? `${abovePct}%` : (pct ? `${pct}% (global)` : '—')}{aboveFlat ? ` + ${aboveFlat} flat` : (!aboveFlat && flat ? ` + ${flat} flat (global)` : '')}
+              Basic ≥ {threshold} → {abovePct ? `${abovePct}%` : (pct ? `${pct}% (global)` : '—')}{aboveFlat ? ` + ${aboveFlat} flat` : (!aboveFlat && flat ? ` + ${flat} flat (global)` : '')} of gross
             </span>
           </p>
         )}
@@ -947,7 +954,7 @@ export default function SalaryReviewPage() {
           <p className="mt-3 text-xs text-muted-foreground">
             Formula per employee:
             <span className="font-mono ml-1 text-foreground">
-              new basic = round(current × {pct ? `(1 + ${pct}%)` : '1'}{flat ? ` + ${flat}` : ''})
+              increase = gross{pct ? ` × ${pct}%` : ''}{flat ? ` + ${flat} flat` : ''} → new gross = round(gross + increase)
             </span>
           </p>
         )}
@@ -958,9 +965,9 @@ export default function SalaryReviewPage() {
         <>
           <div className="grid grid-cols-5 gap-4 mb-6">
             <ImpactCard label="Employees"             value={totals.count.toString()} />
-            <ImpactCard label="Current Basic / mo"    value={fmtCurrency(totals.currentBasic, currentHotel?.country ?? '')} />
-            <ImpactCard label="New Basic / mo"        value={fmtCurrency(totals.newBasic, currentHotel?.country ?? '')}         highlight />
-            <ImpactCard label="Monthly Increase"      value={fmtCurrency(totals.increaseAmount, currentHotel?.country ?? '')}   highlight />
+            <ImpactCard label="Current Gross / mo"    value={fmtCurrency(totals.currentGross, currentHotel?.country ?? '')} />
+            <ImpactCard label="New Gross / mo"        value={fmtCurrency(totals.newGross, currentHotel?.country ?? '')}           highlight />
+            <ImpactCard label="Monthly Increase"      value={fmtCurrency(totals.increaseAmount, currentHotel?.country ?? '')}     highlight />
             <ImpactCard label="Annual Increase"       value={fmtCurrency(totals.increaseAmount * 12, currentHotel?.country ?? '')} highlight />
           </div>
 
@@ -985,10 +992,10 @@ export default function SalaryReviewPage() {
                   <th className="px-4 py-3 w-10" title="Exclude from increase" />
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Employee</th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Grade</th>
-                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current Basic</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current Gross</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">% Inc.</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Flat Adj.</th>
-                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">New Basic</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">New Gross</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current CTC</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">New CTC</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Actual %</th>
@@ -1032,18 +1039,18 @@ export default function SalaryReviewPage() {
                         </div>
                       </td>
                       <td className="px-4 py-2.5 text-muted-foreground">{r.employee.grade_label ?? '—'}</td>
-                      <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentBasic, r.hotel.country)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentGross, r.hotel.country)}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-green-700">
                         {r.isExcluded ? <span className="text-muted-foreground">—</span> : `${(r.effectivePct * 100).toFixed(1)}%`}
                       </td>
                       <td className="px-4 py-2.5 text-right font-mono">{r.effectiveFlat > 0 && !r.isExcluded ? fmtCurrency(r.effectiveFlat, r.hotel.country) : '—'}</td>
-                      <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newBasic, r.hotel.country)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newTotalEarnings, r.hotel.country)}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmtCurrency(r.currentCtc, r.hotel.country)}</td>
                       <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.newCtc, r.hotel.country)}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-xs">
-                        {r.isExcluded || r.currentBasic === 0
+                        {r.isExcluded || r.currentGross === 0
                           ? <span className="text-muted-foreground">—</span>
-                          : <span className="text-green-700">{((r.newBasic - r.currentBasic) / r.currentBasic * 100).toFixed(2)}%</span>
+                          : <span className="text-green-700">{((r.newTotalEarnings - r.currentGross) / r.currentGross * 100).toFixed(2)}%</span>
                         }
                       </td>
 
@@ -1128,14 +1135,14 @@ export default function SalaryReviewPage() {
               <tfoot>
                 <tr className="border-t bg-muted/20 font-semibold">
                   <td className="px-4 py-3" colSpan={3}>Totals ({totals.count} employees{totals.excludedCount > 0 ? `, ${totals.excludedCount} excluded` : ''})</td>
-                  <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.currentBasic, currentHotel?.country ?? '')}</td>
+                  <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.currentGross, currentHotel?.country ?? '')}</td>
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3 text-right font-mono">{totals.totalFlat > 0 ? fmtCurrency(totals.totalFlat, currentHotel?.country ?? '') : '—'}</td>
-                  <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.newBasic, currentHotel?.country ?? '')}</td>
+                  <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.newGross, currentHotel?.country ?? '')}</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.currentCtc, currentHotel?.country ?? '')}</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.newCtc, currentHotel?.country ?? '')}</td>
                   <td className="px-4 py-3 text-right font-mono text-xs text-green-700">
-                    {totals.currentBasic > 0 ? `${((totals.newBasic - totals.currentBasic) / totals.currentBasic * 100).toFixed(2)}%` : '—'}
+                    {totals.currentGross > 0 ? `${((totals.newGross - totals.currentGross) / totals.currentGross * 100).toFixed(2)}%` : '—'}
                   </td>
                   <td className="px-4 py-3" />
                 </tr>

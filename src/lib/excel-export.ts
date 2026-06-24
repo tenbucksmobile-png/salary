@@ -22,7 +22,8 @@ export interface ExportHotelRow {
   jobTitle: string;
   grade: string;
   department: string;
-  currentBasic: number;
+  currentGross: number;   // total_earnings — the base on which % increase is applied
+  currentBasic: number;   // basic_salary — needed to compute the increase amount
   effectivePct: number;   // decimal e.g. 0.06
   effectiveFlat: number;
   newBasic: number;
@@ -142,8 +143,8 @@ function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
 
   const headers = [
     hdr('Surname'), hdr('First Name'), hdr('Job Title'), hdr('Grade'), hdr('Department'),
-    hdr(`Current Basic (${sym})`), hdr('% Increase'), hdr(`Flat Adj (${sym})`),
-    hdr(`New Basic (${sym})`), hdr(`Monthly Inc (${sym})`),
+    hdr(`Current Gross (${sym})`), hdr('% Increase'), hdr(`Flat Adj (${sym})`),
+    hdr(`New Gross (${sym})`), hdr(`Monthly Inc (${sym})`),
     hdr(`Current CTC (${sym})`), hdr(`New CTC (${sym})`),
     hdr(`Monthly CTC Δ (${sym})`), hdr(`Annual CTC Δ (${sym})`),
   ];
@@ -154,17 +155,19 @@ function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
     str(r.jobTitle),
     str(r.grade),
     str(r.department),
-    num(r.currentBasic),
+    num(r.currentGross),
     pctNum(r.effectivePct),
     num(r.effectiveFlat),
-    num(r.newBasic, true),
-    num(r.newBasic - r.currentBasic, false, true),
+    num(r.currentGross + (r.newBasic - r.currentBasic), true),   // new gross
+    num(r.newBasic - r.currentBasic, false, true),               // increase amount
     num(r.currentCtc),
     num(r.newCtc, true),
     num(r.newCtc - r.currentCtc, false, true),
     num((r.newCtc - r.currentCtc) * 12, false, true),
   ]);
 
+  const sumCurGross = hotel.rows.reduce((s, r) => s + r.currentGross, 0);
+  const sumNewGross = hotel.rows.reduce((s, r) => s + r.currentGross + (r.newBasic - r.currentBasic), 0);
   const sumCurBasic = hotel.rows.reduce((s, r) => s + r.currentBasic, 0);
   const sumNewBasic = hotel.rows.reduce((s, r) => s + r.newBasic, 0);
   const sumCurCtc   = hotel.rows.reduce((s, r) => s + r.currentCtc, 0);
@@ -173,8 +176,8 @@ function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
   const totRow = [
     tot(`Total  (${hotel.rows.length} employees)`, false),
     tot('', false), tot('', false), tot('', false), tot('', false),
-    tot(sumCurBasic), tot('', false), tot('', false),
-    tot(sumNewBasic),
+    tot(sumCurGross), tot('', false), tot('', false),
+    tot(sumNewGross),
     tot(sumNewBasic - sumCurBasic),
     tot(sumCurCtc),
     tot(sumNewCtc),
@@ -258,22 +261,22 @@ function buildSummarySheet(hotels: ExportHotel[], benchmark: BenchmarkData | nul
   // ── Summary table ─────────────────────────────────────────────────────────
   const headers = [
     hdr('Hotel'), hdr('Short Code'), hdr('Currency'), hdr('Headcount'),
-    hdr('Current Basic'), hdr('New Basic'), hdr('Monthly Increase'), hdr('Annual Increase'),
+    hdr('Current Gross'), hdr('New Gross'), hdr('Monthly Increase'), hdr('Annual Increase'),
     hdr('Current CTC'), hdr('New CTC'), hdr('Monthly CTC Δ'), hdr('Annual CTC Δ'), hdr('% Change'),
   ];
 
-  let totHC = 0, totCurBasic = 0, totNewBasic = 0, totCurCtc = 0, totNewCtc = 0;
+  let totHC = 0, totCurGross = 0, totNewGross = 0, totCurCtc = 0, totNewCtc = 0;
 
   const dataRows = hotels.map(h => {
-    const cur  = h.rows.reduce((s, r) => s + r.currentBasic, 0);
-    const nw   = h.rows.reduce((s, r) => s + r.newBasic, 0);
+    const cur  = h.rows.reduce((s, r) => s + r.currentGross, 0);
+    const nw   = h.rows.reduce((s, r) => s + r.currentGross + (r.newBasic - r.currentBasic), 0);
     const curC = h.rows.reduce((s, r) => s + r.currentCtc, 0);
     const nwC  = h.rows.reduce((s, r) => s + r.newCtc, 0);
     const pch  = cur > 0 ? (nw - cur) / cur * 100 : 0;
     const bw   = h.country.toLowerCase().includes('botswana');
 
     totHC       += h.rows.length;
-    totCurBasic += cur;  totNewBasic += nw;
+    totCurGross += cur;  totNewGross += nw;
     totCurCtc   += curC; totNewCtc   += nwC;
 
     return [
@@ -287,14 +290,14 @@ function buildSummarySheet(hotels: ExportHotel[], benchmark: BenchmarkData | nul
     ];
   });
 
-  const pchTot = totCurBasic > 0 ? (totNewBasic - totCurBasic) / totCurBasic * 100 : 0;
+  const pchTot = totCurGross > 0 ? (totNewGross - totCurGross) / totCurGross * 100 : 0;
   const totRow = [
     tot('Grand Total', false),
     { v: '', t: 's', s: { fill: { patternType: 'solid', fgColor: { rgb: LGRAY } } } },
     { v: 'Mixed', t: 's', s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, alignment: { horizontal: 'center' } } },
     { v: totHC, t: 'n', s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, alignment: { horizontal: 'center' } } },
-    tot(totCurBasic), tot(totNewBasic),
-    tot(totNewBasic - totCurBasic), tot((totNewBasic - totCurBasic) * 12),
+    tot(totCurGross), tot(totNewGross),
+    tot(totNewGross - totCurGross), tot((totNewGross - totCurGross) * 12),
     tot(totCurCtc), tot(totNewCtc),
     tot(totNewCtc - totCurCtc), tot((totNewCtc - totCurCtc) * 12),
     { v: +pchTot.toFixed(1), t: 'n', z: '0.0"%"', s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, alignment: { horizontal: 'right' } } },
