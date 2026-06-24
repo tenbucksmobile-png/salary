@@ -38,6 +38,11 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
     payrollKey: null,
   },
   {
+    type: 'ftc_payroll', label: 'Fixed Term Contract Payroll', required: false,
+    accept: '.xlsx', desc: 'Separate FTC payroll spreadsheet (same format as main payroll)',
+    payrollKey: null,
+  },
+  {
     type: 'twelve_months', label: '12 Months Payroll Report', required: false,
     accept: '.pdf', desc: '12-month monthly analysis report (PDF)',
     payrollKey: null,
@@ -249,13 +254,13 @@ export default function ReconciliationPage() {
       let parsed: ParsedStatement | ParsedPayroll;
 
       const hotelCode = hotels.find(h => h.id === hotelId)?.short_code ?? '';
-      if (type === 'payroll')   parsed = await parsePayrollXlsx(buf, file.name);
+      if (type === 'payroll' || type === 'ftc_payroll') parsed = await parsePayrollXlsx(buf, file.name);
       else if (type === 'furnmart') parsed = await parseFurnmart(buf, file.name);
       else if (type === 'bodulo')   parsed = await parseBodulo(buf, file.name);
       else                          parsed = await parseAfritecXls(buf, file.name, type, hotelCode);
 
       const pid = await ensurePeriod();
-      const isStmt = type !== 'payroll';
+      const isStmt = type !== 'payroll' && type !== 'ftc_payroll';
       const stmt = isStmt ? (parsed as ParsedStatement) : null;
 
       const { error } = await supabase
@@ -348,6 +353,22 @@ export default function ReconciliationPage() {
 
   const payrollUpload = uploads.find(u => u.upload_type === 'payroll');
   const payroll = payrollUpload?.parsed_data as ParsedPayroll | undefined;
+  const ftcPayrollUpload = uploads.find(u => u.upload_type === 'ftc_payroll');
+  const ftcPayroll = ftcPayrollUpload?.parsed_data as ParsedPayroll | undefined;
+
+  const hasAnyPayroll = !!payroll || !!ftcPayroll;
+
+  // Merged lines and totals from permanent + FTC payrolls
+  const allPayrollLines = [...(payroll?.lines ?? []), ...(ftcPayroll?.lines ?? [])];
+  const ftcCodes = new Set((ftcPayroll?.lines ?? []).map(l => l.empCode));
+  const mergedTotals = {
+    furnmart:     (payroll?.totals.furnmart     ?? 0) + (ftcPayroll?.totals.furnmart     ?? 0),
+    cbStores:     (payroll?.totals.cbStores     ?? 0) + (ftcPayroll?.totals.cbStores     ?? 0),
+    bodulo:       (payroll?.totals.bodulo       ?? 0) + (ftcPayroll?.totals.bodulo       ?? 0),
+    staffLoans:   (payroll?.totals.staffLoans   ?? 0) + (ftcPayroll?.totals.staffLoans   ?? 0),
+    afritecLoans: (payroll?.totals.afritecLoans ?? 0) + (ftcPayroll?.totals.afritecLoans ?? 0),
+    toplineLoans: (payroll?.totals.toplineLoans ?? 0) + (ftcPayroll?.totals.toplineLoans ?? 0),
+  };
 
   function getStmt(type: ReconUploadType): ParsedStatement | undefined {
     return uploads.find(u => u.upload_type === type)?.parsed_data as ParsedStatement | undefined;
@@ -360,8 +381,7 @@ export default function ReconciliationPage() {
   const boduloStmt   = getStmt('bodulo');
 
   // Determine if payroll has separate columns per lender (vs one combined staffLoans)
-  const payrollHasSeparateLoanCols =
-    (payroll?.totals.afritecLoans ?? 0) > 0 || (payroll?.totals.toplineLoans ?? 0) > 0;
+  const payrollHasSeparateLoanCols = mergedTotals.afritecLoans > 0 || mergedTotals.toplineLoans > 0;
   const loanStmtTotal = (afritecStmt?.total ?? 0) + (toplineStmt?.total ?? 0);
   const bothLenders = !!afritecStmt && !!toplineStmt;
 
@@ -369,19 +389,19 @@ export default function ReconciliationPage() {
   // pay/diff are null when payroll has no comparable column (statement shown for reference only)
   type SummaryRow = { label: string; stmt: number; pay: number | null; diff: number | null; isCombined?: boolean };
   const summaryRows: SummaryRow[] = [];
-  if (payroll) {
+  if (hasAnyPayroll) {
     if (furnmartStmt) summaryRows.push({
       label: 'Furnmart',
       stmt: furnmartStmt.total,
-      pay: payroll.totals.furnmart ?? 0,
-      diff: furnmartStmt.total - (payroll.totals.furnmart ?? 0),
+      pay: mergedTotals.furnmart,
+      diff: furnmartStmt.total - mergedTotals.furnmart,
     });
 
     // Afritec Loans
     if (afritecStmt) {
       const afritecPay = payrollHasSeparateLoanCols
-        ? (payroll.totals.afritecLoans ?? 0)
-        : (!toplineStmt ? (payroll.totals.staffLoans ?? 0) : null);
+        ? mergedTotals.afritecLoans
+        : (!toplineStmt ? mergedTotals.staffLoans : null);
       summaryRows.push({
         label: 'Afritec Loans',
         stmt: afritecStmt.total,
@@ -393,15 +413,15 @@ export default function ReconciliationPage() {
     if (cbStmt) summaryRows.push({
       label: 'CB Stores',
       stmt: cbStmt.total,
-      pay: payroll.totals.cbStores ?? 0,
-      diff: cbStmt.total - (payroll.totals.cbStores ?? 0),
+      pay: mergedTotals.cbStores,
+      diff: cbStmt.total - mergedTotals.cbStores,
     });
 
     // Topline
     if (toplineStmt) {
       const toplinePay = payrollHasSeparateLoanCols
-        ? (payroll.totals.toplineLoans ?? 0)
-        : (!afritecStmt ? (payroll.totals.staffLoans ?? 0) : null);
+        ? mergedTotals.toplineLoans
+        : (!afritecStmt ? mergedTotals.staffLoans : null);
       summaryRows.push({
         label: 'Topline',
         stmt: toplineStmt.total,
@@ -416,8 +436,8 @@ export default function ReconciliationPage() {
       summaryRows.push({
         label: 'Total Loans',
         stmt: loanStmtTotal,
-        pay: payroll.totals.staffLoans ?? 0,
-        diff: loanStmtTotal - (payroll.totals.staffLoans ?? 0),
+        pay: mergedTotals.staffLoans,
+        diff: loanStmtTotal - mergedTotals.staffLoans,
         isCombined: true,
       });
     }
@@ -425,8 +445,8 @@ export default function ReconciliationPage() {
     if (boduloStmt) summaryRows.push({
       label: 'Bodulo Funeral',
       stmt: boduloStmt.total,
-      pay: payroll.totals.bodulo ?? 0,
-      diff: boduloStmt.total - (payroll.totals.bodulo ?? 0),
+      pay: mergedTotals.bodulo,
+      diff: boduloStmt.total - mergedTotals.bodulo,
     });
   }
 
@@ -448,7 +468,10 @@ export default function ReconciliationPage() {
     return m;
   }
 
-  const payMap     = new Map((payroll?.lines ?? []).map(l => [l.empCode, l]));
+  // Build payMap from permanent payroll, then add any FTC employees not already present
+  const payMap = new Map((payroll?.lines ?? []).map(l => [l.empCode, l]));
+  (ftcPayroll?.lines ?? []).forEach(l => { if (!payMap.has(l.empCode)) payMap.set(l.empCode, l); });
+
   const furnMap    = buildEmpMap(furnmartStmt?.lines);
   const afritecMap = buildEmpMap(afritecStmt?.lines);
   // CB Stores / Topline may use matchByName — their empCode is a nameKey, not a hotel code.
@@ -459,7 +482,7 @@ export default function ReconciliationPage() {
 
   // Code-based allCodes excludes name-matched statements (their keys aren't hotel emp codes)
   const allCodes = new Set<string>([
-    ...(payroll?.lines ?? []).map(l => l.empCode),
+    ...allPayrollLines.map(l => l.empCode),
     ...(furnmartStmt?.lines ?? []).map(l => l.empCode),
     ...(afritecStmt?.lines ?? []).map(l => l.empCode),
     ...(!toplineStmt?.matchByName ? (toplineStmt?.lines ?? []).map(l => l.empCode) : []),
@@ -648,16 +671,16 @@ export default function ReconciliationPage() {
     (r.employees.employee_code ?? '').toUpperCase(),
     r,
   ]));
-  const curCodes = new Set((payroll?.lines ?? []).map(l => l.empCode));
+  const curCodes = new Set(allPayrollLines.map(l => l.empCode));
   const prevCodes = new Set(prevMap.keys());
 
-  const newEmps    = payroll?.lines.filter(l => !prevCodes.has(l.empCode)) ?? [];
+  const newEmps    = allPayrollLines.filter(l => !prevCodes.has(l.empCode));
   const leftEmps   = prevRecords.filter(r => !curCodes.has((r.employees.employee_code ?? '').toUpperCase()));
-  const salaryChanges = payroll?.lines.filter(l => {
+  const salaryChanges = allPayrollLines.filter(l => {
     const prev = prevMap.get(l.empCode);
     if (!prev) return false;
     return Math.abs(l.basic - prev.basic_salary) > 0.5;
-  }) ?? [];
+  });
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -868,8 +891,8 @@ export default function ReconciliationPage() {
         {/* ═════ DEDUCTIONS TAB ═════ */}
         {tab === 'deductions' && (
           <div className="space-y-6">
-            {!payroll ? (
-              <p className="text-muted-foreground text-sm">Upload the payroll spreadsheet first to enable cross-checks.</p>
+            {!hasAnyPayroll ? (
+              <p className="text-muted-foreground text-sm">Upload a payroll spreadsheet first to enable cross-checks.</p>
             ) : (
               <>
                 {/* Unmatched entries — truly absent from payroll (not resolved by code or name) */}
@@ -1032,7 +1055,12 @@ export default function ReconciliationPage() {
                               (bodDiff     != null && Math.abs(bodDiff)     > 0.01);
                             return (
                               <tr key={`${row.empCode || 'x'}-${row.name}-${i}`} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${hasDiscrep ? 'ring-1 ring-inset ring-orange-200' : ''}`}>
-                                <td className="px-3 py-1.5 font-mono text-xs">{row.empCode || '—'}</td>
+                                <td className="px-3 py-1.5 font-mono text-xs">
+                                  {row.empCode || '—'}
+                                  {row.empCode && ftcCodes.has(row.empCode) && (
+                                    <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
+                                  )}
+                                </td>
                                 <td className="px-3 py-1.5 max-w-[140px] truncate">{row.name}</td>
                                 {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_stmt, country)}</td>
@@ -1126,8 +1154,8 @@ export default function ReconciliationPage() {
         {/* ═════ CHANGES TAB ═════ */}
         {tab === 'changes' && (
           <div className="space-y-6">
-            {!payroll ? (
-              <p className="text-muted-foreground text-sm">Upload the payroll spreadsheet first.</p>
+            {!hasAnyPayroll ? (
+              <p className="text-muted-foreground text-sm">Upload a payroll spreadsheet first.</p>
             ) : prevRecords.length === 0 ? (
               <p className="text-muted-foreground text-sm">
                 No salary records found for the previous month (
@@ -1154,7 +1182,12 @@ export default function ReconciliationPage() {
                       <tbody>
                         {newEmps.map(e => (
                           <tr key={e.empCode} className="border-t">
-                            <td className="px-3 py-1.5 font-mono text-xs">{e.empCode}</td>
+                            <td className="px-3 py-1.5 font-mono text-xs">
+                              {e.empCode}
+                              {ftcCodes.has(e.empCode) && (
+                                <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
+                              )}
+                            </td>
                             <td className="px-3 py-1.5">{e.name}</td>
                             <td className="px-3 py-1.5 text-right tabular-nums">{fmt(e.basic, country)}</td>
                           </tr>
@@ -1217,7 +1250,12 @@ export default function ReconciliationPage() {
                           const chg = e.basic - (prev?.basic_salary ?? 0);
                           return (
                             <tr key={e.empCode} className="border-t">
-                              <td className="px-3 py-1.5 font-mono text-xs">{e.empCode}</td>
+                              <td className="px-3 py-1.5 font-mono text-xs">
+                                {e.empCode}
+                                {ftcCodes.has(e.empCode) && (
+                                  <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
+                                )}
+                              </td>
                               <td className="px-3 py-1.5">{e.name}</td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(prev?.basic_salary ?? 0, country)}</td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(e.basic, country)}</td>

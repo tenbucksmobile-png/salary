@@ -381,6 +381,8 @@ Re-uploading any slot replaces it (upsert on `period_id, upload_type`).
 - `parseBodulo` — header at row 0; col 4 = Custom Policy Number, col 9 = Premium Due; "TOTAL TO PAY" extracted from bottom summary block
 - `parsePayrollXlsx` — header detected by `col[0]="Code"`; all other columns detected by keyword (e.g. "furnmart", "cb stores", "funeral", "staff loan", "afritec", "topline") — robust across hotel format variants. `afritecFromStaff` flag: when payroll has a Topline column but no dedicated Afritec column, the Staff Loans column is used as Afritec amounts.
 
+**`PayrollLine` loan columns**: `afritecLoans` (Afritec-specific, 0 if absent) + `toplineLoans` (Topline-specific, 0 if absent) + `staffLoans` (combined = `afritecLoans + toplineLoans`, or the single combined column when the payroll has no split). In the Deductions Check summary: if the payroll has non-zero separate columns, Afritec and Topline are compared independently; if only the combined `staffLoans` column exists and both statements are uploaded, a single "Total Loans" row is shown instead.
+
 **`nameKey(raw)`** (exported from `recon-parsers.ts`) — normalises a name to a sorted word-set key: `"BEAUTY LISEHU"` and `"LISEHU BEAUTY"` both produce `"BEAUTY|LISEHU"`. Used for order-agnostic name matching.
 
 All parsers are async and dynamically import `xlsx-js-style` (avoids SSR issues — any new parser must follow this pattern).
