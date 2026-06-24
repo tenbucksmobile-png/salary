@@ -17,6 +17,7 @@ import {
   parsePayrollXlsx,
   parseFtcPayrollXls,
   nameKey,
+  type PayrollLine,
 } from '@/lib/recon-parsers';
 import type { ParsedStatement, ParsedPayroll, ReconLine } from '@/lib/recon-parsers';
 
@@ -129,6 +130,9 @@ export default function ReconciliationPage() {
     basic_salary: number;
     employees: { employee_code: string | null; surname: string; first_name: string };
   }>>([]);
+  // prevPayrollLines: loaded from previous period's recon upload (preferred source);
+  // null = no recon upload found for prev period → fall back to prevRecords from salary_records
+  const [prevPayrollLines, setPrevPayrollLines] = useState<PayrollLine[] | null>(null);
   const [cfeEmployees, setCfeEmployees] = useState<Employee[]>([]);
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -171,6 +175,8 @@ export default function ReconciliationPage() {
 
   useEffect(() => {
     if (!hotelId) return;
+    setPrevRecords([]);
+    setPrevPayrollLines(null);
     loadPeriod();
     loadPrevRecords();
   }, [hotelId, year, month]);
@@ -209,6 +215,34 @@ export default function ReconciliationPage() {
   async function loadPrevRecords() {
     const prevMonth = month === 1 ? 12 : month - 1;
     const prevYear = month === 1 ? year - 1 : year;
+
+    // Prefer the previous period's uploaded payroll — consistent empCode matching,
+    // works for CSL/NL where salary_records have no employee_code
+    const { data: prevPeriod } = await supabase
+      .from('reconciliation_periods')
+      .select('id')
+      .eq('hotel_id', hotelId)
+      .eq('period_year', prevYear)
+      .eq('period_month', prevMonth)
+      .maybeSingle();
+
+    if (prevPeriod) {
+      const [{ data: payUp }, { data: ftcUp }] = await Promise.all([
+        supabase.from('recon_uploads').select('parsed_data').eq('period_id', prevPeriod.id).eq('upload_type', 'payroll').maybeSingle(),
+        supabase.from('recon_uploads').select('parsed_data').eq('period_id', prevPeriod.id).eq('upload_type', 'ftc_payroll').maybeSingle(),
+      ]);
+      const lines: PayrollLine[] = [
+        ...((payUp?.parsed_data as any)?.lines ?? []),
+        ...((ftcUp?.parsed_data as any)?.lines ?? []),
+      ];
+      if (lines.length > 0) {
+        setPrevPayrollLines(lines);
+        return;
+      }
+    }
+
+    // Fall back to salary_records in DB
+    setPrevPayrollLines(null);
     const { data } = await supabase
       .from('salary_records')
       .select('basic_salary, employees!inner(employee_code, surname, first_name, hotel_id)')
@@ -726,20 +760,27 @@ export default function ReconciliationPage() {
   }
 
   // ── Prior-month changes ───────────────────────────────────────────────────
+  // Unified prev-month shape regardless of source (recon upload or salary_records)
+  type PrevEmp = { empCode: string; name: string; basic: number };
 
-  const prevMap = new Map(prevRecords.map(r => [
-    (r.employees.employee_code ?? '').toUpperCase(),
-    r,
-  ]));
+  const prevDataList: PrevEmp[] = prevPayrollLines != null
+    ? prevPayrollLines.map(l => ({ empCode: l.empCode, name: l.name, basic: l.basic }))
+    : prevRecords.map(r => ({
+        empCode: (r.employees.employee_code ?? '').toUpperCase(),
+        name: `${r.employees.first_name} ${r.employees.surname}`.trim(),
+        basic: r.basic_salary,
+      }));
+
+  const prevMap = new Map(prevDataList.map(d => [d.empCode, d]));
   const curCodes = new Set(allPayrollLines.map(l => l.empCode));
   const prevCodes = new Set(prevMap.keys());
 
-  const newEmps    = allPayrollLines.filter(l => !prevCodes.has(l.empCode));
-  const leftEmps   = prevRecords.filter(r => !curCodes.has((r.employees.employee_code ?? '').toUpperCase()));
+  const newEmps       = allPayrollLines.filter(l => !prevCodes.has(l.empCode));
+  const leftEmps      = prevDataList.filter(d => !curCodes.has(d.empCode));
   const salaryChanges = allPayrollLines.filter(l => {
     const prev = prevMap.get(l.empCode);
     if (!prev) return false;
-    return Math.abs(l.basic - prev.basic_salary) > 0.5;
+    return Math.abs(l.basic - prev.basic) > 0.5;
   });
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -1297,10 +1338,11 @@ export default function ReconciliationPage() {
           <div className="space-y-6">
             {!hasAnyPayroll ? (
               <p className="text-muted-foreground text-sm">Upload a payroll spreadsheet first.</p>
-            ) : prevRecords.length === 0 ? (
+            ) : prevDataList.length === 0 ? (
               <p className="text-muted-foreground text-sm">
-                No salary records found for the previous month (
-                {MONTH_NAMES[month === 1 ? 11 : month - 2]} {month === 1 ? year - 1 : year}) in the database.
+                No payroll data found for the previous month (
+                {MONTH_NAMES[month === 1 ? 11 : month - 2]} {month === 1 ? year - 1 : year}).
+                Upload that month&apos;s payroll spreadsheet via the Upload tab, or import it via Import HR List.
               </p>
             ) : (
               <>
@@ -1355,11 +1397,13 @@ export default function ReconciliationPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {leftEmps.map((r, i) => (
+                        {leftEmps.map((d, i) => (
                           <tr key={i} className="border-t">
-                            <td className="px-3 py-1.5 font-mono text-xs">{r.employees.employee_code ?? '—'}</td>
-                            <td className="px-3 py-1.5">{r.employees.first_name} {r.employees.surname}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic_salary, country)}</td>
+                            <td className="px-3 py-1.5 font-mono text-xs">
+                              {d.empCode && !d.empCode.includes('|') ? d.empCode : '—'}
+                            </td>
+                            <td className="px-3 py-1.5">{d.name}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(d.basic, country)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1388,7 +1432,7 @@ export default function ReconciliationPage() {
                       <tbody>
                         {salaryChanges.map(e => {
                           const prev = prevMap.get(e.empCode);
-                          const chg = e.basic - (prev?.basic_salary ?? 0);
+                          const chg = e.basic - (prev?.basic ?? 0);
                           return (
                             <tr key={e.empCode} className="border-t">
                               <td className="px-3 py-1.5 font-mono text-xs">
@@ -1398,7 +1442,7 @@ export default function ReconciliationPage() {
                                 )}
                               </td>
                               <td className="px-3 py-1.5">{e.name}</td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(prev?.basic_salary ?? 0, country)}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(prev?.basic ?? 0, country)}</td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(e.basic, country)}</td>
                               <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${chg > 0 ? 'text-green-700' : 'text-red-600'}`}>
                                 {chg > 0 ? '+' : ''}{fmt(chg, country)}

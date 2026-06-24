@@ -67,6 +67,9 @@ async function getXLSX() {
 function sectionMatchesHotel(label: string, hotelCode: string): boolean {
   if (!hotelCode) return true;
   const l = label.toUpperCase().replace(/\s+/g, ' ');
+  // Always include management sections — they appear on CSL/NL statements but belong
+  // to CFE Management payroll; isMgt() separates them downstream
+  if (/mgmt|management/i.test(l)) return true;
   if (hotelCode === 'CSL') return l.startsWith('CSL');
   if (hotelCode === 'NL')  return l.startsWith('NSL') || l.startsWith('NL ');
   if (hotelCode === 'CFE') return l.startsWith('CFE');
