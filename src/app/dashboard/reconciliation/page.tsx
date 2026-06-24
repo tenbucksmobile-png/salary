@@ -134,9 +134,18 @@ export default function ReconciliationPage() {
   // null = no recon upload found for prev period → fall back to prevRecords from salary_records
   const [prevPayrollLines, setPrevPayrollLines] = useState<PayrollLine[] | null>(null);
   const [cfeEmployees, setCfeEmployees] = useState<Employee[]>([]);
-  // DB cross-reference data for CSL / NL
-  const [dbEmployees, setDbEmployees] = useState<Employee[]>([]);
-  const [dbSalaryRecords, setDbSalaryRecords] = useState<Array<Pick<SalaryRecord, 'employee_id' | 'basic_salary' | 'period_year' | 'period_month'>>>([]);
+
+  // DB cross-reference data — independent per hotel, not tied to the main hotel selector
+  type HotelXRefData = {
+    employees: Employee[];
+    salaryRecords: Array<Pick<SalaryRecord, 'employee_id' | 'basic_salary' | 'period_year' | 'period_month'>>;
+    payrollLines: PayrollLine[]; // deduplicated by nameKey
+    loaded: boolean;
+  };
+  const emptyXRef: HotelXRefData = { employees: [], salaryRecords: [], payrollLines: [], loaded: false };
+  const [cslXRef, setCslXRef] = useState<HotelXRefData>(emptyXRef);
+  const [nlXRef,  setNlXRef]  = useState<HotelXRefData>(emptyXRef);
+  const [crossRefSubTab, setCrossRefSubTab] = useState<'CSL' | 'NL'>('CSL');
   const [crossRefFilter, setCrossRefFilter] = useState<'all' | 'mismatch' | 'payonly' | 'dbonly'>('all');
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -185,34 +194,70 @@ export default function ReconciliationPage() {
     loadPrevRecords();
   }, [hotelId, year, month]);
 
-  // Load DB employees + salary records for CSL / NL cross-reference tab
+  // Load Employees cross-reference for both CSL and NL independently.
+  // Triggered when the Employees tab is opened, or year/month/hotels changes.
+  // Payroll lines come from each hotel's own recon upload (not the main hotel selector).
   useEffect(() => {
-    const hotel = hotels.find(h => h.id === hotelId);
-    if (!hotel || (hotel.short_code !== 'CSL' && hotel.short_code !== 'NL')) {
-      setDbEmployees([]);
-      setDbSalaryRecords([]);
-      if (tab === 'crossref') setTab('upload');
-      return;
-    }
-    (async () => {
+    if (tab !== 'crossref' || !hotels.length) return;
+
+    async function loadXRef(shortCode: 'CSL' | 'NL'): Promise<HotelXRefData> {
+      const hotel = hotels.find(h => h.short_code === shortCode);
+      if (!hotel) return { ...emptyXRef, loaded: true };
+
       const { data: emps } = await supabase
-        .from('employees')
-        .select('*')
-        .eq('hotel_id', hotelId)
-        .eq('status', 'active');
+        .from('employees').select('*').eq('hotel_id', hotel.id).eq('status', 'active');
       const employees = (emps ?? []) as Employee[];
-      setDbEmployees(employees);
+
+      let salaryRecords: HotelXRefData['salaryRecords'] = [];
       if (employees.length > 0) {
-        const { data: records } = await supabase
+        const { data: recs } = await supabase
           .from('salary_records')
           .select('employee_id, basic_salary, period_year, period_month')
           .in('employee_id', employees.map(e => e.id))
           .order('period_year', { ascending: false })
           .order('period_month', { ascending: false });
-        setDbSalaryRecords((records ?? []) as any[]);
+        salaryRecords = (recs ?? []) as HotelXRefData['salaryRecords'];
       }
-    })();
-  }, [hotelId, hotels]);
+
+      // Load payroll lines from this hotel's recon upload for year/month
+      const { data: periodRow } = await supabase
+        .from('reconciliation_periods')
+        .select('id')
+        .eq('hotel_id', hotel.id)
+        .eq('period_year', year)
+        .eq('period_month', month)
+        .maybeSingle();
+
+      let payrollLines: PayrollLine[] = [];
+      if (periodRow) {
+        const [{ data: payUp }, { data: ftcUp }] = await Promise.all([
+          supabase.from('recon_uploads').select('parsed_data').eq('period_id', periodRow.id).eq('upload_type', 'payroll').maybeSingle(),
+          supabase.from('recon_uploads').select('parsed_data').eq('period_id', periodRow.id).eq('upload_type', 'ftc_payroll').maybeSingle(),
+        ]);
+        const merged: PayrollLine[] = [
+          ...((payUp?.parsed_data as any)?.lines ?? []),
+          ...((ftcUp?.parsed_data as any)?.lines ?? []),
+        ];
+        // Deduplicate by nameKey — employee may appear in both permanent and FTC uploads
+        const seen = new Set<string>();
+        payrollLines = merged.filter(l => {
+          const k = nameKey(l.name);
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+      }
+
+      return { employees, salaryRecords, payrollLines, loaded: true };
+    }
+
+    setCslXRef(prev => ({ ...prev, loaded: false }));
+    setNlXRef(prev => ({ ...prev, loaded: false }));
+    Promise.all([loadXRef('CSL'), loadXRef('NL')]).then(([csl, nl]) => {
+      setCslXRef(csl);
+      setNlXRef(nl);
+    });
+  }, [tab, year, month, hotels]);
 
   async function loadPeriod() {
     const { data } = await supabase
@@ -816,19 +861,7 @@ export default function ReconciliationPage() {
     return Math.abs(l.basic - prev.basic) > 0.5;
   });
 
-  // ── DB cross-reference (CSL / NL only) ───────────────────────────────────
-  const selectedReconHotel = hotels.find(h => h.id === hotelId);
-  const showCrossRef = selectedReconHotel?.short_code === 'CSL' || selectedReconHotel?.short_code === 'NL';
-
-  // Latest salary record per employee (results ordered period desc → first seen = latest)
-  const latestBasicMap = new Map<string, number>();
-  dbSalaryRecords.forEach(r => {
-    if (!latestBasicMap.has(r.employee_id)) latestBasicMap.set(r.employee_id, r.basic_salary);
-  });
-
-  const dbByNameKey = new Map<string, Employee>();
-  dbEmployees.forEach(e => dbByNameKey.set(nameKey(`${e.surname} ${e.first_name}`), e));
-
+  // ── DB cross-reference (CSL / NL — per sub-tab) ──────────────────────────
   type CrossRefRow = {
     name: string;
     dbEmployee: Employee | null;
@@ -837,40 +870,60 @@ export default function ReconciliationPage() {
     ftc: boolean;
   };
 
-  const crossRefRows: CrossRefRow[] = [];
-  const matchedDbIds = new Set<string>();
-
-  for (const l of allPayrollLines) {
-    const k = nameKey(l.name);
-    const db = dbByNameKey.get(k);
-    if (db) matchedDbIds.add(db.id);
-    crossRefRows.push({
-      name: l.name,
-      dbEmployee: db ?? null,
-      dbBasic: db ? (latestBasicMap.get(db.id) ?? null) : null,
-      payBasic: l.basic,
-      ftc: ftcCodes.has(l.empCode),
+  function buildCrossRef(xref: HotelXRefData): CrossRefRow[] {
+    const basicMap = new Map<string, number>();
+    xref.salaryRecords.forEach(r => {
+      if (!basicMap.has(r.employee_id)) basicMap.set(r.employee_id, r.basic_salary);
     });
-  }
-  for (const emp of dbEmployees) {
-    if (!matchedDbIds.has(emp.id)) {
-      crossRefRows.push({
-        name: `${emp.first_name} ${emp.surname}`.trim(),
-        dbEmployee: emp,
-        dbBasic: latestBasicMap.get(emp.id) ?? null,
-        payBasic: null,
-        ftc: emp.grade_label === 'FTC' || emp.grade_label === 'Fixed Term',
+    const byNameKey = new Map<string, Employee>();
+    xref.employees.forEach(e => byNameKey.set(nameKey(`${e.surname} ${e.first_name}`), e));
+
+    const rows: CrossRefRow[] = [];
+    const matched = new Set<string>();
+
+    for (const l of xref.payrollLines) {
+      const db = byNameKey.get(nameKey(l.name));
+      if (db) matched.add(db.id);
+      rows.push({
+        name: l.name,
+        dbEmployee: db ?? null,
+        dbBasic: db ? (basicMap.get(db.id) ?? null) : null,
+        payBasic: l.basic,
+        ftc: db?.grade_label === 'FTC' || db?.grade_label === 'Fixed Term',
       });
     }
+    for (const emp of xref.employees) {
+      if (!matched.has(emp.id)) {
+        rows.push({
+          name: `${emp.first_name} ${emp.surname}`.trim(),
+          dbEmployee: emp,
+          dbBasic: basicMap.get(emp.id) ?? null,
+          payBasic: null,
+          ftc: emp.grade_label === 'FTC' || emp.grade_label === 'Fixed Term',
+        });
+      }
+    }
+    rows.sort((a, b) => a.name.localeCompare(b.name));
+    return rows;
   }
-  crossRefRows.sort((a, b) => a.name.localeCompare(b.name));
 
-  const crossRefStats = {
-    matched:    crossRefRows.filter(r => r.dbEmployee && r.payBasic != null && r.dbBasic != null && Math.abs((r.payBasic ?? 0) - (r.dbBasic ?? 0)) <= 0.5).length,
-    mismatch:   crossRefRows.filter(r => r.dbEmployee && r.payBasic != null && r.dbBasic != null && Math.abs((r.payBasic ?? 0) - (r.dbBasic ?? 0)) > 0.5).length,
-    payOnly:    crossRefRows.filter(r => !r.dbEmployee).length,
-    dbOnly:     crossRefRows.filter(r => r.dbEmployee && r.payBasic == null).length,
-  };
+  const activeXRef  = crossRefSubTab === 'CSL' ? cslXRef : nlXRef;
+  const crossRefRows = buildCrossRef(activeXRef);
+
+  function xrefStats(rows: CrossRefRow[]) {
+    return {
+      matched:  rows.filter(r => r.dbEmployee && r.payBasic != null && r.dbBasic != null && Math.abs((r.payBasic ?? 0) - (r.dbBasic ?? 0)) <= 0.5).length,
+      mismatch: rows.filter(r => r.dbEmployee && r.payBasic != null && r.dbBasic != null && Math.abs((r.payBasic ?? 0) - (r.dbBasic ?? 0)) > 0.5).length,
+      payOnly:  rows.filter(r => !r.dbEmployee).length,
+      dbOnly:   rows.filter(r => r.dbEmployee && r.payBasic == null).length,
+    };
+  }
+
+  const crossRefStats = xrefStats(crossRefRows);
+  const cslStats = xrefStats(buildCrossRef(cslXRef));
+  const nlStats  = xrefStats(buildCrossRef(nlXRef));
+  const totalBadge = cslStats.mismatch + cslStats.payOnly + cslStats.dbOnly
+                   + nlStats.mismatch  + nlStats.payOnly  + nlStats.dbOnly;
 
   const filteredCrossRef = crossRefRows.filter(r => {
     if (crossRefFilter === 'mismatch') return r.dbEmployee && r.payBasic != null && r.dbBasic != null && Math.abs((r.payBasic ?? 0) - (r.dbBasic ?? 0)) > 0.5;
@@ -959,21 +1012,19 @@ export default function ReconciliationPage() {
               {t === 'deductions' ? 'Deductions Check' : 'Upload'}
             </button>
           ))}
-          {showCrossRef && (
-            <button
-              onClick={() => setTab('crossref')}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-                tab === 'crossref' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              Employees
-              {(crossRefStats.mismatch + crossRefStats.payOnly + crossRefStats.dbOnly) > 0 && (
-                <span className="ml-1.5 bg-orange-100 text-orange-700 rounded-full px-1.5 text-xs">
-                  {crossRefStats.mismatch + crossRefStats.payOnly + crossRefStats.dbOnly}
-                </span>
-              )}
-            </button>
-          )}
+          <button
+            onClick={() => setTab('crossref')}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              tab === 'crossref' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            Employees
+            {totalBadge > 0 && (
+              <span className="ml-1.5 bg-orange-100 text-orange-700 rounded-full px-1.5 text-xs">
+                {totalBadge}
+              </span>
+            )}
+          </button>
           {(['changes', 'queries'] as const).map(t => (
             <button
               key={t}
@@ -1453,33 +1504,43 @@ export default function ReconciliationPage() {
           </div>
         )}
 
-        {/* ═════ CROSS-REFERENCE TAB (CSL / NL only) ═════ */}
-        {tab === 'crossref' && showCrossRef && (
+        {/* ═════ CROSS-REFERENCE TAB (CSL and NL) ═════ */}
+        {tab === 'crossref' && (
           <div className="space-y-4">
-            {/* Summary chips */}
+            {/* CSL / NL sub-tabs */}
+            <div className="flex gap-1 border-b">
+              {(['CSL', 'NL'] as const).map(code => {
+                const stats = code === 'CSL' ? cslStats : nlStats;
+                const disc = stats.mismatch + stats.payOnly + stats.dbOnly;
+                return (
+                  <button
+                    key={code}
+                    onClick={() => { setCrossRefSubTab(code); setCrossRefFilter('all'); }}
+                    className={`px-5 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                      crossRefSubTab === code ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {code}
+                    {disc > 0 && (
+                      <span className="ml-1.5 bg-orange-100 text-orange-700 rounded-full px-1.5 text-xs">{disc}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Filter chips */}
             <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => setCrossRefFilter('all')}
-                className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'all' ? 'bg-primary text-primary-foreground border-primary' : 'bg-white text-muted-foreground border-input hover:bg-muted'}`}
-              >
+              <button onClick={() => setCrossRefFilter('all')} className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'all' ? 'bg-primary text-primary-foreground border-primary' : 'bg-white text-muted-foreground border-input hover:bg-muted'}`}>
                 All ({crossRefRows.length})
               </button>
-              <button
-                onClick={() => setCrossRefFilter('mismatch')}
-                className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'mismatch' ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-orange-700 border-orange-200 hover:bg-orange-50'}`}
-              >
+              <button onClick={() => setCrossRefFilter('mismatch')} className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'mismatch' ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-orange-700 border-orange-200 hover:bg-orange-50'}`}>
                 Basic Mismatch ({crossRefStats.mismatch})
               </button>
-              <button
-                onClick={() => setCrossRefFilter('payonly')}
-                className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'payonly' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-red-700 border-red-200 hover:bg-red-50'}`}
-              >
+              <button onClick={() => setCrossRefFilter('payonly')} className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'payonly' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-red-700 border-red-200 hover:bg-red-50'}`}>
                 Not in DB ({crossRefStats.payOnly})
               </button>
-              <button
-                onClick={() => setCrossRefFilter('dbonly')}
-                className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'dbonly' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-blue-700 border-blue-200 hover:bg-blue-50'}`}
-              >
+              <button onClick={() => setCrossRefFilter('dbonly')} className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'dbonly' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-blue-700 border-blue-200 hover:bg-blue-50'}`}>
                 Not in Payroll ({crossRefStats.dbOnly})
               </button>
               <span className="px-3 py-1 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">
@@ -1487,10 +1548,12 @@ export default function ReconciliationPage() {
               </span>
             </div>
 
-            {!hasAnyPayroll ? (
-              <p className="text-sm text-muted-foreground">Upload a payroll spreadsheet first to see the cross-reference.</p>
-            ) : dbEmployees.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Loading employee records…</p>
+            {!activeXRef.loaded ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : activeXRef.payrollLines.length === 0 && activeXRef.employees.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No payroll uploaded for {crossRefSubTab} in {MONTH_NAMES[month - 1]} {year} and no active employees in DB.
+              </p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="text-sm border rounded w-full whitespace-nowrap">
