@@ -205,14 +205,12 @@ export default function SalarySummaryTable() {
       .map(hotel => {
         const emps = filteredEmps.filter(e => e.hotel_id === hotel.id);
         const groupMap = new Map<string, GradeGroup>();
-        let matchedCount = 0, headcount = 0, currentGross = 0, increaseAdj = 0,
+        let headcount = 0, currentGross = 0, increaseAdj = 0,
             newGross = 0, currentCtc = 0, newCtc = 0;
 
         for (const emp of emps) {
           const figures = computeEmployeeFigures(emp, latestSalary, slMap);
           if (!figures) continue;
-          matchedCount++;
-          const increased = figures.increaseAdj > 0;
 
           const grade = emp.grade_label ?? 'Unclassified';
           let group = groupMap.get(grade);
@@ -220,9 +218,10 @@ export default function SalarySummaryTable() {
             group = { grade, headcount: 0, currentGross: 0, increaseAdj: 0, newGross: 0, currentCtc: 0, newCtc: 0, members: [] };
             groupMap.set(grade, group);
           }
-          // HC only counts employees an increase/adjustment actually applies to —
-          // not everyone matching the hotel+grade filters.
-          if (increased) group.headcount++;
+          // Dashboard HC is the total headcount per grade/hotel, irrespective
+          // of whether a salary adjustment applies to any given employee —
+          // unlike Salary Review's "effected" count, this is not filtered.
+          group.headcount++;
           group.currentGross += figures.currentGross;
           group.increaseAdj  += figures.increaseAdj;
           group.newGross     += figures.newGross;
@@ -230,14 +229,14 @@ export default function SalarySummaryTable() {
           group.newCtc       += figures.newCtc;
           group.members.push({ employee: emp, figures });
 
-          if (increased) headcount++;
+          headcount++;
           currentGross += figures.currentGross;
           increaseAdj  += figures.increaseAdj;
           newGross     += figures.newGross;
           currentCtc   += figures.currentCtc;
           newCtc       += figures.newCtc;
         }
-        if (matchedCount === 0) return null;
+        if (headcount === 0) return null;
 
         const gradeGroups = [...groupMap.values()].sort((a, b) => {
           const ai = GRADE_ORDER.indexOf(a.grade), bi = GRADE_ORDER.indexOf(b.grade);

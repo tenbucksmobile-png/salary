@@ -300,7 +300,11 @@ export default function SalaryReviewPage() {
           flat:      s.flat,
           excludedGrades: s.excludedGrades ?? new Set<string>(),
           threshold: s.threshold ?? '',
-          count:     rows.length,
+          // Only employees genuinely affected by this increase — not excluded
+          // AND actually receiving a nonzero adjustment. A threshold scenario
+          // can leave an included employee at 0 (e.g. below-threshold band
+          // set to 0%), and those shouldn't count as "effected" here.
+          count:     rows.filter(r => !r.isExcluded && r.increaseAmount > 0).length,
           currentBasic:   rows.reduce((a, r) => a + r.currentBasic,   0),
           newBasic:       rows.reduce((a, r) => a + r.newBasic,        0),
           increaseAmount: rows.reduce((a, r) => a + r.increaseAmount,  0),
