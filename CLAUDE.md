@@ -92,7 +92,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev mach
 
 ## Architecture Notes
 
-**Server vs client split**: `src/app/dashboard/page.tsx` (the main dashboard) is a **React Server Component** — it uses `src/lib/supabase/server.ts` and fetches all hotels, active employees, all salary records, and payroll imports in a single `Promise.all`. `SalarySummaryTable.tsx` is `'use client'` despite being rendered inside the RSC page — it runs its own parallel Supabase queries client-side (hotels, employees, salary records, and scenarios). All other dashboard sub-pages (`employees/`, `import/`, `methods/`, `salary-review/`) are `'use client'` and query Supabase directly via `src/lib/supabase/client.ts`.
+**Server vs client split**: `src/app/dashboard/page.tsx` (the main dashboard) is a trivial React Server Component — it does no data fetching of its own and just renders `SalarySummaryTable`. `SalarySummaryTable.tsx` is `'use client'` and runs its own parallel Supabase queries client-side (hotels, employees, salary records, and scenarios). All other dashboard sub-pages (`employees/`, `import/`, `methods/`, `salary-review/`) are `'use client'` and query Supabase directly via `src/lib/supabase/client.ts`.
 
 **`latest_salary` DB view** — this view exists in the database but is not queried by the app. All pages compute the latest salary record client-side by sorting `salary_records` by `period_year` desc / `period_month` desc and taking the first match per `employee_id`.
 
@@ -104,9 +104,9 @@ NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev mach
 
 **Bootstrap**: if the `users` table is empty when login is attempted, the first login auto-creates an admin using the submitted credentials + `SITE_PASSWORD` check.
 
-**Composite types in `types/database.ts`**: `EmployeeWithSalary` extends `Employee` with optional `hotel?: Hotel` and `latest_salary?: SalaryRecord` — used across dashboard pages. `HotelStats` is defined in `database.ts` but is not actually imported by `dashboard/page.tsx` — the dashboard's `getHotelStats()` function returns an inferred type (`Awaited<ReturnType<typeof getHotelStats>>[0]`) that includes a richer `byGrade` breakdown (per-grade headcount + current/new gross/CTC + increase adjustment). The exported `HotelStats` type is a simpler legacy shape and should be considered stale.
+**Composite types in `types/database.ts`**: `EmployeeWithSalary` extends `Employee` with optional `hotel?: Hotel` and `latest_salary?: SalaryRecord` — used across dashboard pages. `HotelStats` is defined in `database.ts` but nothing in the dashboard imports it any longer (the per-hotel `HotelCard`/`getHotelStats` breakdown that used to justify it was removed — see the Dashboard section below); it should be considered stale/dead.
 
-**Dashboard "Current Gross"/"New Gross" figures**: `scenario_lines.current_basic`/`new_basic` store `basic_salary` only (excludes the structure allowance — see "Basic Salary = Total Earnings − allowances.structure" above). Both `dashboard/page.tsx` (`getHotelStats`) and `SalarySummaryTable.tsx` add back `sal.allowances?.structure ?? 0` to these values to reconstruct true gross, since structure doesn't change with an increase. When no scenario line exists for an employee, `sal.total_earnings` is used directly instead.
+**Dashboard "Current Gross"/"New Gross" figures**: `scenario_lines.current_basic`/`new_basic` store `basic_salary` only (excludes the structure allowance — see "Basic Salary = Total Earnings − allowances.structure" above). `SalarySummaryTable.tsx`'s `computeEmployeeFigures()` helper adds back `sal.allowances?.structure ?? 0` to these values to reconstruct true gross, since structure doesn't change with an increase. When no scenario line exists for an employee, `sal.total_earnings` is used directly instead. This same helper is shared by both the per-hotel rollup and the per-employee drill-down (see below), so the two always agree.
 
 ---
 
@@ -283,8 +283,8 @@ src/
     page.tsx              — Root page; immediately redirects to /dashboard
     login/page.tsx        — Login form (username + password)
     dashboard/
-      page.tsx            — Dashboard: SalarySummaryTable first; hotel cards below each with per-grade breakdown table
-      SalarySummaryTable.tsx — Filterable hotel-level before/after table; reads draft scenarios first, then committed
+      page.tsx            — Dashboard: renders only SalarySummaryTable (no server-side data fetching of its own)
+      SalarySummaryTable.tsx — Filterable hotel-level before/after table with a per-employee expand/collapse drill-down; reads draft scenarios first, then committed
       InflationHistoryCard.tsx — CPI + historic increases + NMW reference card; data stored in localStorage only; rendered at the bottom of Methods page (not dashboard)
       layout.tsx          — Reads cookie server-side; passes role+username to NavSidebar
       access/page.tsx     — Admin-only user management UI
@@ -340,7 +340,7 @@ src/
 
 Grade-level exclusions (`excludedGrades`) and per-employee exclusions (`excluded`) both set `isExcluded = true` — excluded employees are kept in the table with 0 increase and are included in totals/consolidations but receive no salary change on Commit.
 
-**Dashboard** — `SalarySummaryTable` reads all `draft` scenario lines first (shows pending increases before commit). Falls back to the most recent `committed`/`applied` scenario if no drafts exist. The server-rendered hotel cards below also load the same scenario lines to show per-grade breakdowns with matching figures.
+**Dashboard** — `SalarySummaryTable` reads all `draft` scenario lines first (shows pending increases before commit). Falls back to the most recent `committed`/`applied` scenario if no drafts exist. Each hotel row has a "+" toggle that expands an inline per-employee drill-down directly beneath it — the individual employees making up that row's filtered totals (Hotel + Grade checkboxes), using the identical `computeEmployeeFigures()` logic as the rollup so the two always reconcile. This replaced the old per-hotel `HotelCard` grade-breakdown cards that used to render below the summary table.
 
 **`InflationHistoryCard`** (`src/app/dashboard/InflationHistoryCard.tsx`) — `'use client'` card rendered at the **bottom of the Methods page** (not the dashboard). Stores all data in `localStorage` (never in the DB):
 
@@ -536,12 +536,9 @@ Zero monetary values display as "—" (not "R0" or "P0").
 
 Free-text variants like `"front line"`, `"exec"`, `"supervisor"`, `"flexible"`, `"fixed term"`, `"fixed_term"` are normalised to the canonical form on import (the two "fixed term" variants both map to `FTC` — `"Fixed Term"` was a duplicate canonical value removed from all grade dropdowns and the import mapping; 11 CSL/NL employee records were migrated from `"Fixed Term"` to `"FTC"` in production). The salary review grade filter and dashboard grade badges use these same canonical values. `Unclassified` is displayed for employees whose `grade_label` is null.
 
-**Grade filters do exact string matching** — `SalarySummaryTable`'s grade checkboxes and the dashboard's per-grade breakdown both key off `grade_label` matching the canonical spelling exactly. Any employee whose `grade_label` is a near-miss (wrong casing/spacing, or a value never normalised) silently disappears the moment a grade filter is touched, without any error — the headcount just looks wrong. This bit production data twice: `"Front Line"` (should be `Frontline`) at ILRB (26 employees) and ILG (24 employees), and `"Supervisor"` (should be `Supervisory`) at IH (19 employees) — all three normalised in production. These predated (or bypassed) the current `GRADE_MAP`/dropdown-only grade inputs, which prevent new stray values going forward. If a hotel's dashboard headcount looks implausibly low after filtering by grade, check for non-canonical `grade_label` strings at that hotel before assuming a calculation bug.
+**Grade filters do exact string matching** — `SalarySummaryTable`'s grade checkboxes key off `grade_label` matching the canonical spelling exactly. Any employee whose `grade_label` is a near-miss (wrong casing/spacing, or a value never normalised) silently disappears the moment a grade filter is touched, without any error — the headcount just looks wrong. This bit production data twice: `"Front Line"` (should be `Frontline`) at ILRB (26 employees) and ILG (24 employees), and `"Supervisor"` (should be `Supervisory`) at IH (19 employees) — all three normalised in production. These predated (or bypassed) the current `GRADE_MAP`/dropdown-only grade inputs, which prevent new stray values going forward. If a hotel's dashboard headcount looks implausibly low after filtering by grade, check for non-canonical `grade_label` strings at that hotel before assuming a calculation bug — the per-employee "+" drill-down on each hotel row is the fastest way to spot who's missing.
 
 `status` on `employees` has three DB values (`active`, `terminated`, `on_leave`) but **`on_leave` is removed from all UI dropdowns** — only `active` and `terminated` appear in forms. Existing DB records with `on_leave` are preserved and readable; the type in `database.ts` retains the union for backward compatibility.
-
-The canonical grade sort order used in `dashboard/page.tsx` for per-hotel grade breakdowns:
-`['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Unclassified']`
 
 ---
 

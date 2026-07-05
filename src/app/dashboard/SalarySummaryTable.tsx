@@ -1,13 +1,52 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord, ScenarioLine } from '@/types/database';
 import { fmtZAR, fmtCurrency, sortHotels } from '@/lib/utils';
+import { Plus, Minus } from 'lucide-react';
 
 const GRADE_OPTIONS = [
   'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible',
 ];
+
+interface EmployeeFigures {
+  currentGross: number;
+  increaseAdj:  number;
+  newGross:     number;
+  currentCtc:   number;
+  newCtc:       number;
+}
+
+// Same before/after logic as the per-hotel rollup, applied to a single
+// employee — scenario_lines stores basic-only before/after, so the structure
+// allowance (unaffected by the increase) is added back for true gross.
+function computeEmployeeFigures(
+  emp: Employee,
+  latestSalary: Map<string, SalaryRecord>,
+  slMap: Map<string, ScenarioLine>,
+): EmployeeFigures | null {
+  const sal = latestSalary.get(emp.id);
+  if (!sal) return null;
+  const sl = slMap.get(emp.id);
+  if (sl) {
+    const structure = sal.allowances?.structure ?? 0;
+    return {
+      currentGross: sl.current_basic + structure,
+      increaseAdj:  sl.increase_amount,
+      newGross:     sl.new_basic + structure,
+      currentCtc:   sl.current_ctc,
+      newCtc:       sl.new_ctc,
+    };
+  }
+  return {
+    currentGross: sal.total_earnings,
+    increaseAdj:  0,
+    newGross:     sal.total_earnings,
+    currentCtc:   sal.ctc,
+    newCtc:       sal.ctc,
+  };
+}
 
 interface RowData {
   hotel: Hotel;
@@ -17,6 +56,7 @@ interface RowData {
   newGross: number;
   currentCtc: number;
   newCtc: number;
+  members: { employee: Employee; figures: EmployeeFigures }[];
 }
 
 export default function SalarySummaryTable() {
@@ -32,6 +72,16 @@ export default function SalarySummaryTable() {
   // Filter state
   const [selectedHotels, setSelectedHotels] = useState<Set<string>>(new Set()); // empty = all
   const [selectedGrades, setSelectedGrades] = useState<Set<string>>(new Set()); // empty = all
+
+  // Per-hotel expand/collapse state for the individual-employee drill-down
+  const [expandedHotels, setExpandedHotels] = useState<Set<string>>(new Set());
+  function toggleExpand(hotelId: string) {
+    setExpandedHotels(prev => {
+      const next = new Set(prev);
+      next.has(hotelId) ? next.delete(hotelId) : next.add(hotelId);
+      return next;
+    });
+  }
 
   useEffect(() => {
     async function load() {
@@ -119,33 +169,26 @@ export default function SalarySummaryTable() {
       .filter(h => selectedHotels.size === 0 || selectedHotels.has(h.id))
       .map(hotel => {
         const emps = filteredEmps.filter(e => e.hotel_id === hotel.id);
+        const members: RowData['members'] = [];
         let headcount = 0, currentGross = 0, increaseAdj = 0,
             newGross = 0, currentCtc = 0, newCtc = 0;
 
         for (const emp of emps) {
-          const sal = latestSalary.get(emp.id);
-          if (!sal) continue;
+          const figures = computeEmployeeFigures(emp, latestSalary, slMap);
+          if (!figures) continue;
           headcount++;
-          const sl = slMap.get(emp.id);
-          if (sl) {
-            // scenario_lines stores basic-only before/after — add back the
-            // structure allowance (unaffected by the increase) for true gross.
-            const structure = sal.allowances?.structure ?? 0;
-            currentGross += sl.current_basic + structure;
-            increaseAdj  += sl.increase_amount;
-            newGross     += sl.new_basic + structure;
-            currentCtc   += sl.current_ctc;
-            newCtc       += sl.new_ctc;
-          } else {
-            // No scenario for this employee — show current salary with no change
-            currentGross += sal.total_earnings;
-            newGross     += sal.total_earnings;
-            currentCtc   += sal.ctc;
-            newCtc       += sal.ctc;
-          }
+          currentGross += figures.currentGross;
+          increaseAdj  += figures.increaseAdj;
+          newGross     += figures.newGross;
+          currentCtc   += figures.currentCtc;
+          newCtc       += figures.newCtc;
+          members.push({ employee: emp, figures });
         }
         if (headcount === 0) return null;
-        return { hotel, headcount, currentGross, increaseAdj, newGross, currentCtc, newCtc };
+        members.sort((a, b) =>
+          a.employee.surname.localeCompare(b.employee.surname) ||
+          a.employee.first_name.localeCompare(b.employee.first_name));
+        return { hotel, headcount, currentGross, increaseAdj, newGross, currentCtc, newCtc, members };
       })
       .filter((r): r is RowData => r !== null),
     [hotels, filteredEmps, latestSalary, slMap, selectedHotels],
@@ -274,26 +317,55 @@ export default function SalarySummaryTable() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => (
-                <tr key={r.hotel.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
-                  <td className="px-4 py-2.5 font-medium">
-                    {r.hotel.name}
-                    <span className="ml-1.5 text-xs text-muted-foreground font-normal">{r.hotel.short_code}</span>
-                  </td>
-                  <td className="px-4 py-2.5 text-right tabular-nums">{r.headcount}</td>
-                  <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentGross, r.hotel.country)}</td>
-                  <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentCtc, r.hotel.country)}</td>
-                  <td className={`px-4 py-2.5 text-right font-mono ${r.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
-                    {r.increaseAdj > 0 ? `+${fmtCurrency(r.increaseAdj, r.hotel.country)}` : '—'}
-                  </td>
-                  <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newGross, r.hotel.country)}</td>
-                  <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newCtc, r.hotel.country)}</td>
-                  <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmtCurrency(r.newCtc * 12, r.hotel.country)}</td>
-                  <td className="px-4 py-2.5 text-right font-mono">
-                    {pct(r.increaseAdj, r.currentGross)}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((r, i) => {
+                const expanded = expandedHotels.has(r.hotel.id);
+                return (
+                  <Fragment key={r.hotel.id}>
+                    <tr className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
+                      <td className="px-4 py-2.5 font-medium">
+                        <button
+                          onClick={() => toggleExpand(r.hotel.id)}
+                          className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded border border-input text-muted-foreground align-middle hover:bg-muted transition-colors"
+                          title={expanded ? 'Hide individual employees' : 'Show individual employees'}
+                        >
+                          {expanded ? <Minus className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+                        </button>
+                        {r.hotel.name}
+                        <span className="ml-1.5 text-xs text-muted-foreground font-normal">{r.hotel.short_code}</span>
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{r.headcount}</td>
+                      <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentGross, r.hotel.country)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentCtc, r.hotel.country)}</td>
+                      <td className={`px-4 py-2.5 text-right font-mono ${r.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
+                        {r.increaseAdj > 0 ? `+${fmtCurrency(r.increaseAdj, r.hotel.country)}` : '—'}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newGross, r.hotel.country)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newCtc, r.hotel.country)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmtCurrency(r.newCtc * 12, r.hotel.country)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono">
+                        {pct(r.increaseAdj, r.currentGross)}
+                      </td>
+                    </tr>
+                    {expanded && r.members.map(m => (
+                      <tr key={m.employee.id} className="border-b last:border-0 bg-muted/5 text-xs">
+                        <td className="px-4 py-2 pl-11 text-left text-muted-foreground">
+                          {m.employee.surname}, {m.employee.first_name}
+                        </td>
+                        <td className="px-4 py-2 text-left text-muted-foreground">{m.employee.grade_label ?? 'Unclassified'}</td>
+                        <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.currentGross, r.hotel.country)}</td>
+                        <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.currentCtc, r.hotel.country)}</td>
+                        <td className={`px-4 py-2 text-right font-mono ${m.figures.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
+                          {m.figures.increaseAdj > 0 ? `+${fmtCurrency(m.figures.increaseAdj, r.hotel.country)}` : '—'}
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.newGross, r.hotel.country)}</td>
+                        <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.newCtc, r.hotel.country)}</td>
+                        <td className="px-4 py-2 text-right font-mono text-muted-foreground">{fmtCurrency(m.figures.newCtc * 12, r.hotel.country)}</td>
+                        <td className="px-4 py-2 text-right font-mono">{pct(m.figures.increaseAdj, m.figures.currentGross)}</td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
             {rows.length > 0 && (
               <tfoot>
