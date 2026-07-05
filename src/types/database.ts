@@ -52,6 +52,7 @@ export interface Employee {
   gratuity_rate: number;
   created_at: string;
   updated_at: string;
+  last_seen_at: string | null;
 }
 
 export interface SalaryRecord {

@@ -562,16 +562,17 @@ export default function ImportPage() {
         total_payroll_burden:  0, total_cost:        row.basic,
       }));
 
-      const empPatches = matched
-        .map(row => {
-          const id = resolveId(row)!;
-          const patch: Record<string, any> = {};
-          if (row.department) patch.department_code = row.department;
-          // Write file's employee code back to DB when matched by name (code was NULL)
-          if (row.empCode && !codeMap.has(row.empCode.toUpperCase())) patch.employee_code = row.empCode;
-          return Object.keys(patch).length > 0 ? { id, patch } : null;
-        })
-        .filter((x): x is { id: string; patch: Record<string, any> } => x !== null);
+      // Every matched employee is marked "seen" now — the Employees page uses
+      // this to flag anyone missing from the most recent roster upload.
+      const seenAt = new Date().toISOString();
+      const empPatches = matched.map(row => {
+        const id = resolveId(row)!;
+        const patch: Record<string, any> = { last_seen_at: seenAt };
+        if (row.department) patch.department_code = row.department;
+        // Write file's employee code back to DB when matched by name (code was NULL)
+        if (row.empCode && !codeMap.has(row.empCode.toUpperCase())) patch.employee_code = row.empCode;
+        return { id, patch };
+      });
 
       // Single batch upsert for salary records + parallel employee patches
       await Promise.all([
@@ -608,6 +609,11 @@ export default function ImportPage() {
       const importId = (importRec as any)?.id;
       let added = 0, updated = 0;
 
+      // HR List imports are a full-roster upload — every row present marks
+      // that employee "seen" so the Employees page can flag anyone missing
+      // from the most recent upload as likely no longer employed.
+      const seenAt = new Date().toISOString();
+
       // Phase 1: employee inserts/updates (sequential — inserts need the returned ID)
       const salaryBatch: any[] = [];
 
@@ -629,6 +635,7 @@ export default function ImportPage() {
             job_grade: row.jobGrade || null,
             grade_label: importAsFtc ? 'FTC' : (row.gradeLabel || null),
             ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
+            ...(importType === 'employee' ? { last_seen_at: seenAt } : {}),
           }).select().single();
           employeeId = (newEmp as any)?.id;
           added++;
@@ -646,6 +653,7 @@ export default function ImportPage() {
             ...(row.jobGrade ? { job_grade: row.jobGrade } : {}),
             ...(importAsFtc ? { grade_label: 'FTC' } : row.gradeLabel ? { grade_label: row.gradeLabel } : {}),
             ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
+            ...(importType === 'employee' ? { last_seen_at: seenAt } : {}),
             updated_at: new Date().toISOString(),
           }).eq('id', employeeId!);
           updated++;

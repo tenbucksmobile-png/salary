@@ -429,6 +429,34 @@ export default function EmployeesPage() {
     .filter(e => !search || `${e.surname} ${e.first_name} ${e.employee_code ?? ''} ${e.job_title ?? ''}`.toLowerCase().includes(search.toLowerCase())),
     [employees, hotelFilter, search, gradeTabFilter, secondaryTab]);
 
+  // Flags employees missing from the most recent roster import (CSL Payroll
+  // Schedule / HR List) — likely no longer employed. Compared within each
+  // Permanent/FTC segment separately (for CSL/NL) since those are uploaded
+  // as separate files; segments with no tracked import yet are left alone.
+  const staleIds = useMemo(() => {
+    const stale = new Set<string>();
+    if (!hotelFilter) return stale;
+    const hotelEmps = employees.filter(e => e.hotel_id === hotelFilter);
+    const groups = secondaryTab
+      ? [
+          hotelEmps.filter(e => secondaryTab.grades.has(e.grade_label ?? '')),
+          hotelEmps.filter(e => !secondaryTab.grades.has(e.grade_label ?? '')),
+        ]
+      : [hotelEmps];
+
+    for (const group of groups) {
+      let maxSeen: string | null = null;
+      for (const e of group) {
+        if (e.last_seen_at && (!maxSeen || e.last_seen_at > maxSeen)) maxSeen = e.last_seen_at;
+      }
+      if (!maxSeen) continue; // nobody in this segment tracked yet — nothing to compare against
+      for (const e of group) {
+        if (!e.last_seen_at || e.last_seen_at < maxSeen) stale.add(e.id);
+      }
+    }
+    return stale;
+  }, [employees, hotelFilter, secondaryTab]);
+
   useEffect(() => { setSelected(new Set()); }, [hotelFilter, search]);
 
   function toggleSelect(id: string) {
@@ -612,13 +640,26 @@ export default function EmployeesPage() {
   const visibleDefs = useMemo(() => ALL_COLUMNS.filter(c => visibleCols.has(c.id)), [visibleCols]);
 
   // Cell renderer per column
-  function cellValue(col: ColId, e: Employee, sal: SalaryRecord | undefined): React.ReactNode {
+  function cellValue(col: ColId, e: Employee, sal: SalaryRecord | undefined, isStale: boolean): React.ReactNode {
     const yrs     = yearsOfService(e.employment_date);
     const country = hotelMap.get(e.hotel_id)?.country ?? '';
     const fmt     = (n: number) => fmtCurrency(n, country);
     switch (col) {
       case 'employee_code':   return <span className="font-mono text-muted-foreground">{e.employee_code ?? '—'}</span>;
-      case 'surname':         return <span className="font-medium">{e.surname}</span>;
+      case 'surname':
+        return (
+          <span className={`font-medium inline-flex items-center gap-1.5 ${isStale ? 'text-red-700' : ''}`}>
+            {e.surname}
+            {isStale && (
+              <span
+                className="inline-flex items-center rounded-full bg-red-100 text-red-700 px-2 py-0.5 text-xs font-medium"
+                title="Not present in the most recent roster import — may have left"
+              >
+                not in last import
+              </span>
+            )}
+          </span>
+        );
       case 'name':            return e.first_name;
       case 'hotel':           return hotelMap.get(e.hotel_id)?.short_code ?? '—';
       case 'department':      return e.department_code ?? '—';
@@ -990,8 +1031,9 @@ export default function EmployeesPage() {
               filtered.map((e, i) => {
                 const sal = latestSalary.get(e.id);
                 const isSelected = selected.has(e.id);
+                const isStale = staleIds.has(e.id);
                 return (
-                  <tr key={e.id} className={`border-b last:border-0 hover:bg-muted/20 transition-colors ${isSelected ? 'bg-red-50/60' : i % 2 === 1 ? 'bg-muted/10' : ''}`}>
+                  <tr key={e.id} className={`border-b last:border-0 hover:bg-muted/20 transition-colors ${isSelected ? 'bg-red-50/60' : isStale ? 'bg-red-50/40' : i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                     <td className="px-4 py-2.5">
                       <input
                         type="checkbox"
@@ -1002,7 +1044,7 @@ export default function EmployeesPage() {
                     </td>
                     {visibleDefs.map(col => (
                       <td key={col.id} className={`px-4 py-2.5 text-sm ${col.align === 'right' ? 'text-right font-mono' : ''}`}>
-                        {cellValue(col.id, e, sal)}
+                        {cellValue(col.id, e, sal, isStale)}
                       </td>
                     ))}
                     <td className="px-4 py-2.5">
