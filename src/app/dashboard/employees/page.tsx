@@ -71,8 +71,19 @@ const DEFAULT_VISIBLE = new Set(ALL_COLUMNS.filter(c => c.defaultVisible).map(c 
 const GRADE_OPTIONS  = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
 const STATUS_OPTIONS = ['active', 'terminated'] as const;
 
-// Grade labels that identify fixed-term/casual contract workers
-const FTC_GRADES = new Set(['FTC']);
+// Some hotels split their employee list into "Permanent" + a second grade-based
+// tab. Keyed by hotel short_code.
+interface SecondaryGradeTab {
+  tabLabel:   string;      // toggle button text
+  countLabel: string;      // header summary text (e.g. "5 FTC employees")
+  suffix:     string;      // CSV filename suffix
+  grades:     Set<string>; // grade_label values that belong in this tab
+}
+const SECONDARY_GRADE_TABS: Record<string, SecondaryGradeTab> = {
+  CSL:  { tabLabel: 'Fixed Term', countLabel: 'FTC',      suffix: 'ftc',      grades: new Set(['FTC']) },
+  NL:   { tabLabel: 'Fixed Term', countLabel: 'FTC',      suffix: 'ftc',      grades: new Set(['FTC']) },
+  ILRB: { tabLabel: 'Flexible',   countLabel: 'Flexible', suffix: 'flexible', grades: new Set(['Flexible']) },
+};
 
 // Maps each display ColId to its CSV column name. ColIds with no direct CSV
 // column (hotel, years_service, structure_sal) are omitted — they are skipped
@@ -184,7 +195,7 @@ export default function EmployeesPage() {
 
   const [hotelFilter,  setHotelFilter]  = useState('');
   const [search,       setSearch]       = useState('');
-  const [ftcFilter,    setFtcFilter]    = useState<'permanent' | 'ftc'>('permanent');
+  const [gradeTabFilter, setGradeTabFilter] = useState<'permanent' | 'secondary'>('permanent');
 
   const [visibleCols, setVisibleCols] = useState<Set<ColId>>(DEFAULT_VISIBLE);
   const [draftCols,   setDraftCols]   = useState<Set<ColId>>(DEFAULT_VISIBLE);
@@ -204,11 +215,11 @@ export default function EmployeesPage() {
   }, [hotelFilter]);
 
 
-  // Persist hotel filter selection; reset FTC tab on hotel change
+  // Persist hotel filter selection; reset secondary grade tab on hotel change
   useEffect(() => {
     if (hotelFilter) {
       try { localStorage.setItem(HOTEL_FILTER_KEY, hotelFilter); } catch {}
-      setFtcFilter('permanent');
+      setGradeTabFilter('permanent');
     }
   }, [hotelFilter]);
 
@@ -245,7 +256,7 @@ export default function EmployeesPage() {
   useEffect(() => { load(); }, []);
 
   function openAddModal() {
-    const defaultGrade = showFtcToggle && ftcFilter === 'ftc' ? 'FTC' : '';
+    const defaultGrade = secondaryTab && gradeTabFilter === 'secondary' ? [...secondaryTab.grades][0] : '';
     setAddForm({ ...emptyAddForm(hotelFilter), grade_label: defaultGrade });
     setAddError('');
     setShowAddModal(true);
@@ -394,7 +405,7 @@ export default function EmployeesPage() {
   const hotelMap = useMemo(() => new Map((hotels).map(h => [h.id, h])), [hotels]);
 
   const selectedHotel  = useMemo(() => hotels.find(h => h.id === hotelFilter), [hotels, hotelFilter]);
-  const showFtcToggle  = selectedHotel?.short_code === 'CSL' || selectedHotel?.short_code === 'NL';
+  const secondaryTab    = selectedHotel ? SECONDARY_GRADE_TABS[selectedHotel.short_code] : undefined;
 
   const latestSalary = useMemo(() => {
     const map = new Map<string, SalaryRecord>();
@@ -411,12 +422,12 @@ export default function EmployeesPage() {
   const filtered = useMemo(() => employees
     .filter(e => !hotelFilter || e.hotel_id === hotelFilter)
     .filter(e => {
-      if (!showFtcToggle) return true;
-      const isFtc = FTC_GRADES.has(e.grade_label ?? '');
-      return ftcFilter === 'ftc' ? isFtc : !isFtc;
+      if (!secondaryTab) return true;
+      const isSecondary = secondaryTab.grades.has(e.grade_label ?? '');
+      return gradeTabFilter === 'secondary' ? isSecondary : !isSecondary;
     })
     .filter(e => !search || `${e.surname} ${e.first_name} ${e.employee_code ?? ''} ${e.job_title ?? ''}`.toLowerCase().includes(search.toLowerCase())),
-    [employees, hotelFilter, search, ftcFilter, showFtcToggle]);
+    [employees, hotelFilter, search, gradeTabFilter, secondaryTab]);
 
   useEffect(() => { setSelected(new Set()); }, [hotelFilter, search]);
 
@@ -483,9 +494,9 @@ export default function EmployeesPage() {
     const hotelEmployees = employees
       .filter(e => e.hotel_id === hotelFilter)
       .filter(e => {
-        if (!showFtcToggle) return true;
-        const isFtc = FTC_GRADES.has(e.grade_label ?? '');
-        return ftcFilter === 'ftc' ? isFtc : !isFtc;
+        if (!secondaryTab) return true;
+        const isSecondary = secondaryTab.grades.has(e.grade_label ?? '');
+        return gradeTabFilter === 'secondary' ? isSecondary : !isSecondary;
       });
 
     // Resolve which CSV columns to emit — use the saved column picker selection
@@ -506,7 +517,7 @@ export default function EmployeesPage() {
       ? `${firstSal.period_year}${String(firstSal.period_month).padStart(2, '0')}`
       : new Date().toISOString().slice(0, 7).replace('-', '');
     a.href = url;
-    const tabSuffix = showFtcToggle ? (ftcFilter === 'ftc' ? '_ftc' : '_permanent') : '';
+    const tabSuffix = secondaryTab ? (gradeTabFilter === 'secondary' ? `_${secondaryTab.suffix}` : '_permanent') : '';
     a.download = `${hotel.short_code}${tabSuffix}_employees_${ym}.csv`;
     document.body.appendChild(a);
     a.click();
@@ -642,7 +653,7 @@ export default function EmployeesPage() {
         <div>
           <h1 className="text-2xl font-bold">Employees</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            {filtered.length} {showFtcToggle ? (ftcFilter === 'ftc' ? 'FTC' : 'permanent') + ' ' : ''}employee{filtered.length !== 1 ? 's' : ''}
+            {filtered.length} {secondaryTab ? (gradeTabFilter === 'secondary' ? secondaryTab.countLabel : 'permanent') + ' ' : ''}employee{filtered.length !== 1 ? 's' : ''}
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
@@ -709,20 +720,20 @@ export default function EmployeesPage() {
           {hotels.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
         </select>
 
-        {/* Permanent / FTC toggle — CSL and NL only */}
-        {showFtcToggle && (
+        {/* Permanent / secondary grade toggle — hotels in SECONDARY_GRADE_TABS only */}
+        {secondaryTab && (
           <div className="flex rounded-md border border-input overflow-hidden">
             <button
-              onClick={() => setFtcFilter('permanent')}
-              className={`px-3 py-2 text-sm font-medium transition-colors ${ftcFilter === 'permanent' ? 'bg-primary text-primary-foreground' : 'bg-white text-muted-foreground hover:bg-muted'}`}
+              onClick={() => setGradeTabFilter('permanent')}
+              className={`px-3 py-2 text-sm font-medium transition-colors ${gradeTabFilter === 'permanent' ? 'bg-primary text-primary-foreground' : 'bg-white text-muted-foreground hover:bg-muted'}`}
             >
               Permanent
             </button>
             <button
-              onClick={() => setFtcFilter('ftc')}
-              className={`px-3 py-2 text-sm font-medium border-l border-input transition-colors ${ftcFilter === 'ftc' ? 'bg-primary text-primary-foreground' : 'bg-white text-muted-foreground hover:bg-muted'}`}
+              onClick={() => setGradeTabFilter('secondary')}
+              className={`px-3 py-2 text-sm font-medium border-l border-input transition-colors ${gradeTabFilter === 'secondary' ? 'bg-primary text-primary-foreground' : 'bg-white text-muted-foreground hover:bg-muted'}`}
             >
-              Fixed Term
+              {secondaryTab.tabLabel}
             </button>
           </div>
         )}
