@@ -7,10 +7,10 @@ import SalarySummaryTable from './SalarySummaryTable';
 
 interface GradeStats {
   headcount:    number;
-  currentBasic: number;
+  currentGross: number;
   currentCtc:   number;
   increaseAdj:  number;
-  newBasic:     number;
+  newGross:     number;
   newCtc:       number;
 }
 
@@ -65,7 +65,7 @@ async function getHotelStats() {
     }
   }
 
-  const GRADE_ORDER = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term', 'Unclassified'];
+  const GRADE_ORDER = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Unclassified'];
 
   return sortHotels((hotels ?? []) as Hotel[]).map((h: Hotel) => {
     const hotelEmps = empList.filter(e => e.hotel_id === h.id);
@@ -77,19 +77,22 @@ async function getHotelStats() {
       const sal = latestSalary.get(e.id);
       if (!sal) continue;
       const grade = e.grade_label ?? 'Unclassified';
-      if (!byGrade[grade]) byGrade[grade] = { headcount: 0, currentBasic: 0, currentCtc: 0, increaseAdj: 0, newBasic: 0, newCtc: 0 };
+      if (!byGrade[grade]) byGrade[grade] = { headcount: 0, currentGross: 0, currentCtc: 0, increaseAdj: 0, newGross: 0, newCtc: 0 };
       const g = byGrade[grade];
       const sl = slMap.get(e.id);
+      const structure = sal.allowances?.structure ?? 0;
       g.headcount++;
       if (sl) {
-        g.currentBasic += sl.current_basic;
-        g.increaseAdj  += sl.increase_amount;
-        g.newBasic     += sl.new_basic;
-        g.currentCtc   += sl.current_ctc;
-        g.newCtc       += sl.new_ctc;
+        // scenario_lines stores basic-only before/after — add back the structure
+        // allowance (unaffected by the increase) to get the true gross figures.
+        g.currentGross += sl.current_basic + structure;
+        g.increaseAdj   += sl.increase_amount;
+        g.newGross      += sl.new_basic + structure;
+        g.currentCtc    += sl.current_ctc;
+        g.newCtc        += sl.new_ctc;
       } else {
-        g.currentBasic += sal.basic_salary ?? 0;
-        g.newBasic     += sal.basic_salary ?? 0;
+        g.currentGross += sal.total_earnings ?? 0;
+        g.newGross     += sal.total_earnings ?? 0;
         g.currentCtc   += sal.ctc ?? 0;
         g.newCtc       += sal.ctc ?? 0;
       }
@@ -103,13 +106,13 @@ async function getHotelStats() {
     const totals = grades.reduce(
       (acc, [, g]) => ({
         headcount:    acc.headcount    + g.headcount,
-        currentBasic: acc.currentBasic + g.currentBasic,
+        currentGross: acc.currentGross + g.currentGross,
         currentCtc:   acc.currentCtc   + g.currentCtc,
         increaseAdj:  acc.increaseAdj  + g.increaseAdj,
-        newBasic:     acc.newBasic     + g.newBasic,
+        newGross:     acc.newGross     + g.newGross,
         newCtc:       acc.newCtc       + g.newCtc,
       }),
-      { headcount: 0, currentBasic: 0, currentCtc: 0, increaseAdj: 0, newBasic: 0, newCtc: 0 },
+      { headcount: 0, currentGross: 0, currentCtc: 0, increaseAdj: 0, newGross: 0, newCtc: 0 },
     );
 
     return {
@@ -188,10 +191,10 @@ function HotelCard({ stats: s }: { stats: Awaited<ReturnType<typeof getHotelStat
             <tr className="border-b bg-muted/10">
               <th className="text-left px-5 py-2.5 font-medium text-muted-foreground text-xs">Grade</th>
               <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">HC</th>
-              <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">Current Basic</th>
+              <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">Current Gross</th>
               <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">Current CTC</th>
               <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">Increase + Adj</th>
-              <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">New Basic</th>
+              <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">New Gross</th>
               <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">New CTC</th>
               <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">Annualised CTC</th>
               <th className="text-right px-4 py-2.5 font-medium text-muted-foreground text-xs">%</th>
@@ -202,15 +205,15 @@ function HotelCard({ stats: s }: { stats: Awaited<ReturnType<typeof getHotelStat
               <tr key={grade} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                 <td className="px-5 py-2.5 text-xs font-medium">{grade}</td>
                 <td className="px-4 py-2.5 text-right tabular-nums text-xs">{g.headcount}</td>
-                <td className="px-4 py-2.5 text-right font-mono text-xs">{g.currentBasic > 0 ? fmt(g.currentBasic) : '—'}</td>
+                <td className="px-4 py-2.5 text-right font-mono text-xs">{g.currentGross > 0 ? fmt(g.currentGross) : '—'}</td>
                 <td className="px-4 py-2.5 text-right font-mono text-xs">{g.currentCtc > 0 ? fmt(g.currentCtc) : '—'}</td>
                 <td className={`px-4 py-2.5 text-right font-mono text-xs ${g.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
                   {g.increaseAdj > 0 ? `+${fmt(g.increaseAdj)}` : '—'}
                 </td>
-                <td className="px-4 py-2.5 text-right font-mono font-semibold text-xs">{g.newBasic > 0 ? fmt(g.newBasic) : '—'}</td>
+                <td className="px-4 py-2.5 text-right font-mono font-semibold text-xs">{g.newGross > 0 ? fmt(g.newGross) : '—'}</td>
                 <td className="px-4 py-2.5 text-right font-mono font-semibold text-xs">{g.newCtc > 0 ? fmt(g.newCtc) : '—'}</td>
                 <td className="px-4 py-2.5 text-right font-mono text-muted-foreground text-xs">{g.newCtc > 0 ? fmt(g.newCtc * 12) : '—'}</td>
-                <td className="px-4 py-2.5 text-right font-mono text-xs">{pct(g.increaseAdj, g.currentBasic)}</td>
+                <td className="px-4 py-2.5 text-right font-mono text-xs">{pct(g.increaseAdj, g.currentGross)}</td>
               </tr>
             ))}
           </tbody>
@@ -221,15 +224,15 @@ function HotelCard({ stats: s }: { stats: Awaited<ReturnType<typeof getHotelStat
                 <span className="ml-1.5 font-normal text-muted-foreground">{s.totals.headcount} employees</span>
               </td>
               <td className="px-4 py-3 text-right tabular-nums text-xs">{s.totals.headcount}</td>
-              <td className="px-4 py-3 text-right font-mono text-xs">{fmt(s.totals.currentBasic)}</td>
+              <td className="px-4 py-3 text-right font-mono text-xs">{fmt(s.totals.currentGross)}</td>
               <td className="px-4 py-3 text-right font-mono text-xs">{fmt(s.totals.currentCtc)}</td>
               <td className={`px-4 py-3 text-right font-mono text-xs ${s.totals.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
                 {s.totals.increaseAdj > 0 ? `+${fmt(s.totals.increaseAdj)}` : '—'}
               </td>
-              <td className="px-4 py-3 text-right font-mono text-xs">{fmt(s.totals.newBasic)}</td>
+              <td className="px-4 py-3 text-right font-mono text-xs">{fmt(s.totals.newGross)}</td>
               <td className="px-4 py-3 text-right font-mono text-xs">{fmt(s.totals.newCtc)}</td>
               <td className="px-4 py-3 text-right font-mono text-muted-foreground text-xs">{fmt(s.totals.newCtc * 12)}</td>
-              <td className="px-4 py-3 text-right font-mono text-xs">{pct(s.totals.increaseAdj, s.totals.currentBasic)}</td>
+              <td className="px-4 py-3 text-right font-mono text-xs">{pct(s.totals.increaseAdj, s.totals.currentGross)}</td>
             </tr>
           </tfoot>
         </table>

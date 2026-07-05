@@ -889,7 +889,7 @@ export default function ReconciliationPage() {
         dbEmployee: db ?? null,
         dbBasic: db ? (basicMap.get(db.id) ?? null) : null,
         payBasic: l.basic,
-        ftc: db?.grade_label === 'FTC' || db?.grade_label === 'Fixed Term',
+        ftc: db?.grade_label === 'FTC',
       });
     }
     for (const emp of xref.employees) {
@@ -899,7 +899,7 @@ export default function ReconciliationPage() {
           dbEmployee: emp,
           dbBasic: basicMap.get(emp.id) ?? null,
           payBasic: null,
-          ftc: emp.grade_label === 'FTC' || emp.grade_label === 'Fixed Term',
+          ftc: emp.grade_label === 'FTC',
         });
       }
     }

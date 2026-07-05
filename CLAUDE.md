@@ -104,7 +104,9 @@ NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev mach
 
 **Bootstrap**: if the `users` table is empty when login is attempted, the first login auto-creates an admin using the submitted credentials + `SITE_PASSWORD` check.
 
-**Composite types in `types/database.ts`**: `EmployeeWithSalary` extends `Employee` with optional `hotel?: Hotel` and `latest_salary?: SalaryRecord` — used across dashboard pages. `HotelStats` is defined in `database.ts` but is not actually imported by `dashboard/page.tsx` — the dashboard's `getHotelStats()` function returns an inferred type (`Awaited<ReturnType<typeof getHotelStats>>[0]`) that includes a richer `byGrade` breakdown (per-grade headcount + current/new basic/CTC + increase adjustment). The exported `HotelStats` type is a simpler legacy shape and should be considered stale.
+**Composite types in `types/database.ts`**: `EmployeeWithSalary` extends `Employee` with optional `hotel?: Hotel` and `latest_salary?: SalaryRecord` — used across dashboard pages. `HotelStats` is defined in `database.ts` but is not actually imported by `dashboard/page.tsx` — the dashboard's `getHotelStats()` function returns an inferred type (`Awaited<ReturnType<typeof getHotelStats>>[0]`) that includes a richer `byGrade` breakdown (per-grade headcount + current/new gross/CTC + increase adjustment). The exported `HotelStats` type is a simpler legacy shape and should be considered stale.
+
+**Dashboard "Current Gross"/"New Gross" figures**: `scenario_lines.current_basic`/`new_basic` store `basic_salary` only (excludes the structure allowance — see "Basic Salary = Total Earnings − allowances.structure" above). Both `dashboard/page.tsx` (`getHotelStats`) and `SalarySummaryTable.tsx` add back `sal.allowances?.structure ?? 0` to these values to reconstruct true gross, since structure doesn't change with an increase. When no scenario line exists for an employee, `sal.total_earnings` is used directly instead.
 
 ---
 
@@ -407,6 +409,7 @@ Grand Total row uses `SUM(G{first}:G{last})` etc. so it aggregates live hotel va
 | Slot | Type | Format | Notes |
 |------|------|--------|-------|
 | Payroll Spreadsheet | `payroll` | `.xlsx` | Required; NataLodge-style department-grouped export |
+| Fixed Term Contract Payroll | `ftc_payroll` | `.xlsx` | Optional; multi-sheet (one sheet per month, picked by target period); matched by name only (no employee codes) |
 | 12 Months Payroll Report | `twelve_months` | `.pdf` | Stored as base64 jsonb; View button opens in new tab |
 | Afritec Loan Statement | `afritec` | `.xls` | Loan instalment schedule |
 | Topline Loan Statement | `topline` | `.xls` | Same format as Afritec |
@@ -422,6 +425,7 @@ Re-uploading any slot replaces it (upsert on `period_id, upload_type`).
 - `parseFurnmart` — header detected by "EMP NO"; col 11 (TOTAL) only populated on the last SEQ row per employee; employees with no code go to `unmatchedLines`
 - `parseBodulo` — header at row 0; col 4 = Custom Policy Number, col 9 = Premium Due; "TOTAL TO PAY" extracted from bottom summary block
 - `parsePayrollXlsx` — header detected by `col[0]="Code"`; all other columns detected by keyword (e.g. "furnmart", "cb stores", "funeral", "staff loan", "afritec", "topline") — robust across hotel format variants. `afritecFromStaff` flag: when payroll has a Topline column but no dedicated Afritec column, the Staff Loans column is used as Afritec amounts.
+- `parseFtcPayrollXls(buf, fileName, targetMonth, targetYear)` — picks the sheet matching the target period (`pickFtcSheet`), then reads name + total columns only (`findFtcHeader`); rows are keyed by `nameKey(name)` (no employee codes exist for FTC staff), and a name repeated in a second block on the same sheet has its total summed rather than overwritten.
 
 **`PayrollLine` loan columns**: `afritecLoans` (Afritec-specific, 0 if absent) + `toplineLoans` (Topline-specific, 0 if absent) + `staffLoans` (combined = `afritecLoans + toplineLoans`, or the single combined column when the payroll has no split). In the Deductions Check summary: if the payroll has non-zero separate columns, Afritec and Topline are compared independently; if only the combined `staffLoans` column exists and both statements are uploaded, a single "Total Loans" row is shown instead.
 
@@ -468,7 +472,9 @@ State: `cslXRef: HotelXRefData`, `nlXRef: HotelXRefData`, `crossRefSubTab: 'CSL'
 
 **Nav**: `nav-sidebar.tsx` renders different link lists based on `role` prop passed from `dashboard/layout.tsx`.
 
-**Middleware** blocks sub-users from: `/dashboard` (root), `/dashboard/methods`, `/dashboard/salary-review`, `/dashboard/reports`, `/dashboard/reconciliation`, `/dashboard/access`, `/dashboard/settings` — redirects to `/dashboard/employees`.
+**Middleware** (`src/middleware.ts`, `SUB_BLOCKED` array) blocks sub-users from: `/dashboard` (root), `/dashboard/methods`, `/dashboard/salary-review`, `/dashboard/reports`, `/dashboard/access`, `/dashboard/settings` — redirects to `/dashboard/employees`.
+
+> ⚠️ **`/dashboard/reconciliation` is NOT in `SUB_BLOCKED`**, even though the Reconciliation section above documents it as admin-only. Sub-users can currently reach it. Confirm with the user whether this is intentional before "fixing" it either direction — adding it to `SUB_BLOCKED` closes the gap; leaving it means the "admin-only" claim in this doc is wrong and should be softened instead.
 
 **Hotel filtering for sub-users**: `employees/page.tsx` and `import/page.tsx` call `GET /api/auth/me` on mount and filter the hotel dropdown to `user.hotelIds`.
 
@@ -502,6 +508,10 @@ Persisted in `localStorage` under key `'ihg-salary-emp-cols-{hotelId}'` — **pe
 
 **Batch delete** — checkbox on each row (header checkbox selects all visible). A red "Delete X selected" button appears in the toolbar when rows are ticked; confirms then deletes employees + all their salary records in one operation. Selection clears on hotel/search filter change.
 
+**Add Employee modal** — button in the page header opens a form covering hotel, surname/first name (required), employee code (optional — blank for ANO positions), job title, department code, grade, status, employment date, and an initial salary record (basic, gross, period month/year). Inserts one row into `employees` and one into `salary_records`.
+
+**Permanent/FTC toggle** — shown only for CSL and NL (`showFtcToggle = selectedHotel.short_code === 'CSL' || 'NL'`). Filters the employee list (and CSV export) by whether `grade_label` is in `FTC_GRADES` (`FTC`) vs. everyone else. The same toggle exists on the Import page for these two hotels.
+
 Default visible columns: Emp Code, Surname, First Name, Hotel, Department, Job Title, Grade, Basic Salary, Gross Salary, CTC.
 
 Column groups and membership:
@@ -522,14 +532,14 @@ Zero monetary values display as "—" (not "R0" or "P0").
 ## Grade Labels
 
 `employees.grade_label` is a free-text field set manually (not from VIP). Canonical values (enforced by `GRADE_MAP` in `import/page.tsx` on import):
-`ANO`, `FTC`, `DNQ`, `Frontline`, `Supervisory`, `Management`, `Executive`, `Flexible`, `Fixed Term`
+`ANO`, `FTC`, `DNQ`, `Frontline`, `Supervisory`, `Management`, `Executive`, `Flexible`
 
-Free-text variants like `"front line"`, `"exec"`, `"supervisor"`, `"flexible"`, `"fixed term"`, `"fixed_term"` are normalised to the canonical form on import. The salary review grade filter and dashboard grade badges use these same canonical values. `Unclassified` is displayed for employees whose `grade_label` is null.
+Free-text variants like `"front line"`, `"exec"`, `"supervisor"`, `"flexible"`, `"fixed term"`, `"fixed_term"` are normalised to the canonical form on import (the two "fixed term" variants both map to `FTC` — `"Fixed Term"` was a duplicate canonical value removed from all grade dropdowns and the import mapping; 11 CSL/NL employee records were migrated from `"Fixed Term"` to `"FTC"` in production). The salary review grade filter and dashboard grade badges use these same canonical values. `Unclassified` is displayed for employees whose `grade_label` is null.
 
 `status` on `employees` has three DB values (`active`, `terminated`, `on_leave`) but **`on_leave` is removed from all UI dropdowns** — only `active` and `terminated` appear in forms. Existing DB records with `on_leave` are preserved and readable; the type in `database.ts` retains the union for backward compatibility.
 
 The canonical grade sort order used in `dashboard/page.tsx` for per-hotel grade breakdowns:
-`['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term', 'Unclassified']`
+`['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Unclassified']`
 
 ---
 

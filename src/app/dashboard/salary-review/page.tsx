@@ -8,7 +8,7 @@ import { TrendingUp, CheckCircle, Pencil, X, Check, Download, Save, Trash2, Chev
 import { calculateBurden, BurdenResult } from '@/lib/payroll-calc';
 import { exportSalaryReview, ExportHotel, BenchmarkData } from '@/lib/excel-export';
 
-const GRADE_OPTIONS = ['All Grades', 'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term'];
+const GRADE_OPTIONS = ['All Grades', 'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
 
 interface Override {
   pct: string;

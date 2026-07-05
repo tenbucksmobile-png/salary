@@ -6,15 +6,15 @@ import { Hotel, Employee, SalaryRecord, ScenarioLine } from '@/types/database';
 import { fmtZAR, fmtCurrency, sortHotels } from '@/lib/utils';
 
 const GRADE_OPTIONS = [
-  'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term',
+  'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible',
 ];
 
 interface RowData {
   hotel: Hotel;
   headcount: number;
-  currentBasic: number;
+  currentGross: number;
   increaseAdj: number;
-  newBasic: number;
+  newGross: number;
   currentCtc: number;
   newCtc: number;
 }
@@ -119,8 +119,8 @@ export default function SalarySummaryTable() {
       .filter(h => selectedHotels.size === 0 || selectedHotels.has(h.id))
       .map(hotel => {
         const emps = filteredEmps.filter(e => e.hotel_id === hotel.id);
-        let headcount = 0, currentBasic = 0, increaseAdj = 0,
-            newBasic = 0, currentCtc = 0, newCtc = 0;
+        let headcount = 0, currentGross = 0, increaseAdj = 0,
+            newGross = 0, currentCtc = 0, newCtc = 0;
 
         for (const emp of emps) {
           const sal = latestSalary.get(emp.id);
@@ -128,22 +128,24 @@ export default function SalarySummaryTable() {
           headcount++;
           const sl = slMap.get(emp.id);
           if (sl) {
-            // Scenario data: before/after values stored at commit time
-            currentBasic += sl.current_basic;
+            // scenario_lines stores basic-only before/after — add back the
+            // structure allowance (unaffected by the increase) for true gross.
+            const structure = sal.allowances?.structure ?? 0;
+            currentGross += sl.current_basic + structure;
             increaseAdj  += sl.increase_amount;
-            newBasic     += sl.new_basic;
+            newGross     += sl.new_basic + structure;
             currentCtc   += sl.current_ctc;
             newCtc       += sl.new_ctc;
           } else {
             // No scenario for this employee — show current salary with no change
-            currentBasic += sal.basic_salary;
-            newBasic     += sal.basic_salary;
+            currentGross += sal.total_earnings;
+            newGross     += sal.total_earnings;
             currentCtc   += sal.ctc;
             newCtc       += sal.ctc;
           }
         }
         if (headcount === 0) return null;
-        return { hotel, headcount, currentBasic, increaseAdj, newBasic, currentCtc, newCtc };
+        return { hotel, headcount, currentGross, increaseAdj, newGross, currentCtc, newCtc };
       })
       .filter((r): r is RowData => r !== null),
     [hotels, filteredEmps, latestSalary, slMap, selectedHotels],
@@ -151,9 +153,9 @@ export default function SalarySummaryTable() {
 
   const totals = useMemo(() => ({
     headcount:    rows.reduce((s, r) => s + r.headcount,    0),
-    currentBasic: rows.reduce((s, r) => s + r.currentBasic, 0),
+    currentGross: rows.reduce((s, r) => s + r.currentGross, 0),
     increaseAdj:  rows.reduce((s, r) => s + r.increaseAdj,  0),
-    newBasic:     rows.reduce((s, r) => s + r.newBasic,      0),
+    newGross:     rows.reduce((s, r) => s + r.newGross,      0),
     currentCtc:   rows.reduce((s, r) => s + r.currentCtc,   0),
     newCtc:       rows.reduce((s, r) => s + r.newCtc,        0),
   }), [rows]);
@@ -262,10 +264,10 @@ export default function SalarySummaryTable() {
               <tr className="border-b bg-muted/40">
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">Hotel</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">HC</th>
-                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current Basic</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current Gross</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current CTC</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Increase + Adj</th>
-                <th className="text-right px-4 py-3 font-medium text-muted-foreground">New Basic</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">New Gross</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">New CTC</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Annualised CTC</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">%</th>
@@ -279,16 +281,16 @@ export default function SalarySummaryTable() {
                     <span className="ml-1.5 text-xs text-muted-foreground font-normal">{r.hotel.short_code}</span>
                   </td>
                   <td className="px-4 py-2.5 text-right tabular-nums">{r.headcount}</td>
-                  <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentBasic, r.hotel.country)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentGross, r.hotel.country)}</td>
                   <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentCtc, r.hotel.country)}</td>
                   <td className={`px-4 py-2.5 text-right font-mono ${r.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
                     {r.increaseAdj > 0 ? `+${fmtCurrency(r.increaseAdj, r.hotel.country)}` : '—'}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newBasic, r.hotel.country)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newGross, r.hotel.country)}</td>
                   <td className="px-4 py-2.5 text-right font-mono font-semibold">{fmtCurrency(r.newCtc, r.hotel.country)}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmtCurrency(r.newCtc * 12, r.hotel.country)}</td>
                   <td className="px-4 py-2.5 text-right font-mono">
-                    {pct(r.increaseAdj, r.currentBasic)}
+                    {pct(r.increaseAdj, r.currentGross)}
                   </td>
                 </tr>
               ))}
@@ -303,16 +305,16 @@ export default function SalarySummaryTable() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">{totals.headcount}</td>
-                  <td className="px-4 py-3 text-right font-mono">{fmtZAR(totals.currentBasic)}</td>
+                  <td className="px-4 py-3 text-right font-mono">{fmtZAR(totals.currentGross)}</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtZAR(totals.currentCtc)}</td>
                   <td className={`px-4 py-3 text-right font-mono ${totals.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
                     {totals.increaseAdj > 0 ? `+${fmtZAR(totals.increaseAdj)}` : '—'}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono">{fmtZAR(totals.newBasic)}</td>
+                  <td className="px-4 py-3 text-right font-mono">{fmtZAR(totals.newGross)}</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtZAR(totals.newCtc)}</td>
                   <td className="px-4 py-3 text-right font-mono text-muted-foreground">{fmtZAR(totals.newCtc * 12)}</td>
                   <td className="px-4 py-3 text-right font-mono">
-                    {pct(totals.increaseAdj, totals.currentBasic)}
+                    {pct(totals.increaseAdj, totals.currentGross)}
                   </td>
                 </tr>
               </tfoot>

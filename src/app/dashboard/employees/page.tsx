@@ -68,11 +68,11 @@ const HOTEL_FILTER_KEY   = 'ihg-salary-emp-hotel';
 
 const DEFAULT_VISIBLE = new Set(ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.id));
 
-const GRADE_OPTIONS  = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible', 'Fixed Term'];
+const GRADE_OPTIONS  = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
 const STATUS_OPTIONS = ['active', 'terminated'] as const;
 
 // Grade labels that identify fixed-term/casual contract workers
-const FTC_GRADES = new Set(['FTC', 'Fixed Term']);
+const FTC_GRADES = new Set(['FTC']);
 
 // Maps each display ColId to its CSV column name. ColIds with no direct CSV
 // column (hotel, years_service, structure_sal) are omitted — they are skipped
