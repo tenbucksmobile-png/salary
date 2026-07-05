@@ -9,7 +9,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <div className="flex min-h-screen bg-muted/30">
-      <NavSidebar role={user?.role ?? 'sub'} username={user?.username ?? ''} />
+      <NavSidebar role={user?.role ?? 'sub'} username={user?.username ?? ''} allowedTabs={user?.allowedTabs ?? null} />
       <main className="flex-1 overflow-auto">{children}</main>
     </div>
   );

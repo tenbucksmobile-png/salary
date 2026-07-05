@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { sortHotels } from '@/lib/utils';
 import { Hotel } from '@/types/database';
 import { AppUser } from '@/types/database';
+import { CONFIGURABLE_TABS, DEFAULT_SUB_TABS } from '@/lib/auth';
 import { Plus, Pencil, Trash2, CheckCircle, X, Eye, EyeOff } from 'lucide-react';
 
 interface FormState {
@@ -13,6 +14,7 @@ interface FormState {
   password: string;
   role: 'admin' | 'sub';
   hotelIds: Set<string>;
+  allowedTabs: Set<string>;
 }
 
 const EMPTY_FORM: FormState = {
@@ -21,6 +23,7 @@ const EMPTY_FORM: FormState = {
   password: '',
   role: 'sub',
   hotelIds: new Set(),
+  allowedTabs: new Set(DEFAULT_SUB_TABS),
 };
 
 export default function AccessPage() {
@@ -44,18 +47,19 @@ export default function AccessPage() {
   }, []);
 
   function openAdd() {
-    setForm({ ...EMPTY_FORM, hotelIds: new Set() });
+    setForm({ ...EMPTY_FORM, hotelIds: new Set(), allowedTabs: new Set(DEFAULT_SUB_TABS) });
     setError('');
     setShowPwd(false);
   }
 
   function openEdit(u: AppUser) {
     setForm({
-      id:       u.id,
-      username: u.username,
-      password: '',
-      role:     u.role,
-      hotelIds: new Set(u.hotel_ids ?? []),
+      id:          u.id,
+      username:    u.username,
+      password:    '',
+      role:        u.role,
+      hotelIds:    new Set(u.hotel_ids ?? []),
+      allowedTabs: new Set(u.allowed_tabs ?? DEFAULT_SUB_TABS),
     });
     setError('');
     setShowPwd(false);
@@ -70,19 +74,28 @@ export default function AccessPage() {
     setForm({ ...form, hotelIds: next });
   }
 
+  function toggleTab(key: string) {
+    if (!form) return;
+    const next = new Set(form.allowedTabs);
+    next.has(key) ? next.delete(key) : next.add(key);
+    setForm({ ...form, allowedTabs: next });
+  }
+
   async function save() {
     if (!form) return;
     if (!form.username.trim()) { setError('Username is required'); return; }
     if (!form.id && !form.password) { setError('Password is required for new users'); return; }
+    if (form.role === 'sub' && form.allowedTabs.size === 0) { setError('Select at least one tab for this user'); return; }
     setSaving(true);
     setError('');
 
     const body = {
-      id:       form.id || undefined,
-      username: form.username.trim(),
-      password: form.password || undefined,
-      role:     form.role,
-      hotelIds: form.role === 'admin' ? null : [...form.hotelIds],
+      id:          form.id || undefined,
+      username:    form.username.trim(),
+      password:    form.password || undefined,
+      role:        form.role,
+      hotelIds:    form.role === 'admin' ? null : [...form.hotelIds],
+      allowedTabs: form.role === 'admin' ? null : [...form.allowedTabs],
     };
 
     const res = await fetch('/api/access', {
@@ -122,6 +135,12 @@ export default function AccessPage() {
       .join(', ');
   }
 
+  function tabsLabel(u: AppUser): string {
+    if (u.role === 'admin') return 'All tabs';
+    const tabs = u.allowed_tabs ?? DEFAULT_SUB_TABS;
+    return CONFIGURABLE_TABS.filter(t => tabs.includes(t.key)).map(t => t.label).join(', ') || 'None';
+  }
+
   return (
     <div className="p-8 max-w-3xl">
       <div className="mb-6 flex items-center justify-between">
@@ -145,13 +164,14 @@ export default function AccessPage() {
             <tr className="border-b bg-muted/40">
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">Username</th>
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">Role</th>
+              <th className="px-4 py-3 text-left font-medium text-muted-foreground">Tab Access</th>
               <th className="px-4 py-3 text-left font-medium text-muted-foreground">Hotel Access</th>
               <th className="px-4 py-3 w-24"></th>
             </tr>
           </thead>
           <tbody>
             {users.length === 0 && (
-              <tr><td colSpan={4} className="px-4 py-6 text-center text-muted-foreground text-sm">No users yet</td></tr>
+              <tr><td colSpan={5} className="px-4 py-6 text-center text-muted-foreground text-sm">No users yet</td></tr>
             )}
             {users.map(u => (
               <tr key={u.id} className="border-b last:border-0 hover:bg-muted/20">
@@ -165,6 +185,7 @@ export default function AccessPage() {
                     {u.role === 'admin' ? 'Admin' : 'Sub User'}
                   </span>
                 </td>
+                <td className="px-4 py-3 text-muted-foreground text-xs">{tabsLabel(u)}</td>
                 <td className="px-4 py-3 text-muted-foreground text-xs">{hotelLabel(u)}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2 justify-end">
@@ -244,6 +265,27 @@ export default function AccessPage() {
                       className="accent-primary"
                     />
                     <span className="text-sm">{r === 'admin' ? 'Admin' : 'Sub User'}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Tab access (sub only) */}
+            <div className={form.role === 'admin' ? 'opacity-40 pointer-events-none' : ''}>
+              <label className="text-sm font-medium block mb-2">
+                Tab Access
+                {form.role === 'admin' && <span className="text-muted-foreground font-normal ml-2">— all tabs (Admin)</span>}
+              </label>
+              <div className="space-y-1.5">
+                {CONFIGURABLE_TABS.map(t => (
+                  <label key={t.key} className="flex items-center gap-2.5 cursor-pointer hover:bg-muted/30 rounded px-2 py-1">
+                    <input
+                      type="checkbox"
+                      checked={form.allowedTabs.has(t.key)}
+                      onChange={() => toggleTab(t.key)}
+                      className="rounded accent-primary"
+                    />
+                    <span className="text-sm">{t.label}</span>
                   </label>
                 ))}
               </div>

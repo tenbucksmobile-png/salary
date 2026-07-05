@@ -100,7 +100,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev mach
 
 **Auth flow**: `POST /api/auth/login` queries the `users` table, verifies HMAC password hash, issues signed cookie (`ihg-salary-auth`, 30-day max-age). `middleware.ts` verifies the cookie and enforces role-based access. `POST /api/auth/logout` clears the cookie. `GET /api/auth/me` returns the current `UserContext`. Admin CRUD for users at `POST/PATCH/DELETE /api/access`.
 
-**UserContext** (encoded in cookie): `{ id, username, role: 'admin'|'sub', hotelIds: string[]|null }`. `hotelIds: null` means all hotels (admin). Sub-users are restricted to assigned hotels and can only access `/dashboard/employees` and `/dashboard/import`.
+**UserContext** (encoded in cookie): `{ id, username, role: 'admin'|'sub', hotelIds: string[]|null, allowedTabs: string[]|null }`. `hotelIds: null` means all hotels (admin). `allowedTabs: null` means "use `DEFAULT_SUB_TABS`" for a sub user (admins ignore this field — always full access). See Access Control below for the full configurable-tabs system.
 
 **Bootstrap**: if the `users` table is empty when login is attempted, the first login auto-creates an admin using the submitted credentials + `SITE_PASSWORD` check.
 
@@ -145,6 +145,7 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `013_employee_code_nullable.sql` | `ALTER TABLE employees ALTER COLUMN employee_code DROP NOT NULL` — allows ANO positions without an employee |
 | `014_clear_csl_nl_employee_codes.sql` | Clears `employee_code` to NULL for all CSL and NL employees (codes were incorrectly generated) |
 | `015_reconciliation.sql` | `reconciliation_periods`, `recon_uploads`, `recon_queries` tables for the monthly payroll reconciliation workflow |
+| `016_user_allowed_tabs.sql` | `allowed_tabs text[]` on `users` — per-sub-user configurable tab access (Employees/Import/Reconciliation), backfilled to the prior fixed set for existing sub users |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -287,7 +288,7 @@ src/
       SalarySummaryTable.tsx — Filterable hotel-level before/after table with a per-employee expand/collapse drill-down; reads draft scenarios first, then committed
       InflationHistoryCard.tsx — CPI + historic increases + NMW reference card; data stored in localStorage only; rendered at the bottom of Methods page (not dashboard)
       layout.tsx          — Reads cookie server-side; passes role+username to NavSidebar
-      access/page.tsx     — Admin-only user management UI
+      access/page.tsx     — Admin-only user management UI; per-sub-user Tab Access + Hotel Access checkboxes
       employees/
         page.tsx          — Employee list; column picker, hotel CSV export, Calculate Burden
         [id]/page.tsx     — Employee detail + edit form; salary section has Structure (stored in allowances.structure) + Total (Gross) inputs; Basic Salary = Total − Structure is derived read-only; provident fund uses basic for EE and ER (APA Director exception: 14% of gross)
@@ -311,7 +312,7 @@ src/
     utils.ts              — fmtZAR(), fmtCurrency(), fmtNumber(), MONTH_NAMES, sortHotels(), hotelSortIndex(), cn()
   components/
     nav-sidebar.tsx       — Role-aware navigation; admin sees all tabs, sub sees Employees + Import only
-  middleware.ts           — HMAC cookie auth gate; blocks sub-users from Methods, Salary Review, Reports, Reconciliation, Access
+  middleware.ts           — HMAC cookie auth gate; always blocks sub-users from Dashboard/Methods/Salary Review/Reports/Access; gates Employees/Import/Reconciliation per-user via allowedTabs
   types/
     database.ts           — Hotel, Employee, SalaryRecord, PayrollImport, IncreaseScenario, ScenarioLine, AppUser, ReconciliationPeriod, ReconUpload, ReconQuery
 ```
@@ -324,11 +325,15 @@ src/
 
 **State pattern**: settings are stored per hotel in a `Map<string, HotelSettings>` + a `hotelSettingsRef` (React ref) to avoid stale closure issues on hotel-tab switches. A parallel `hotelDraftIds` map tracks the DB scenario ID for each hotel's draft.
 
-**Save button** — async; writes a `draft` row to `increase_scenarios` (with `hotel_id` + `settings_json`) and replaces `scenario_lines` for that hotel. On page load, all drafts are fetched in the initial `Promise.all` and refs are populated before `setHotelFilter` fires, so the form restores correctly on return.
+**Save button** — async; writes a `draft` row to `increase_scenarios` (with `hotel_id` + `settings_json`) and replaces `scenario_lines` for that hotel. On page load, all drafts are fetched in the initial `Promise.all` and refs are populated before `setHotelFilter` fires, so the form restores correctly on return. Both this page's draft-loading query and `SalarySummaryTable`'s both filter `.not('hotel_id', 'is', null)` — see the incident note below for why.
 
 **Delete button** — trash icon per row in the Saved Increases table; removes the draft scenario + its lines from DB.
 
 **Exclusions** — checkbox per employee row. Excluded employees show `opacity-45` + "excluded" badge; they are skipped in scenario_lines and on Commit (no salary record written for them).
+
+**Employee table sort** — `computeRows()` sorts its return by surname then first name, so the line-by-line table on this page is always alphabetical (previously unordered — DB return order).
+
+**Incident: orphaned pre-migration-012 draft scenario contaminated dashboard figures** — a scenario row with `hotel_id: null` / `settings_json: null` (predating the per-hotel draft model) still had `status: 'draft'` and stale `scenario_lines`. This page's own load already skipped it silently (`if (!draft.hotel_id || !draft.settings_json) continue`) so it was invisible here and undeletable from any UI — but `SalarySummaryTable`'s draft query had no such filter, so it merged the orphan's stale lines into the `employee_id → scenario_line` map dashboard-wide. Any employee excluded from the *current* real draft but present in the orphan showed the orphan's stale increase (this is what caused APA's ANO grade to show an increase that was never applied); employees present in *both* the orphan and the current draft were subject to a non-deterministic overwrite race depending on query result order. Fixed by deleting the orphaned row/lines and adding `.not('hotel_id', 'is', null)` to both queries so a stray orphan can't recur. If dashboard/hotel-summary figures ever look wrong again in a way Salary Review itself doesn't show, check `increase_scenarios` for rows with `hotel_id IS NULL`.
 
 **Commit** — updates each hotel's draft scenario status to `committed` (sets `effective_month`, `effective_year`, `committed_at`); writes new `salary_records` for the target month/year; automatically writes each hotel's `pct` and `flat` to `ihg-salary-increases` in localStorage (so the Inflation & Increase History table on the Methods page updates without manual entry); clears all draft state. Does NOT create a new scenario row — the existing draft row is promoted.
 
@@ -468,15 +473,21 @@ State: `cslXRef: HotelXRefData`, `nlXRef: HotelXRefData`, `crossRefSubTab: 'CSL'
 
 **Roles**:
 - `admin` — full access to all tabs and all hotels
-- `sub` — Employees and Import tabs only; filtered to assigned hotels
+- `sub` — hotel-restricted (via `hotel_ids`) and tab-restricted (via `allowed_tabs`, see below)
 
-**Nav**: `nav-sidebar.tsx` renders different link lists based on `role` prop passed from `dashboard/layout.tsx`.
+**Configurable tabs per sub user** (migration `016_user_allowed_tabs.sql`, column `users.allowed_tabs text[]`): admins individually grant/revoke **Employees**, **Import HR List**, and **Reconciliation** per sub user via checkboxes on the Access page. Everything else (Dashboard, Salary Review, Reports, Methods, Access) stays **permanently admin-only** regardless of `allowed_tabs` — not configurable, by design (Access in particular would be a privilege-escalation risk if grantable). The canonical list of configurable tabs is `CONFIGURABLE_TABS` in `src/lib/auth.ts`; `middleware.ts`, `nav-sidebar.tsx`, and `access/page.tsx` all import from there rather than duplicating the tab list.
 
-**Middleware** (`src/middleware.ts`, `SUB_BLOCKED` array) blocks sub-users from: `/dashboard` (root), `/dashboard/methods`, `/dashboard/salary-review`, `/dashboard/reports`, `/dashboard/access`, `/dashboard/settings` — redirects to `/dashboard/employees`.
+**Default/legacy fallback**: `allowed_tabs: null` (pre-migration-016 sub users, or an already-issued cookie from before this shipped, which won't carry the field until the user logs in again) falls back to `DEFAULT_SUB_TABS = ['employees', 'import', 'reconciliation']` — the fixed set every sub user had before this became configurable. This fallback is applied in both `middleware.ts` and `nav-sidebar.tsx`, so nobody loses access mid-session when this ships.
 
-> ⚠️ **`/dashboard/reconciliation` is NOT in `SUB_BLOCKED`**, even though the Reconciliation section above documents it as admin-only. Sub-users can currently reach it. Confirm with the user whether this is intentional before "fixing" it either direction — adding it to `SUB_BLOCKED` closes the gap; leaving it means the "admin-only" claim in this doc is wrong and should be softened instead.
+**Nav**: `nav-sidebar.tsx` renders `ADMIN_NAV` unfiltered for admins; for sub users it filters `SUB_NAV` down to whichever tab `key`s are in `allowedTabs` (prop passed from `dashboard/layout.tsx`, sourced from the cookie's `UserContext.allowedTabs`).
 
-**Hotel filtering for sub-users**: `employees/page.tsx` and `import/page.tsx` call `GET /api/auth/me` on mount and filter the hotel dropdown to `user.hotelIds`.
+**Middleware** (`src/middleware.ts`) — two layers for sub users:
+1. `SUB_BLOCKED` (always-blocked paths, not configurable): `/dashboard` (root), `/dashboard/methods`, `/dashboard/salary-review`, `/dashboard/reports`, `/dashboard/access`, `/dashboard/settings`.
+2. `TAB_ROUTES` — maps each configurable tab key to its route prefix; a sub user hitting a configurable tab's route without that key in `allowedTabs` is redirected away.
+
+Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE_TABS` order ∩ `allowedTabs`), falling back to `/login` only if a sub user somehow has zero tabs granted (the Access page's save validation prevents this via the UI, but doesn't stop a zero-tab state some other way).
+
+**Hotel filtering for sub-users**: `employees/page.tsx`, `import/page.tsx`, and `reconciliation/page.tsx` all call `GET /api/auth/me` on mount and filter to `user.hotelIds`. This is a single global hotel list per user — there is no per-tab hotel scoping (e.g. you cannot give a sub user all hotels for Reconciliation but only CSL/NL for Employees); `hotelIds` applies uniformly across whichever tabs are granted.
 
 ---
 

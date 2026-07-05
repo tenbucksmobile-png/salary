@@ -156,6 +156,7 @@ export interface AppUser {
   password_hash: string;
   role: 'admin' | 'sub';
   hotel_ids: string[] | null;
+  allowed_tabs: string[] | null;
   created_at: string;
 }
 

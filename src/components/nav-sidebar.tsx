@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, Users, Upload, TrendingUp, Settings, Shield, BarChart2, ClipboardCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { DEFAULT_SUB_TABS, type TabKey } from '@/lib/auth';
 
 const ADMIN_NAV = [
   { label: 'Dashboard',      href: '/dashboard',               icon: LayoutDashboard },
@@ -16,20 +17,23 @@ const ADMIN_NAV = [
   { label: 'Access',         href: '/dashboard/access',        icon: Shield },
 ];
 
-const SUB_NAV = [
-  { label: 'Employees',      href: '/dashboard/employees',     icon: Users },
-  { label: 'Import HR List', href: '/dashboard/import',        icon: Upload },
-  { label: 'Reconciliation', href: '/dashboard/reconciliation', icon: ClipboardCheck },
+// Configurable per sub user — key must match CONFIGURABLE_TABS in src/lib/auth.ts
+const SUB_NAV: { key: TabKey; label: string; href: string; icon: typeof Users }[] = [
+  { key: 'employees',      label: 'Employees',      href: '/dashboard/employees',     icon: Users },
+  { key: 'import',         label: 'Import HR List',  href: '/dashboard/import',        icon: Upload },
+  { key: 'reconciliation', label: 'Reconciliation',  href: '/dashboard/reconciliation', icon: ClipboardCheck },
 ];
 
 interface NavSidebarProps {
   role: 'admin' | 'sub';
   username: string;
+  allowedTabs?: string[] | null;
 }
 
-export function NavSidebar({ role, username }: NavSidebarProps) {
+export function NavSidebar({ role, username, allowedTabs }: NavSidebarProps) {
   const pathname = usePathname();
-  const nav = role === 'admin' ? ADMIN_NAV : SUB_NAV;
+  const tabs = allowedTabs ?? DEFAULT_SUB_TABS;
+  const nav = role === 'admin' ? ADMIN_NAV : SUB_NAV.filter(item => tabs.includes(item.key));
 
   return (
     <aside className="w-60 shrink-0 border-r bg-white flex flex-col min-h-screen">

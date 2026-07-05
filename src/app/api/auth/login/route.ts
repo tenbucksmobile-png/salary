@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     if (error || !newUser) {
       return NextResponse.json({ error: 'Setup failed' }, { status: 500 });
     }
-    return issueToken({ id: newUser.id, username: newUser.username, role: 'admin', hotelIds: null });
+    return issueToken({ id: newUser.id, username: newUser.username, role: 'admin', hotelIds: null, allowedTabs: null });
   }
 
   // Normal login — look up by username, verify hash
@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
     username: user.username,
     role: user.role as 'admin' | 'sub',
     hotelIds: user.hotel_ids ?? null,
+    allowedTabs: user.allowed_tabs ?? null,
   };
   return issueToken(ctx);
 }

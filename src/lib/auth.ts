@@ -1,11 +1,27 @@
 export const COOKIE_NAME    = 'ihg-salary-auth';
 export const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
+// Tabs a sub user's access can be individually granted or revoked for.
+// Everything else (Dashboard, Salary Review, Reports, Methods, Access) stays
+// permanently admin-only regardless of this list.
+export const CONFIGURABLE_TABS = [
+  { key: 'employees',      label: 'Employees' },
+  { key: 'import',         label: 'Import HR List' },
+  { key: 'reconciliation', label: 'Reconciliation' },
+] as const;
+export type TabKey = typeof CONFIGURABLE_TABS[number]['key'];
+
+// Pre-migration-016 sub users have no `allowed_tabs` row yet, and an
+// already-issued cookie won't carry the field until next login — both cases
+// fall back to the tabs every sub user had before this became configurable.
+export const DEFAULT_SUB_TABS: TabKey[] = ['employees', 'import', 'reconciliation'];
+
 export interface UserContext {
   id: string;
   username: string;
   role: 'admin' | 'sub';
-  hotelIds: string[] | null; // null = all hotels (admin)
+  hotelIds: string[] | null;    // null = all hotels (admin)
+  allowedTabs: string[] | null; // null = use DEFAULT_SUB_TABS (sub) / unused (admin)
 }
 
 // ── Encoding helpers (Edge-compatible, no Buffer) ─────────────────────────────

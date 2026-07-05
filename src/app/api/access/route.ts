@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
   const admin = await requireAdmin(req);
   if (!admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-  const { username, password, role, hotelIds } = await req.json();
+  const { username, password, role, hotelIds, allowedTabs } = await req.json();
   if (!username || !password) {
     return NextResponse.json({ error: 'Username and password required' }, { status: 400 });
   }
@@ -27,6 +27,7 @@ export async function POST(req: NextRequest) {
       password_hash: hash,
       role: role ?? 'sub',
       hotel_ids: role === 'admin' ? null : (hotelIds ?? []),
+      allowed_tabs: role === 'admin' ? null : (allowedTabs ?? []),
     })
     .select()
     .single();
@@ -40,7 +41,7 @@ export async function PATCH(req: NextRequest) {
   const admin = await requireAdmin(req);
   if (!admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-  const { id, username, password, role, hotelIds } = await req.json();
+  const { id, username, password, role, hotelIds, allowedTabs } = await req.json();
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
   const sb      = await createClient();
@@ -48,6 +49,7 @@ export async function PATCH(req: NextRequest) {
     username,
     role,
     hotel_ids: role === 'admin' ? null : (hotelIds ?? []),
+    allowed_tabs: role === 'admin' ? null : (allowedTabs ?? []),
   };
   if (password) updates.password_hash = await hashPassword(username, password);
 

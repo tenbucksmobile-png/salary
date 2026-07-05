@@ -126,11 +126,15 @@ export default function SalarySummaryTable() {
         }
       }
 
-      // Load all draft scenarios (one per hotel) — these take priority for display
+      // Load all draft scenarios (one per hotel) — these take priority for display.
+      // hotel_id must be set: legacy pre-per-hotel-draft scenarios (from before
+      // migration 012) can have hotel_id/settings_json null and would otherwise
+      // silently contaminate every hotel's employee → scenario_line mapping.
       const { data: draftScenarios } = await sb
         .from('increase_scenarios')
         .select('id, hotel_id')
-        .eq('status', 'draft');
+        .eq('status', 'draft')
+        .not('hotel_id', 'is', null);
 
       let scenarioLineMap = new Map<string, ScenarioLine>();
       let displayName: string | null = null;

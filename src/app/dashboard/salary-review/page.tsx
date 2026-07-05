@@ -137,7 +137,10 @@ function computeRows(
         effectivePct, effectiveFlat, hasOverride: !!ov && !isExcluded, isExcluded, burden,
       };
     })
-    .filter((r): r is ForecastRow => r !== null && r.currentBasic > 0);
+    .filter((r): r is ForecastRow => r !== null && r.currentBasic > 0)
+    .sort((a, b) =>
+      a.employee.surname.localeCompare(b.employee.surname) ||
+      a.employee.first_name.localeCompare(b.employee.first_name));
 }
 
 export default function SalaryReviewPage() {
@@ -186,7 +189,7 @@ export default function SalaryReviewPage() {
         sb.from('hotels').select('*'),
         sb.from('employees').select('*').eq('status', 'active'),
         sb.from('salary_records').select('*'),
-        sb.from('increase_scenarios').select('id, hotel_id, settings_json').eq('status', 'draft'),
+        sb.from('increase_scenarios').select('id, hotel_id, settings_json').eq('status', 'draft').not('hotel_id', 'is', null),
       ]);
       const hotelList = sortHotels((h ?? []) as Hotel[]);
       const empList   = (e ?? []) as Employee[];
