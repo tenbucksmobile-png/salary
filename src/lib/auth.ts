@@ -2,12 +2,16 @@ export const COOKIE_NAME    = 'ihg-salary-auth';
 export const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 // Tabs a sub user's access can be individually granted or revoked for.
-// Everything else (Dashboard, Salary Review, Reports, Methods, Access) stays
-// permanently admin-only regardless of this list.
+// Salary Review and Access stay permanently admin-only regardless of this
+// list — Access in particular would be a privilege-escalation risk if
+// grantable.
 export const CONFIGURABLE_TABS = [
+  { key: 'dashboard',      label: 'Dashboard' },
   { key: 'employees',      label: 'Employees' },
   { key: 'import',         label: 'Import HR List' },
   { key: 'reconciliation', label: 'Reconciliation' },
+  { key: 'reports',        label: 'Reports' },
+  { key: 'methods',        label: 'Methods' },
 ] as const;
 export type TabKey = typeof CONFIGURABLE_TABS[number]['key'];
 

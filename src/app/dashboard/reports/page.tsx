@@ -345,11 +345,21 @@ export default function ReportsPage() {
       sb.from('hotels').select('*'),
       sb.from('employees').select('*'),
       sb.from('salary_records').select('*'),
-    ]).then(([h, e, s]) => {
-      const sorted = sortHotels(h.data ?? []);
+      fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
+    ]).then(([h, e, s, meRes]) => {
+      const me = meRes as { role: string; hotelIds: string[] | null } | null;
+      let sorted = sortHotels(h.data ?? []);
+      let emps   = (e.data ?? []) as Employee[];
+      // Sub users restricted to specific hotels — filter both, not just the
+      // hotel checkbox list, since an empty selection here means "all
+      // hotels" and must never fall back to including a non-permitted one.
+      if (me?.role === 'sub' && me.hotelIds?.length) {
+        sorted = sorted.filter(h => me.hotelIds!.includes(h.id));
+        emps   = emps.filter(e => me.hotelIds!.includes(e.hotel_id));
+      }
       setHotels(sorted);
       setSelectedHotels(sorted.map(x => x.id));
-      setEmployees(e.data ?? []);
+      setEmployees(emps);
       setSalaryRecords(s.data ?? []);
       setLoading(false);
     });

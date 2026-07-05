@@ -19,9 +19,12 @@ const ADMIN_NAV = [
 
 // Configurable per sub user — key must match CONFIGURABLE_TABS in src/lib/auth.ts
 const SUB_NAV: { key: TabKey; label: string; href: string; icon: typeof Users }[] = [
+  { key: 'dashboard',      label: 'Dashboard',      href: '/dashboard',               icon: LayoutDashboard },
   { key: 'employees',      label: 'Employees',      href: '/dashboard/employees',     icon: Users },
   { key: 'import',         label: 'Import HR List',  href: '/dashboard/import',        icon: Upload },
   { key: 'reconciliation', label: 'Reconciliation',  href: '/dashboard/reconciliation', icon: ClipboardCheck },
+  { key: 'reports',        label: 'Reports',        href: '/dashboard/reports',       icon: BarChart2 },
+  { key: 'methods',        label: 'Methods',        href: '/dashboard/methods',       icon: Settings },
 ];
 
 interface NavSidebarProps {

@@ -81,8 +81,15 @@ export default function MethodsPage() {
   const [done,     setDone]     = useState<number | null>(null);
 
   useEffect(() => {
-    sb.from('hotels').select('*').then(({ data }) => {
-      const list = sortHotels((data ?? []) as Hotel[]);
+    Promise.all([
+      sb.from('hotels').select('*'),
+      fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
+    ]).then(([{ data }, meRes]) => {
+      const me = meRes as { role: string; hotelIds: string[] | null } | null;
+      let list = sortHotels((data ?? []) as Hotel[]);
+      if (me?.role === 'sub' && me.hotelIds?.length) {
+        list = list.filter(h => me.hotelIds!.includes(h.id));
+      }
       setHotels(list);
       setConfigs(new Map(list.map(h => [h.id, hotelToConfig(h)])));
       if (list.length) setSelected(list[0].id);

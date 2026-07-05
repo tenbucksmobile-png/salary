@@ -107,14 +107,23 @@ export default function SalarySummaryTable() {
 
   useEffect(() => {
     async function load() {
-      const [{ data: h }, { data: e }, { data: s }] = await Promise.all([
+      const [{ data: h }, { data: e }, { data: s }, meRes] = await Promise.all([
         sb.from('hotels').select('*'),
         sb.from('employees').select('*').eq('status', 'active'),
         sb.from('salary_records').select('*'),
+        fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
       ]);
+      const me = meRes as { role: string; hotelIds: string[] | null } | null;
 
-      const hotelList = sortHotels((h ?? []) as Hotel[]);
-      const empList   = (e ?? []) as Employee[];
+      let hotelList = sortHotels((h ?? []) as Hotel[]);
+      let empList   = (e ?? []) as Employee[];
+      // Sub users restricted to specific hotels — filter both, not just the
+      // hotel checkbox list, since "All Hotels" (empty selection) elsewhere
+      // means "show everyone" and must never include a non-permitted hotel.
+      if (me?.role === 'sub' && me.hotelIds?.length) {
+        hotelList = hotelList.filter(h => me.hotelIds!.includes(h.id));
+        empList   = empList.filter(e => me.hotelIds!.includes(e.hotel_id));
+      }
       const salList   = (s ?? []) as SalaryRecord[];
 
       const salMap = new Map<string, SalaryRecord>();
@@ -196,12 +205,14 @@ export default function SalarySummaryTable() {
       .map(hotel => {
         const emps = filteredEmps.filter(e => e.hotel_id === hotel.id);
         const groupMap = new Map<string, GradeGroup>();
-        let headcount = 0, currentGross = 0, increaseAdj = 0,
+        let matchedCount = 0, headcount = 0, currentGross = 0, increaseAdj = 0,
             newGross = 0, currentCtc = 0, newCtc = 0;
 
         for (const emp of emps) {
           const figures = computeEmployeeFigures(emp, latestSalary, slMap);
           if (!figures) continue;
+          matchedCount++;
+          const increased = figures.increaseAdj > 0;
 
           const grade = emp.grade_label ?? 'Unclassified';
           let group = groupMap.get(grade);
@@ -209,7 +220,9 @@ export default function SalarySummaryTable() {
             group = { grade, headcount: 0, currentGross: 0, increaseAdj: 0, newGross: 0, currentCtc: 0, newCtc: 0, members: [] };
             groupMap.set(grade, group);
           }
-          group.headcount++;
+          // HC only counts employees an increase/adjustment actually applies to —
+          // not everyone matching the hotel+grade filters.
+          if (increased) group.headcount++;
           group.currentGross += figures.currentGross;
           group.increaseAdj  += figures.increaseAdj;
           group.newGross     += figures.newGross;
@@ -217,14 +230,14 @@ export default function SalarySummaryTable() {
           group.newCtc       += figures.newCtc;
           group.members.push({ employee: emp, figures });
 
-          headcount++;
+          if (increased) headcount++;
           currentGross += figures.currentGross;
           increaseAdj  += figures.increaseAdj;
           newGross     += figures.newGross;
           currentCtc   += figures.currentCtc;
           newCtc       += figures.newCtc;
         }
-        if (headcount === 0) return null;
+        if (matchedCount === 0) return null;
 
         const gradeGroups = [...groupMap.values()].sort((a, b) => {
           const ai = GRADE_ORDER.indexOf(a.grade), bi = GRADE_ORDER.indexOf(b.grade);
