@@ -9,6 +9,7 @@ import { Plus, Minus } from 'lucide-react';
 const GRADE_OPTIONS = [
   'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible',
 ];
+const GRADE_ORDER = [...GRADE_OPTIONS, 'Unclassified'];
 
 interface EmployeeFigures {
   currentGross: number;
@@ -48,6 +49,17 @@ function computeEmployeeFigures(
   };
 }
 
+interface GradeGroup {
+  grade: string;
+  headcount: number;
+  currentGross: number;
+  increaseAdj: number;
+  newGross: number;
+  currentCtc: number;
+  newCtc: number;
+  members: { employee: Employee; figures: EmployeeFigures }[];
+}
+
 interface RowData {
   hotel: Hotel;
   headcount: number;
@@ -56,7 +68,7 @@ interface RowData {
   newGross: number;
   currentCtc: number;
   newCtc: number;
-  members: { employee: Employee; figures: EmployeeFigures }[];
+  gradeGroups: GradeGroup[];
 }
 
 export default function SalarySummaryTable() {
@@ -73,12 +85,22 @@ export default function SalarySummaryTable() {
   const [selectedHotels, setSelectedHotels] = useState<Set<string>>(new Set()); // empty = all
   const [selectedGrades, setSelectedGrades] = useState<Set<string>>(new Set()); // empty = all
 
-  // Per-hotel expand/collapse state for the individual-employee drill-down
+  // Two-level expand/collapse: hotel → grade subtotal rows → individual employees
   const [expandedHotels, setExpandedHotels] = useState<Set<string>>(new Set());
-  function toggleExpand(hotelId: string) {
+  const [expandedGrades, setExpandedGrades] = useState<Set<string>>(new Set()); // key = `${hotelId}::${grade}`
+
+  function toggleExpandHotel(hotelId: string) {
     setExpandedHotels(prev => {
       const next = new Set(prev);
       next.has(hotelId) ? next.delete(hotelId) : next.add(hotelId);
+      return next;
+    });
+  }
+
+  function toggleExpandGrade(key: string) {
+    setExpandedGrades(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
   }
@@ -169,26 +191,48 @@ export default function SalarySummaryTable() {
       .filter(h => selectedHotels.size === 0 || selectedHotels.has(h.id))
       .map(hotel => {
         const emps = filteredEmps.filter(e => e.hotel_id === hotel.id);
-        const members: RowData['members'] = [];
+        const groupMap = new Map<string, GradeGroup>();
         let headcount = 0, currentGross = 0, increaseAdj = 0,
             newGross = 0, currentCtc = 0, newCtc = 0;
 
         for (const emp of emps) {
           const figures = computeEmployeeFigures(emp, latestSalary, slMap);
           if (!figures) continue;
+
+          const grade = emp.grade_label ?? 'Unclassified';
+          let group = groupMap.get(grade);
+          if (!group) {
+            group = { grade, headcount: 0, currentGross: 0, increaseAdj: 0, newGross: 0, currentCtc: 0, newCtc: 0, members: [] };
+            groupMap.set(grade, group);
+          }
+          group.headcount++;
+          group.currentGross += figures.currentGross;
+          group.increaseAdj  += figures.increaseAdj;
+          group.newGross     += figures.newGross;
+          group.currentCtc   += figures.currentCtc;
+          group.newCtc       += figures.newCtc;
+          group.members.push({ employee: emp, figures });
+
           headcount++;
           currentGross += figures.currentGross;
           increaseAdj  += figures.increaseAdj;
           newGross     += figures.newGross;
           currentCtc   += figures.currentCtc;
           newCtc       += figures.newCtc;
-          members.push({ employee: emp, figures });
         }
         if (headcount === 0) return null;
-        members.sort((a, b) =>
-          a.employee.surname.localeCompare(b.employee.surname) ||
-          a.employee.first_name.localeCompare(b.employee.first_name));
-        return { hotel, headcount, currentGross, increaseAdj, newGross, currentCtc, newCtc, members };
+
+        const gradeGroups = [...groupMap.values()].sort((a, b) => {
+          const ai = GRADE_ORDER.indexOf(a.grade), bi = GRADE_ORDER.indexOf(b.grade);
+          return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+        });
+        for (const g of gradeGroups) {
+          g.members.sort((a, b) =>
+            a.employee.surname.localeCompare(b.employee.surname) ||
+            a.employee.first_name.localeCompare(b.employee.first_name));
+        }
+
+        return { hotel, headcount, currentGross, increaseAdj, newGross, currentCtc, newCtc, gradeGroups };
       })
       .filter((r): r is RowData => r !== null),
     [hotels, filteredEmps, latestSalary, slMap, selectedHotels],
@@ -318,17 +362,17 @@ export default function SalarySummaryTable() {
             </thead>
             <tbody>
               {rows.map((r, i) => {
-                const expanded = expandedHotels.has(r.hotel.id);
+                const hotelExpanded = expandedHotels.has(r.hotel.id);
                 return (
                   <Fragment key={r.hotel.id}>
                     <tr className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                       <td className="px-4 py-2.5 font-medium">
                         <button
-                          onClick={() => toggleExpand(r.hotel.id)}
+                          onClick={() => toggleExpandHotel(r.hotel.id)}
                           className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded border border-input text-muted-foreground align-middle hover:bg-muted transition-colors"
-                          title={expanded ? 'Hide individual employees' : 'Show individual employees'}
+                          title={hotelExpanded ? 'Hide grade breakdown' : 'Show grade breakdown'}
                         >
-                          {expanded ? <Minus className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+                          {hotelExpanded ? <Minus className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
                         </button>
                         {r.hotel.name}
                         <span className="ml-1.5 text-xs text-muted-foreground font-normal">{r.hotel.short_code}</span>
@@ -346,23 +390,53 @@ export default function SalarySummaryTable() {
                         {pct(r.increaseAdj, r.currentGross)}
                       </td>
                     </tr>
-                    {expanded && r.members.map(m => (
-                      <tr key={m.employee.id} className="border-b last:border-0 bg-muted/5 text-xs">
-                        <td className="px-4 py-2 pl-11 text-left text-muted-foreground">
-                          {m.employee.surname}, {m.employee.first_name}
-                        </td>
-                        <td className="px-4 py-2 text-left text-muted-foreground">{m.employee.grade_label ?? 'Unclassified'}</td>
-                        <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.currentGross, r.hotel.country)}</td>
-                        <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.currentCtc, r.hotel.country)}</td>
-                        <td className={`px-4 py-2 text-right font-mono ${m.figures.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
-                          {m.figures.increaseAdj > 0 ? `+${fmtCurrency(m.figures.increaseAdj, r.hotel.country)}` : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.newGross, r.hotel.country)}</td>
-                        <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.newCtc, r.hotel.country)}</td>
-                        <td className="px-4 py-2 text-right font-mono text-muted-foreground">{fmtCurrency(m.figures.newCtc * 12, r.hotel.country)}</td>
-                        <td className="px-4 py-2 text-right font-mono">{pct(m.figures.increaseAdj, m.figures.currentGross)}</td>
-                      </tr>
-                    ))}
+                    {hotelExpanded && r.gradeGroups.map(g => {
+                      const gradeKey = `${r.hotel.id}::${g.grade}`;
+                      const gradeExpanded = expandedGrades.has(gradeKey);
+                      return (
+                        <Fragment key={gradeKey}>
+                          <tr className="border-b last:border-0 bg-muted/10 text-xs">
+                            <td className="px-4 py-2 pl-9 text-left font-medium">
+                              <button
+                                onClick={() => toggleExpandGrade(gradeKey)}
+                                className="mr-2 inline-flex h-4 w-4 items-center justify-center rounded border border-input text-muted-foreground align-middle hover:bg-muted transition-colors"
+                                title={gradeExpanded ? 'Hide individual employees' : 'Show individual employees'}
+                              >
+                                {gradeExpanded ? <Minus className="h-2.5 w-2.5" /> : <Plus className="h-2.5 w-2.5" />}
+                              </button>
+                              {g.grade}
+                            </td>
+                            <td className="px-4 py-2 text-right tabular-nums">{g.headcount}</td>
+                            <td className="px-4 py-2 text-right font-mono">{fmtCurrency(g.currentGross, r.hotel.country)}</td>
+                            <td className="px-4 py-2 text-right font-mono">{fmtCurrency(g.currentCtc, r.hotel.country)}</td>
+                            <td className={`px-4 py-2 text-right font-mono ${g.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
+                              {g.increaseAdj > 0 ? `+${fmtCurrency(g.increaseAdj, r.hotel.country)}` : '—'}
+                            </td>
+                            <td className="px-4 py-2 text-right font-mono font-semibold">{fmtCurrency(g.newGross, r.hotel.country)}</td>
+                            <td className="px-4 py-2 text-right font-mono font-semibold">{fmtCurrency(g.newCtc, r.hotel.country)}</td>
+                            <td className="px-4 py-2 text-right font-mono text-muted-foreground">{fmtCurrency(g.newCtc * 12, r.hotel.country)}</td>
+                            <td className="px-4 py-2 text-right font-mono">{pct(g.increaseAdj, g.currentGross)}</td>
+                          </tr>
+                          {gradeExpanded && g.members.map(m => (
+                            <tr key={m.employee.id} className="border-b last:border-0 bg-muted/5 text-xs">
+                              <td className="px-4 py-2 pl-16 text-left text-muted-foreground">
+                                {m.employee.surname}, {m.employee.first_name}
+                              </td>
+                              <td className="px-4 py-2 text-left text-muted-foreground">{m.employee.grade_label ?? 'Unclassified'}</td>
+                              <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.currentGross, r.hotel.country)}</td>
+                              <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.currentCtc, r.hotel.country)}</td>
+                              <td className={`px-4 py-2 text-right font-mono ${m.figures.increaseAdj > 0 ? 'text-green-700' : 'text-muted-foreground'}`}>
+                                {m.figures.increaseAdj > 0 ? `+${fmtCurrency(m.figures.increaseAdj, r.hotel.country)}` : '—'}
+                              </td>
+                              <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.newGross, r.hotel.country)}</td>
+                              <td className="px-4 py-2 text-right font-mono">{fmtCurrency(m.figures.newCtc, r.hotel.country)}</td>
+                              <td className="px-4 py-2 text-right font-mono text-muted-foreground">{fmtCurrency(m.figures.newCtc * 12, r.hotel.country)}</td>
+                              <td className="px-4 py-2 text-right font-mono">{pct(m.figures.increaseAdj, m.figures.currentGross)}</td>
+                            </tr>
+                          ))}
+                        </Fragment>
+                      );
+                    })}
                   </Fragment>
                 );
               })}
