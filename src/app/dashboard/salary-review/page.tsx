@@ -558,6 +558,7 @@ export default function SalaryReviewPage() {
               surname:       r.employee.surname,
               firstName:     r.employee.first_name,
               jobTitle:      r.employee.job_title ?? '',
+              yearsOfService: yearsOfService(r.employee.employment_date),
               grade:         r.employee.grade_label ?? '',
               department:    r.employee.department_code ?? '',
               currentGross:  r.currentGross,

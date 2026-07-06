@@ -20,6 +20,7 @@ export interface ExportHotelRow {
   surname: string;
   firstName: string;
   jobTitle: string;
+  yearsOfService: number | null;
   grade: string;
   department: string;
   currentGross: number;   // total_earnings — the base on which % increase is applied
@@ -86,6 +87,11 @@ function num(v: number, bold = false, green = false) {
       ...(green ? { font: { bold, color: { rgb: GREEN } } } : {}),
     },
   };
+}
+
+function yrsNum(v: number | null) {
+  if (v == null) return { v: '—', t: 's', s: { alignment: { horizontal: 'right' }, font: { color: { rgb: 'BBBBBB' } } } };
+  return { v, t: 'n', z: '0.0', s: { alignment: { horizontal: 'right' } } };
 }
 
 function pctNum(v: number) {
@@ -207,17 +213,18 @@ function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
   const bw  = hotel.country.toLowerCase().includes('botswana');
   const sym = bw ? 'P' : 'R';
 
-  // Column layout (1-indexed):  A-E=names  F=CurGross  G=%Inc  H=FlatAdj
-  //   I=NewGross  J=MonthlyInc  K=CurCTC  L=NewCTC  M=MonthlyCtcΔ  N=AnnualCtcΔ
+  // Column layout (1-indexed):  A-C=names  D=YrsService  E=Grade  F=Department
+  //   G=CurGross  H=%Inc  I=FlatAdj
+  //   J=NewGross  K=MonthlyInc  L=CurCTC  M=NewCTC  N=MonthlyCtcΔ  O=AnnualCtcΔ
   // Header is row 1; data rows 2…(n+1); totals row (n+2)
   const n = hotel.rows.length;
   const lastData = n + 1;  // last data row (Excel row number)
 
   const headers = [
-    hdr('Surname'), hdr('First Name'), hdr('Job Title'), hdr('Grade'), hdr('Department'),
+    hdr('Surname'), hdr('First Name'), hdr('Job Title'), hdr('Yrs Service'), hdr('Grade'), hdr('Department'),
     hdr(`Current Gross (${sym})`),
-    hdrEdit('% Increase'),          // G — user-editable, amber header
-    hdrEdit(`Flat Adj (${sym})`),   // H — user-editable, amber header
+    hdrEdit('% Increase'),          // H — user-editable, amber header
+    hdrEdit(`Flat Adj (${sym})`),   // I — user-editable, amber header
     hdr(`New Gross (${sym})`), hdr(`Monthly Inc (${sym})`),
     hdr(`Current CTC (${sym})`), hdr(`New CTC (${sym})`),
     hdr(`Monthly CTC Δ (${sym})`), hdr(`Annual CTC Δ (${sym})`),
@@ -229,18 +236,19 @@ function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
       str(r.surname),
       str(r.firstName),
       str(r.jobTitle),
+      yrsNum(r.yearsOfService),
       str(r.grade),
       str(r.department),
-      num(r.currentGross),                    // F: Current Gross — static (from DB)
-      inp(r.effectivePct, true),              // G: % Increase — yellow, editable
-      inp(r.effectiveFlat),                   // H: Flat Adj — yellow, editable
-      // I: New Gross — live formula (G stores pct as 6.0, not 0.06 — hence /100)
-      fml(`ROUND(F${row}*(1+G${row}/100)+H${row},-1)`, true),
-      fml(`I${row}-F${row}`, false, true),    // J: Monthly Inc
-      num(r.currentCtc),                      // K: Current CTC — static (burden calc needed)
-      num(r.newCtc, true),                    // L: New CTC — static
-      fml(`L${row}-K${row}`, false, true),    // M: Monthly CTC Δ
-      fml(`(L${row}-K${row})*12`, false, true), // N: Annual CTC Δ
+      num(r.currentGross),                    // G: Current Gross — static (from DB)
+      inp(r.effectivePct, true),              // H: % Increase — yellow, editable
+      inp(r.effectiveFlat),                   // I: Flat Adj — yellow, editable
+      // J: New Gross — live formula (H stores pct as 6.0, not 0.06 — hence /100)
+      fml(`ROUND(G${row}*(1+H${row}/100)+I${row},-1)`, true),
+      fml(`J${row}-G${row}`, false, true),    // K: Monthly Inc
+      num(r.currentCtc),                      // L: Current CTC — static (burden calc needed)
+      num(r.newCtc, true),                    // M: New CTC — static
+      fml(`M${row}-L${row}`, false, true),    // N: Monthly CTC Δ
+      fml(`(M${row}-L${row})*12`, false, true), // O: Annual CTC Δ
     ];
   });
 
@@ -250,28 +258,28 @@ function buildHotelSheet(hotel: ExportHotel, XLSX: any): any {
 
   const totRow = [
     tot(`Total  (${n} employees)`, false),
-    tot('', false), tot('', false), tot('', false), tot('', false),
-    tot(sumCurGross),                          // F: static — Current Gross doesn't change
-    tot('', false),                            // G: blank
+    tot('', false), tot('', false), tot('', false), tot('', false), tot('', false),
+    tot(sumCurGross),                          // G: static — Current Gross doesn't change
     tot('', false),                            // H: blank
-    totFml(`SUM(I2:I${lastData})`),            // I: New Gross sum
-    totFml(`SUM(J2:J${lastData})`, true),      // J: Monthly Inc sum
-    tot(sumCurCtc),                            // K: Current CTC static sum
-    tot(sumNewCtc),                            // L: New CTC static sum
-    totFml(`SUM(M2:M${lastData})`, true),      // M: Monthly CTC Δ sum
-    totFml(`SUM(N2:N${lastData})`, true),      // N: Annual CTC Δ sum
+    tot('', false),                            // I: blank
+    totFml(`SUM(J2:J${lastData})`),            // J: New Gross sum
+    totFml(`SUM(K2:K${lastData})`, true),      // K: Monthly Inc sum
+    tot(sumCurCtc),                            // L: Current CTC static sum
+    tot(sumNewCtc),                            // M: New CTC static sum
+    totFml(`SUM(N2:N${lastData})`, true),      // N: Monthly CTC Δ sum
+    totFml(`SUM(O2:O${lastData})`, true),      // O: Annual CTC Δ sum
   ];
 
   const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows, totRow]);
 
   ws['!cols'] = [
-    { wch: 18 }, { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 16 },
+    { wch: 18 }, { wch: 14 }, { wch: 22 }, { wch: 12 }, { wch: 14 }, { wch: 16 },
     { wch: 16 }, { wch: 10 }, { wch: 12 },
     { wch: 14 }, { wch: 14 },
     { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 16 },
   ];
   ws['!freeze']     = { xSplit: 0, ySplit: 1 };
-  ws['!autofilter'] = { ref: 'A1:N1' };  // enables filter dropdowns; use col D for Grade
+  ws['!autofilter'] = { ref: 'A1:O1' };  // enables filter dropdowns; use col E for Grade
   return ws;
 }
 
@@ -381,19 +389,19 @@ function buildSummarySheet(
     totCurCtc   += curC;
     totNewCtc   += nwC;
 
-    // G: New Gross — cross-sheet from hotel totals col I, or static fallback
+    // G: New Gross — cross-sheet from hotel totals col J, or static fallback
     const newGrossCell = hasSheet
-      ? fmlOv(`'${sheetName}'!I${hotelTotRow}`, true)
+      ? fmlOv(`'${sheetName}'!J${hotelTotRow}`, true)
       : num(h.rows.reduce((s, r) => s + r.currentGross + (r.newBasic - r.currentBasic), 0), true);
 
-    // H: Monthly Inc — cross-sheet from hotel totals col J
+    // H: Monthly Inc — cross-sheet from hotel totals col K
     const monthlyIncCell = hasSheet
-      ? fmlOv(`'${sheetName}'!J${hotelTotRow}`, false, true)
+      ? fmlOv(`'${sheetName}'!K${hotelTotRow}`, false, true)
       : num(h.rows.reduce((s, r) => s + (r.newBasic - r.currentBasic), 0), false, true);
 
-    // I: Annual Inc — hotel J totals × 12
+    // I: Annual Inc — hotel K totals × 12
     const annualIncCell = hasSheet
-      ? fmlOv(`'${sheetName}'!J${hotelTotRow}*12`, false, true)
+      ? fmlOv(`'${sheetName}'!K${hotelTotRow}*12`, false, true)
       : num(h.rows.reduce((s, r) => s + (r.newBasic - r.currentBasic) * 12, 0), false, true);
 
     // N: % Change — computed within Overview so it stays live when G updates

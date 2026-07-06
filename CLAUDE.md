@@ -370,20 +370,22 @@ The salary review Excel export reads all five localStorage keys in `handleExport
 
 | Col | Content | Behaviour |
 |-----|---------|-----------|
-| F — Current Gross | Static (DB value) | Read-only |
-| G — % Increase | Editable input | **Amber header + yellow cell** — change here to model scenarios |
-| H — Flat Adj | Editable input | Same — amber/yellow |
-| I — New Gross | `=ROUND(F*(1+G/100)+H,-1)` | Recalculates live |
-| J — Monthly Inc | `=I-F` | Live |
-| K — Current CTC | Static | Too complex for Excel formulas |
-| L — New CTC | Static | Same |
-| M — Monthly CTC Δ | `=L-K` | Live |
-| N — Annual CTC Δ | `=(L-K)*12` | Live |
+| D — Yrs Service | Static, computed from `employment_date` | Read-only; `—` if no start date |
+| E — Grade | Static | Read-only |
+| G — Current Gross | Static (DB value) | Read-only |
+| H — % Increase | Editable input | **Amber header + yellow cell** — change here to model scenarios |
+| I — Flat Adj | Editable input | Same — amber/yellow |
+| J — New Gross | `=ROUND(G*(1+H/100)+I,-1)` | Recalculates live |
+| K — Monthly Inc | `=J-G` | Live |
+| L — Current CTC | Static | Too complex for Excel formulas |
+| M — New CTC | Static | Same |
+| N — Monthly CTC Δ | `=M-L` | Live |
+| O — Annual CTC Δ | `=(M-L)*12` | Live |
 
-Totals row uses `SUM(col_first:col_last)` formulas for I, J, M, N.  
-AutoFilter on `A1:N1` — use column D (Grade) dropdown to filter by grade.
+Totals row uses `SUM(col_first:col_last)` formulas for J, K, N, O.  
+AutoFilter on `A1:O1` — use column E (Grade) dropdown to filter by grade.
 
-**`% Increase` stored as display value** (e.g. `6.0`, not `0.06`) with format `'0.0"%"'` — formulas must divide by 100: `F*(1+G/100)`.
+**`% Increase` stored as display value** (e.g. `6.0`, not `0.06`) with format `'0.0"%"'` — formulas must divide by 100: `G*(1+H/100)`.
 
 **Overview sheet** — 14 columns A–N:
 
@@ -392,9 +394,9 @@ AutoFilter on `A1:N1` — use column D (Grade) dropdown to filter by grade.
 | A–D | Hotel, Short Code, Currency, Headcount |
 | E | Increase % — configured rate (`settings.pct` + `settings.flat`) from `ExportHotel.increase` |
 | F | Current Gross (static) |
-| G | New Gross — `='SheetName'!I{totRow}` — cross-sheet formula, updates when hotel tab edited |
-| H | Monthly Inc — `='SheetName'!J{totRow}` |
-| I | Annual Inc — `='SheetName'!J{totRow}*12` |
+| G | New Gross — `='SheetName'!J{totRow}` — cross-sheet formula, updates when hotel tab edited |
+| H | Monthly Inc — `='SheetName'!K{totRow}` |
+| I | Annual Inc — `='SheetName'!K{totRow}*12` |
 | J–M | CTC columns (static) |
 | N | % Change — `=IFERROR((G/F-1)*100,0)` within Overview |
 
