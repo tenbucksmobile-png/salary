@@ -359,10 +359,11 @@ Grade-level exclusions (`excludedGrades`) and per-employee exclusions (`excluded
 | `ihg-salary-nmw` | `Record<year, string>` — SA National Minimum Wage reference value (shared across all SA hotels) |
 | `ihg-salary-cpi-month` | `string` — month label for CPI header (e.g. `"July"`) |
 | `ihg-salary-increase-notes` | `string` — free-text notes |
+| `ihg-salary-union-adj` | `Record<hotelId, Record<year, string>>` — union-negotiated adjustment; CSL and NL only |
 
-NMW indicator shows only for SA hotels where `short_code !== 'APA'` and `!isBotswana(country)`. The `YEARS` constant covers 6 years: last 5 completed + current year. Must match `BENCHMARK_YEARS` in `excel-export.ts`.
+NMW indicator shows only for SA hotels where `short_code !== 'APA'` and `!isBotswana(country)`. Union Adjustment indicator shows only where `short_code` is `CSL` or `NL` (`showUnion()`). The `YEARS` constant covers 6 years: last 5 completed + current year — used by the CPI table and must match `BENCHMARK_YEARS` in `excel-export.ts`. The Historic Salary Increases table uses `HISTORIC_YEARS` (`YEARS` minus the current year) — it only shows completed years, so the current in-progress year never appears there.
 
-The salary review Excel export reads all five localStorage keys in `handleExport()` and passes a `BenchmarkData` object to `exportSalaryReview()`, which prepends a CPI table, historic increases table (with NMW row), and optional notes above the summary table in the **Overview** sheet.
+The salary review Excel export reads the CPI/increases/NMW/notes/month localStorage keys in `handleExport()` and passes a `BenchmarkData` object to `exportSalaryReview()`, which prepends a CPI table, historic increases table (with NMW row), and optional notes above the summary table in the **Overview** sheet. Union adjustments are UI-only on the Methods page and are not currently included in this export.
 
 ### Excel export structure (`src/lib/excel-export.ts`)
 

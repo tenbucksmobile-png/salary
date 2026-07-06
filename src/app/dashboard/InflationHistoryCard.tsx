@@ -8,6 +8,8 @@ import { Save, CheckCircle } from 'lucide-react';
 const currentYear = new Date().getFullYear();
 // Last 5 completed years + current year (e.g. 2021-2026 when currentYear is 2026)
 const YEARS = Array.from({ length: 6 }, (_, i) => String(currentYear - 5 + i));
+// Historic Salary Increases table only shows completed years, not the current year in progress
+const HISTORIC_YEARS = YEARS.slice(0, -1);
 
 const DEFAULT_CPI: Record<string, Record<string, string>> = {
   'South Africa': { '2021': '4.5', '2022': '6.9', '2023': '5.9', '2024': '4.4', '2025': '3.2' },
@@ -19,12 +21,14 @@ type NmwData = Record<string, string>; // year → NMW value (user-defined unit:
 
 export interface IncreaseEntry { pct: string; flat: string; }
 type IncreaseData = Record<string, Record<string, IncreaseEntry>>;
+type UnionData = Record<string, Record<string, string>>; // hotelId → year → adjustment
 
 const STORAGE_CPI       = 'ihg-salary-cpi';
 const STORAGE_INCREASES = 'ihg-salary-increases';
 const STORAGE_NOTES     = 'ihg-salary-increase-notes';
 const STORAGE_CPI_MONTH = 'ihg-salary-cpi-month';
 const STORAGE_NMW       = 'ihg-salary-nmw';
+const STORAGE_UNION     = 'ihg-salary-union-adj';
 
 const MONTH_NAMES_SHORT = [
   'January','February','March','April','May','June',
@@ -36,6 +40,11 @@ function showNmw(hotel: Hotel): boolean {
   const isBw  = hotel.country?.toLowerCase().includes('botswana');
   const isApa = hotel.short_code === 'APA';
   return !isBw && !isApa;
+}
+
+// Chobe Safari Lodge and Nata Lodge negotiate separate union adjustments
+function showUnion(hotel: Hotel): boolean {
+  return hotel.short_code === 'CSL' || hotel.short_code === 'NL';
 }
 
 function loadCpi(): CpiData {
@@ -84,6 +93,14 @@ function loadNmw(): NmwData {
   return {};
 }
 
+function loadUnion(): UnionData {
+  try {
+    const raw = localStorage.getItem(STORAGE_UNION);
+    if (raw) return JSON.parse(raw) as UnionData;
+  } catch {}
+  return {};
+}
+
 function currencySymbol(hotel: Hotel): string {
   return hotel.country?.toLowerCase().includes('botswana') ? 'P' : 'R';
 }
@@ -92,6 +109,7 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
   const [cpi,       setCpi]       = useState<CpiData>(JSON.parse(JSON.stringify(DEFAULT_CPI)) as CpiData);
   const [increases, setIncreases] = useState<IncreaseData>({});
   const [nmw,       setNmw]       = useState<NmwData>({});
+  const [unionAdj,  setUnionAdj]  = useState<UnionData>({});
   const [notes,     setNotes]     = useState('');
   const [cpiMonth,  setCpiMonth]  = useState('July');
   const [saved,     setSaved]     = useState(false);
@@ -100,6 +118,7 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
     setCpi(loadCpi());
     setIncreases(loadIncreases());
     setNmw(loadNmw());
+    setUnionAdj(loadUnion());
     setNotes(loadNotes());
     setCpiMonth(loadCpiMonth());
   }, []);
@@ -122,6 +141,10 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
     setNmw(prev => ({ ...prev, [year]: value }));
   }
 
+  function setUnionCell(hotelId: string, year: string, value: string) {
+    setUnionAdj(prev => ({ ...prev, [hotelId]: { ...prev[hotelId], [year]: value } }));
+  }
+
   function saveAll() {
     try {
       localStorage.setItem(STORAGE_CPI,       JSON.stringify(cpi));
@@ -129,6 +152,7 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
       localStorage.setItem(STORAGE_NOTES,      notes);
       localStorage.setItem(STORAGE_CPI_MONTH,  cpiMonth);
       localStorage.setItem(STORAGE_NMW,        JSON.stringify(nmw));
+      localStorage.setItem(STORAGE_UNION,      JSON.stringify(unionAdj));
     } catch {}
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
@@ -203,18 +227,19 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
             <thead>
               <tr className="border-b bg-muted/40">
                 <th className="text-left px-4 py-2.5 font-medium text-muted-foreground text-xs w-56">Hotel</th>
-                {YEARS.map(y => (
+                {HISTORIC_YEARS.map(y => (
                   <th key={y} className="text-center px-3 py-2.5 font-medium text-muted-foreground text-xs w-32">{y}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {sortedHotels.map((hotel, i) => {
-                const sym    = currencySymbol(hotel);
-                const hasNmw = showNmw(hotel);
+                const sym      = currencySymbol(hotel);
+                const hasNmw   = showNmw(hotel);
+                const hasUnion = showUnion(hotel);
                 return (
                   <tr key={hotel.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
-                    {/* Hotel name cell — NMW label written once here, aligned via invisible spacer rows */}
+                    {/* Hotel name cell — NMW/Union labels written once here, aligned via invisible spacer rows */}
                     <td className="px-4 py-2 align-top">
                       <div className="flex flex-col gap-1">
                         {/* Row 1: hotel name — aligns with % input row */}
@@ -228,9 +253,18 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
                           {/* Row 3: NMW label — aligns with the amber NMW input row */}
                           <span className="text-[10px] font-medium text-amber-600">National Minimum Wage</span>
                         </>}
+                        {hasUnion && <>
+                          {/* Invisible spacer — same structure as the flat input row */}
+                          <div className="invisible flex items-center gap-0.5" aria-hidden="true">
+                            <span className="text-xs">{sym}</span>
+                            <span className="w-14 px-1.5 py-0.5 text-xs inline-block">·</span>
+                          </div>
+                          {/* Union adjustment label — aligns with the blue union input row */}
+                          <span className="text-[10px] font-medium text-blue-600">Union Adjustment</span>
+                        </>}
                       </div>
                     </td>
-                    {YEARS.map(y => {
+                    {HISTORIC_YEARS.map(y => {
                       const entry = increases[hotel.id]?.[y] ?? { pct: '', flat: '' };
                       return (
                         <td key={y} className="px-3 py-2 align-top">
@@ -267,6 +301,17 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
                                 value={nmw[y] ?? ''}
                                 onChange={e => setNmwCell(y, e.target.value)}
                                 className="w-14 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-xs text-right font-mono text-amber-700 outline-none focus:ring-1 focus:ring-amber-400"
+                                placeholder="—"
+                              />
+                            )}
+                            {/* Union adjustment input — Chobe Safari Lodge and Nata Lodge only; label is in the hotel name cell */}
+                            {hasUnion && (
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={unionAdj[hotel.id]?.[y] ?? ''}
+                                onChange={e => setUnionCell(hotel.id, y, e.target.value)}
+                                className="w-14 rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-xs text-right font-mono text-blue-700 outline-none focus:ring-1 focus:ring-blue-400"
                                 placeholder="—"
                               />
                             )}
