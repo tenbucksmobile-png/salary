@@ -1,9 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
-export async function GET() {
-  const res = NextResponse.redirect(
-    new URL('/login', process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000'),
-  );
+export async function GET(request: NextRequest) {
+  const res = NextResponse.redirect(new URL('/login', request.url));
   res.cookies.delete('ihg-salary-auth');
   return res;
 }
