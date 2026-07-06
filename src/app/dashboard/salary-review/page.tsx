@@ -10,6 +10,12 @@ import { exportSalaryReview, ExportHotel, BenchmarkData } from '@/lib/excel-expo
 
 const GRADE_OPTIONS = ['All Grades', 'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
 
+function yearsOfService(date: string | null): number | null {
+  if (!date) return null;
+  const ms = Date.now() - new Date(date).getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24 * 365.25) * 10) / 10;
+}
+
 interface Override {
   pct: string;
   flat: string;
@@ -300,6 +306,10 @@ export default function SalaryReviewPage() {
           flat:      s.flat,
           excludedGrades: s.excludedGrades ?? new Set<string>(),
           threshold: s.threshold ?? '',
+          belowPct:  s.belowPct  ?? '',
+          belowFlat: s.belowFlat ?? '',
+          abovePct:  s.abovePct  ?? '',
+          aboveFlat: s.aboveFlat ?? '',
           // Only employees genuinely affected by this increase — not excluded
           // AND actually receiving a nonzero adjustment. A threshold scenario
           // can leave an included employee at 0 (e.g. below-threshold band
@@ -704,7 +714,7 @@ export default function SalaryReviewPage() {
               <tr className="border-b">
                 <th className="text-left py-2 font-medium text-muted-foreground">Hotel</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">%</th>
-                <th className="text-right py-2 font-medium text-muted-foreground">Flat</th>
+                <th className="text-right py-2 font-medium text-muted-foreground">Adj</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Threshold</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Grade</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Employees</th>
@@ -720,8 +730,26 @@ export default function SalaryReviewPage() {
                     {s.hotel.name}
                     <span className="ml-1.5 text-xs text-muted-foreground font-normal">{s.hotel.short_code}</span>
                   </td>
-                  <td className="py-2 text-right font-mono text-green-700">{s.pct ? `${s.pct}%` : '—'}</td>
-                  <td className="py-2 text-right font-mono">{s.flat ? fmtCurrency(parseFloat(s.flat), s.hotel.country) : '—'}</td>
+                  <td className="py-2 text-right font-mono text-green-700">
+                    {s.threshold ? (
+                      <div className="leading-tight">
+                        <div>&ge; {s.abovePct ? `${s.abovePct}%` : (s.pct ? `${s.pct}%` : '0%')}</div>
+                        <div className="text-muted-foreground">&lt; {s.belowPct ? `${s.belowPct}%` : '0%'}</div>
+                      </div>
+                    ) : (
+                      s.pct ? `${s.pct}%` : '—'
+                    )}
+                  </td>
+                  <td className="py-2 text-right font-mono">
+                    {s.threshold ? (
+                      <div className="leading-tight">
+                        <div>{s.aboveFlat ? fmtCurrency(parseFloat(s.aboveFlat), s.hotel.country) : (s.flat ? fmtCurrency(parseFloat(s.flat), s.hotel.country) : '—')}</div>
+                        <div className="text-muted-foreground">{s.belowFlat ? fmtCurrency(parseFloat(s.belowFlat), s.hotel.country) : '—'}</div>
+                      </div>
+                    ) : (
+                      s.flat ? fmtCurrency(parseFloat(s.flat), s.hotel.country) : '—'
+                    )}
+                  </td>
                   <td className="py-2 text-right font-mono text-xs text-muted-foreground">
                     {s.threshold ? fmtCurrency(parseFloat(s.threshold), s.hotel.country) : '—'}
                   </td>
@@ -999,6 +1027,7 @@ export default function SalaryReviewPage() {
                 <tr className="border-b bg-muted/40">
                   <th className="px-4 py-3 w-10" title="Exclude from increase" />
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Employee</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Yrs Service</th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Grade</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current Gross</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">% Inc.</th>
@@ -1046,6 +1075,9 @@ export default function SalaryReviewPage() {
                           )}
                         </div>
                       </td>
+                      <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">
+                        {(() => { const yrs = yearsOfService(r.employee.employment_date); return yrs != null ? yrs : '—'; })()}
+                      </td>
                       <td className="px-4 py-2.5 text-muted-foreground">{r.employee.grade_label ?? '—'}</td>
                       <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentGross, r.hotel.country)}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-green-700">
@@ -1076,7 +1108,7 @@ export default function SalaryReviewPage() {
 
                     {editingId === r.employee.id && (
                       <tr key={`${r.employee.id}-edit`} className="border-b bg-amber-50">
-                        <td colSpan={10} className="px-4 py-3">
+                        <td colSpan={11} className="px-4 py-3">
                           <div className="flex items-end gap-4 flex-wrap">
                             <span className="text-xs font-semibold text-amber-800 uppercase tracking-wide self-center">
                               Override — {r.employee.first_name} {r.employee.surname}
@@ -1142,7 +1174,7 @@ export default function SalaryReviewPage() {
               </tbody>
               <tfoot>
                 <tr className="border-t bg-muted/20 font-semibold">
-                  <td className="px-4 py-3" colSpan={3}>Totals ({totals.count} employees{totals.excludedCount > 0 ? `, ${totals.excludedCount} excluded` : ''})</td>
+                  <td className="px-4 py-3" colSpan={4}>Totals ({totals.count} employees{totals.excludedCount > 0 ? `, ${totals.excludedCount} excluded` : ''})</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.currentGross, currentHotel?.country ?? '')}</td>
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3 text-right font-mono">{totals.totalFlat > 0 ? fmtCurrency(totals.totalFlat, currentHotel?.country ?? '') : '—'}</td>
