@@ -254,11 +254,18 @@ function splitCSVLine(line: string, delim: '\t' | ',' | ';'): string[] {
   return cols;
 }
 
+// Header cells may come from either human-readable exports ("First Name", "Grade")
+// or snake_case DB-column-style exports ("first_name", "grade_label") — normalise
+// underscores to spaces so every keyword match below handles both.
+function normalizeHeaderCell(h: string): string {
+  return h.trim().replace(/"/g, '').toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export function isMedicalAidFile(firstLine: string): boolean {
-  const l = firstLine.trim().toLowerCase().replace(/"/g, '');
-  const hasName    = l.includes('surname') || l.includes('first name') || l.includes('firstname') || l.includes('name');
+  const l = normalizeHeaderCell(firstLine);
+  const hasName    = l.includes('surname') || l.includes('first name') || l.includes('name');
   const hasMedical = l.includes('medical');
-  const hasGross   = l.includes('gross') || l.includes('salary');
+  const hasGross   = l.includes('gross') || l.includes('salary') || l.includes('earnings');
   return hasName && hasMedical && !hasGross;
 }
 
@@ -271,7 +278,7 @@ export interface MedicalAidEntry {
 export function parseMedicalAidFile(text: string): { employees: MedicalAidEntry[]; errors: string[] } {
   const lines = text.split('\n').map(l => l.trimEnd()).filter(Boolean);
   const delim = detectDelimiter(lines[0] ?? '');
-  const header = splitCSVLine(lines[0], delim).map(h => h.trim().replace(/"/g, '').toLowerCase());
+  const header = splitCSVLine(lines[0], delim).map(normalizeHeaderCell);
 
   const idx = {
     firstName: header.findIndex(h => h === 'name' || h === 'first name' || h === 'firstname'),
@@ -295,9 +302,9 @@ export function parseMedicalAidFile(text: string): { employees: MedicalAidEntry[
 }
 
 export function isTabularEmployeeFile(firstLine: string): boolean {
-  const l = firstLine.trim().toLowerCase().replace(/"/g, '');
-  const hasName   = l.includes('surname') || l.includes('first name') || l.includes('firstname');
-  const hasSalary = l.includes('gross')   || l.includes('salary');
+  const l = normalizeHeaderCell(firstLine);
+  const hasName   = l.includes('surname') || l.includes('first name');
+  const hasSalary = l.includes('gross')   || l.includes('salary') || l.includes('earnings');
   const hasId     = l.includes('omang')   || l.includes('id number')  || l.includes('national id') || l.includes('identity');
   const hasDept   = (l.includes('department') || l.includes('dept'))  && (l.includes('title') || l.includes('position'));
   return hasName && (hasSalary || hasId || hasDept);
@@ -326,14 +333,14 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
   const employees: TSVEmployee[] = [];
 
   // Find column indices from header (flexible — column order may vary)
-  const header = splitCSVLine(lines[0], delim).map(h => h.trim().replace(/"/g, '').toLowerCase());
+  const header = splitCSVLine(lines[0], delim).map(normalizeHeaderCell);
   const idx = {
     surname:   header.findIndex(h => h === 'surname' || h === 'surnmae' || h === 'last name' || h === 'lastname'),
     firstName: header.findIndex(h => h === 'name' || h === 'first name' || h === 'firstname'),
     department:header.findIndex(h => h.includes('department') || h.includes('dept')),
     jobTitle:  header.findIndex(h => h.includes('title') || h.includes('position')),
     startDate: header.findIndex(h => h.includes('start') || h.includes('date') || h.includes('commencement')),
-    gross:     header.findIndex(h => h.includes('gross') || (h.includes('salary') && !h.includes('net'))),
+    gross:     header.findIndex(h => h.includes('gross') || h.includes('earnings') || (h.includes('salary') && !h.includes('net'))),
     grade:     header.findIndex(h => h === 'grade' || h === 'grade label' || h === 'gradelabel'),
     medical:   header.findIndex(h => h.includes('medical')),
     idNumber:  header.findIndex(h => h === 'omang' || h === 'id number' || h === 'id_number' || h === 'id no' || h === 'national id' || h.includes('identity')),
