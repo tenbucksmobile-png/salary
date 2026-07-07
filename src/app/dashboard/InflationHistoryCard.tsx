@@ -8,8 +8,9 @@ import { Save, CheckCircle } from 'lucide-react';
 const currentYear = new Date().getFullYear();
 // Last 5 completed years + current year (e.g. 2021-2026 when currentYear is 2026)
 const YEARS = Array.from({ length: 6 }, (_, i) => String(currentYear - 5 + i));
-// Historic Salary Increases table only shows completed years, not the current year in progress
-const HISTORIC_YEARS = YEARS.slice(0, -1);
+// Historic Salary Increases table shows the same span as YEARS, including the
+// current in-progress year — Salary Review commits write into it mid-year.
+const HISTORIC_YEARS = YEARS;
 
 const DEFAULT_CPI: Record<string, Record<string, string>> = {
   'South Africa': { '2021': '4.5', '2022': '6.9', '2023': '5.9', '2024': '4.4', '2025': '3.2' },
@@ -19,8 +20,28 @@ const DEFAULT_CPI: Record<string, Record<string, string>> = {
 type CpiData = Record<string, Record<string, string>>;
 type NmwData = Record<string, string>; // year → NMW value (user-defined unit: hourly or monthly)
 
-export interface IncreaseEntry { pct: string; flat: string; }
+// threshold/belowPct/belowFlat are optional — when threshold is set, pct/flat
+// become the "≥ threshold" (above) band and belowPct/belowFlat the "< threshold" band.
+// Mirrors the two-tier structure used by the Salary Review Saved Increases table.
+export interface IncreaseEntry {
+  pct: string;
+  flat: string;
+  threshold?: string;
+  belowPct?: string;
+  belowFlat?: string;
+}
 type IncreaseData = Record<string, Record<string, IncreaseEntry>>;
+type IncreaseField = 'pct' | 'flat' | 'threshold' | 'belowPct' | 'belowFlat';
+
+function hasThreshold(entry: IncreaseEntry | undefined): boolean {
+  const t = parseFloat(entry?.threshold ?? '');
+  return !isNaN(t) && t !== 0;
+}
+
+// Number of stacked input rows a year cell renders — 2 normally, 5 when a threshold is set
+function entryRowCount(entry: IncreaseEntry | undefined): number {
+  return hasThreshold(entry) ? 5 : 2;
+}
 type UnionData = Record<string, Record<string, string>>; // hotelId → year → adjustment
 
 const STORAGE_CPI       = 'ihg-salary-cpi';
@@ -127,7 +148,7 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
     setCpi(prev => ({ ...prev, [country]: { ...prev[country], [year]: value } }));
   }
 
-  function setIncreaseField(hotelId: string, year: string, field: 'pct' | 'flat', value: string) {
+  function setIncreaseField(hotelId: string, year: string, field: IncreaseField, value: string) {
     setIncreases(prev => {
       const existing = prev[hotelId]?.[year] ?? { pct: '', flat: '' };
       return {
@@ -220,7 +241,7 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
       {/* Historic increases */}
       <div>
         <p className="text-xs font-medium text-muted-foreground mb-2">
-          Historic Salary Increases — % and / or flat monetary adjustment
+          Historic Salary Increases — % and / or flat monetary adjustment, with optional threshold band (set a Threshold to split into &ge;/&lt; tiers)
         </p>
         <div className="overflow-x-auto">
           <table className="text-sm whitespace-nowrap">
@@ -228,69 +249,117 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
               <tr className="border-b bg-muted/40">
                 <th className="text-left px-4 py-2.5 font-medium text-muted-foreground text-xs w-56">Hotel</th>
                 {HISTORIC_YEARS.map(y => (
-                  <th key={y} className="text-center px-3 py-2.5 font-medium text-muted-foreground text-xs w-32">{y}</th>
+                  <th key={y} className="text-center px-3 py-2.5 font-medium text-muted-foreground text-xs w-36">{y}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {sortedHotels.map((hotel, i) => {
-                const sym      = currencySymbol(hotel);
-                const hasNmw   = showNmw(hotel);
-                const hasUnion = showUnion(hotel);
+                const sym       = currencySymbol(hotel);
+                const hasNmw    = showNmw(hotel);
+                const hasUnion  = showUnion(hotel);
+                // Row count is uniform per <tr> (tallest cell wins), so size the
+                // hotel-name spacer off whichever year cell has the most rows.
+                const maxRows     = Math.max(2, ...HISTORIC_YEARS.map(y => entryRowCount(increases[hotel.id]?.[y])));
+                const spacerCount = maxRows - 1;
                 return (
                   <tr key={hotel.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                     {/* Hotel name cell — NMW/Union labels written once here, aligned via invisible spacer rows */}
                     <td className="px-4 py-2 align-top">
                       <div className="flex flex-col gap-1">
-                        {/* Row 1: hotel name — aligns with % input row */}
+                        {/* Row 1: hotel name — aligns with the top (≥ / %) input row */}
                         <span className="text-xs font-medium">{hotel.name}</span>
                         {hasNmw && <>
-                          {/* Row 2: invisible spacer — same structure as the R flat input row */}
-                          <div className="invisible flex items-center gap-0.5" aria-hidden="true">
-                            <span className="text-xs">{sym}</span>
-                            <span className="w-14 px-1.5 py-0.5 text-xs inline-block">·</span>
-                          </div>
-                          {/* Row 3: NMW label — aligns with the amber NMW input row */}
+                          {Array.from({ length: spacerCount }).map((_, idx) => (
+                            <div key={`nmw-sp-${idx}`} className="invisible flex items-center gap-0.5" aria-hidden="true">
+                              <span className="text-xs">{sym}</span>
+                              <span className="w-14 px-1.5 py-0.5 text-xs inline-block">·</span>
+                            </div>
+                          ))}
+                          {/* NMW label — aligns with the amber NMW input row */}
                           <span className="text-[10px] font-medium text-amber-600">National Minimum Wage</span>
                         </>}
                         {hasUnion && <>
-                          {/* Invisible spacer — same structure as the flat input row */}
-                          <div className="invisible flex items-center gap-0.5" aria-hidden="true">
-                            <span className="text-xs">{sym}</span>
-                            <span className="w-14 px-1.5 py-0.5 text-xs inline-block">·</span>
-                          </div>
+                          {Array.from({ length: spacerCount }).map((_, idx) => (
+                            <div key={`un-sp-${idx}`} className="invisible flex items-center gap-0.5" aria-hidden="true">
+                              <span className="text-xs">{sym}</span>
+                              <span className="w-14 px-1.5 py-0.5 text-xs inline-block">·</span>
+                            </div>
+                          ))}
                           {/* Union adjustment label — aligns with the blue union input row */}
                           <span className="text-[10px] font-medium text-blue-600">Union Adjustment</span>
                         </>}
                       </div>
                     </td>
                     {HISTORIC_YEARS.map(y => {
-                      const entry = increases[hotel.id]?.[y] ?? { pct: '', flat: '' };
+                      const entry     = increases[hotel.id]?.[y] ?? { pct: '', flat: '' };
+                      const hasThresh = hasThreshold(entry);
                       return (
                         <td key={y} className="px-3 py-2 align-top">
                           <div className="flex flex-col gap-1">
-                            {/* % row */}
+                            {/* % row — "≥ threshold" band once a threshold is set, otherwise the flat rate */}
                             <div className="flex items-center gap-0.5">
+                              {hasThresh && <span className="text-[9px] text-green-600 w-2.5">&ge;</span>}
                               <input
                                 type="text"
                                 inputMode="decimal"
                                 value={entry.pct}
                                 onChange={e => setIncreaseField(hotel.id, y, 'pct', e.target.value)}
-                                className="w-14 rounded border border-input px-1.5 py-0.5 text-xs text-right font-mono outline-none focus:ring-1 focus:ring-ring"
+                                className={`w-14 rounded border px-1.5 py-0.5 text-xs text-right font-mono outline-none focus:ring-1 focus:ring-ring ${hasThresh ? 'border-green-200 bg-green-50 text-green-700' : 'border-input'}`}
                                 placeholder="—"
                               />
                               <span className="text-xs text-muted-foreground">%</span>
                             </div>
-                            {/* flat row */}
+                            {/* Adj row — above-threshold flat adjustment */}
                             <div className="flex items-center gap-0.5">
+                              {hasThresh && <span className="w-2.5" />}
                               <span className="text-xs text-muted-foreground">{sym}</span>
                               <input
                                 type="text"
                                 inputMode="numeric"
                                 value={entry.flat}
                                 onChange={e => setIncreaseField(hotel.id, y, 'flat', e.target.value)}
-                                className="w-14 rounded border border-input px-1.5 py-0.5 text-xs text-right font-mono outline-none focus:ring-1 focus:ring-ring"
+                                className={`w-14 rounded border px-1.5 py-0.5 text-xs text-right font-mono outline-none focus:ring-1 focus:ring-ring ${hasThresh ? 'border-green-200 bg-green-50 text-green-700' : 'border-input'}`}
                                 placeholder="—"
+                              />
+                            </div>
+                            {/* Below-threshold band — only shown once a threshold is entered */}
+                            {hasThresh && <>
+                              <div className="flex items-center gap-0.5">
+                                <span className="text-[9px] text-muted-foreground w-2.5">&lt;</span>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={entry.belowPct ?? ''}
+                                  onChange={e => setIncreaseField(hotel.id, y, 'belowPct', e.target.value)}
+                                  className="w-14 rounded border border-input bg-muted/30 px-1.5 py-0.5 text-xs text-right font-mono text-muted-foreground outline-none focus:ring-1 focus:ring-ring"
+                                  placeholder="—"
+                                />
+                                <span className="text-xs text-muted-foreground">%</span>
+                              </div>
+                              <div className="flex items-center gap-0.5">
+                                <span className="w-2.5" />
+                                <span className="text-xs text-muted-foreground">{sym}</span>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={entry.belowFlat ?? ''}
+                                  onChange={e => setIncreaseField(hotel.id, y, 'belowFlat', e.target.value)}
+                                  className="w-14 rounded border border-input bg-muted/30 px-1.5 py-0.5 text-xs text-right font-mono text-muted-foreground outline-none focus:ring-1 focus:ring-ring"
+                                  placeholder="—"
+                                />
+                              </div>
+                            </>}
+                            {/* Threshold input — entering a value here reveals the below-threshold band above */}
+                            <div className="flex items-center gap-0.5 mt-0.5 pt-0.5 border-t border-dashed border-input/60">
+                              <span className="text-xs text-purple-500">{sym}</span>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={entry.threshold ?? ''}
+                                onChange={e => setIncreaseField(hotel.id, y, 'threshold', e.target.value)}
+                                className="w-14 rounded border border-purple-200 bg-purple-50 px-1.5 py-0.5 text-xs text-right font-mono text-purple-700 outline-none focus:ring-1 focus:ring-purple-400"
+                                placeholder="Thresh"
                               />
                             </div>
                             {/* NMW input — SA hotels only, not APA; label is in the hotel name cell */}

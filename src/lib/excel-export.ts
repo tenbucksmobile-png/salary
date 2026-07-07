@@ -5,7 +5,15 @@
 const _cy = new Date().getFullYear();
 const BENCHMARK_YEARS = Array.from({ length: 6 }, (_, i) => String(_cy - 5 + i));
 
-export interface IncreaseEntry { pct: string; flat: string; }
+// threshold/belowPct/belowFlat optional — when threshold is set, pct/flat are the
+// "≥ threshold" (above) band and belowPct/belowFlat the "< threshold" band.
+export interface IncreaseEntry {
+  pct: string;
+  flat: string;
+  threshold?: string;
+  belowPct?: string;
+  belowFlat?: string;
+}
 
 export interface BenchmarkData {
   cpi: Record<string, Record<string, string>>;              // { 'South Africa': { '2021': '4.5' } }
@@ -192,19 +200,42 @@ function bmark(v: string | undefined) {
   return { v: +n.toFixed(1), t: 'n', z: '0.0"%"', s: { alignment: { horizontal: 'center' } } };
 }
 
-function incCell(entry: IncreaseEntry | undefined) {
-  if (!entry) return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, font: { color: { rgb: 'BBBBBB' } } } };
-  const pct  = parseFloat(entry.pct);
-  const flat = parseFloat(entry.flat);
-  const hasPct  = !isNaN(pct)  && pct  !== 0;
-  const hasFlat = !isNaN(flat) && flat !== 0;
-  if (!hasPct && !hasFlat) {
-    return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, font: { color: { rgb: 'BBBBBB' } } } };
-  }
+const INC_BLANK = { v: '—', t: 's', s: { alignment: { horizontal: 'center', vertical: 'center' }, font: { color: { rgb: 'BBBBBB' } } } };
+
+function fmtPctFlat(pct: string | undefined, flat: string | undefined): string | null {
+  const p = parseFloat(pct ?? '');
+  const f = parseFloat(flat ?? '');
+  const hasP = !isNaN(p) && p !== 0;
+  const hasF = !isNaN(f) && f !== 0;
+  if (!hasP && !hasF) return null;
   const parts: string[] = [];
-  if (hasPct)  parts.push(`${pct.toFixed(1)}%`);
-  if (hasFlat) parts.push(flat.toLocaleString('en-ZA', { maximumFractionDigits: 0 }));
-  return { v: parts.join(' + '), t: 's', s: { alignment: { horizontal: 'center' } } };
+  if (hasP) parts.push(`${p.toFixed(1)}%`);
+  if (hasF) parts.push(f.toLocaleString('en-ZA', { maximumFractionDigits: 0 }));
+  return parts.join(' + ');
+}
+
+// Renders the Saved Increases two-tier (≥/<) breakdown when a threshold is present,
+// otherwise the flat rate — mirrors the Salary Review "Saved Increases" table.
+function incCell(entry: IncreaseEntry | undefined) {
+  if (!entry) return INC_BLANK;
+
+  const thresh       = parseFloat(entry.threshold ?? '');
+  const hasThreshold = !isNaN(thresh) && thresh !== 0;
+
+  if (hasThreshold) {
+    const above = fmtPctFlat(entry.pct, entry.flat) ?? '0%';
+    const below = fmtPctFlat(entry.belowPct, entry.belowFlat) ?? '0%';
+    const lines = [
+      `≥ ${above}`,
+      `< ${below}`,
+      `Thresh ${thresh.toLocaleString('en-ZA', { maximumFractionDigits: 0 })}`,
+    ];
+    return { v: lines.join('\n'), t: 's', s: { alignment: { horizontal: 'center', vertical: 'center', wrapText: true } } };
+  }
+
+  const flat = fmtPctFlat(entry.pct, entry.flat);
+  if (!flat) return INC_BLANK;
+  return { v: flat, t: 's', s: { alignment: { horizontal: 'center' } } };
 }
 
 // ── Hotel detail sheet ────────────────────────────────────────────────────────
@@ -301,6 +332,9 @@ function buildSummarySheet(
 ): any {
   // ── Benchmark block ───────────────────────────────────────────────────────
   const benchmarkRows: any[][] = [];
+  // Rows containing a wrapped 3-line threshold breakdown need extra height —
+  // tracked by 0-based index into benchmarkRows so it can be applied to ws['!rows'].
+  const tallRowIdx = new Set<number>();
 
   if (benchmark) {
     const yrs = BENCHMARK_YEARS;
@@ -319,6 +353,11 @@ function buildSummarySheet(
     benchmarkRows.push([hdrSm('Hotel'), ...yrs.map(y => hdrSm(y))]);
     for (const { id, name } of benchmark.hotels) {
       const inc = benchmark.increases[id] ?? {};
+      const hasAnyThreshold = yrs.some(y => {
+        const t = parseFloat(inc[y]?.threshold ?? '');
+        return !isNaN(t) && t !== 0;
+      });
+      if (hasAnyThreshold) tallRowIdx.add(benchmarkRows.length);
       benchmarkRows.push([str(name), ...yrs.map(y => incCell(inc[y]))]);
     }
 
@@ -451,6 +490,10 @@ function buildSummarySheet(
 
   const aoa = [...benchmarkRows, headers, ...dataRows, totRow];
   const ws  = XLSX.utils.aoa_to_sheet(aoa);
+
+  if (tallRowIdx.size > 0) {
+    ws['!rows'] = Array.from({ length: aoa.length }, (_, i) => (tallRowIdx.has(i) ? { hpt: 48 } : undefined));
+  }
 
   ws['!cols'] = [
     { wch: 28 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 14 },  // A–E

@@ -511,14 +511,27 @@ export default function SalaryReviewPage() {
       }
     }
 
-    // Persist committed increases to Inflation & Increase History (localStorage)
+    // Persist committed increases to Inflation & Increase History (localStorage).
+    // When the scenario used a threshold, carry the full ≥/< breakdown through —
+    // pct/flat become the "above" tier (falling back from abovePct/aboveFlat), matching
+    // how the Saved Increases table above displays it.
     try {
       const raw = localStorage.getItem('ihg-salary-increases');
-      const stored: Record<string, Record<string, { pct: string; flat: string }>> =
+      type HistoricEntry = { pct: string; flat: string; threshold?: string; belowPct?: string; belowFlat?: string };
+      const stored: Record<string, Record<string, HistoricEntry>> =
         raw ? JSON.parse(raw) : {};
       for (const [hotelId, settings] of hotelSettings) {
         if (!stored[hotelId]) stored[hotelId] = {};
-        stored[hotelId][String(commitYear)] = { pct: settings.pct, flat: settings.flat };
+        const hasThresh = parseFloat(settings.threshold) > 0;
+        stored[hotelId][String(commitYear)] = hasThresh
+          ? {
+              pct:       settings.abovePct  || settings.pct,
+              flat:      settings.aboveFlat || settings.flat,
+              threshold: settings.threshold,
+              belowPct:  settings.belowPct,
+              belowFlat: settings.belowFlat,
+            }
+          : { pct: settings.pct, flat: settings.flat };
       }
       localStorage.setItem('ihg-salary-increases', JSON.stringify(stored));
     } catch {}
