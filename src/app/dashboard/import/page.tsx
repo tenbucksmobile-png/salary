@@ -644,8 +644,8 @@ export default function ImportPage() {
             // For HR List imports, the file is the authoritative source — update names too
             ...(row.importType === 'employee' && row.surname   ? { surname:    row.surname    } : {}),
             ...(row.importType === 'employee' && row.firstName ? { first_name: row.firstName  } : {}),
-            job_title: row.jobTitle || null,
-            department_code: row.department || null,
+            ...(row.jobTitle ? { job_title: row.jobTitle } : {}),
+            ...(row.department ? { department_code: row.department } : {}),
             ...(row.employeeCode ? { employee_code: row.employeeCode } : {}),
             ...(row.idNumber ? { id_number: row.idNumber } : {}),
             ...(row.paypoint ? { paypoint: row.paypoint } : {}),
