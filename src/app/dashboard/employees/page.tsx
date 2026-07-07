@@ -565,11 +565,14 @@ export default function EmployeesPage() {
   async function runCalculateBurden() {
     if (!filtered.length) return;
     setCalculating(true);
+    const seenAt = new Date().toISOString();
+    const touchedIds: string[] = [];
     await Promise.all(
       filtered.map(async emp => {
         const hotel = hotelMap.get(emp.hotel_id);
         const sal   = latestSalary.get(emp.id);
         if (!hotel || !sal) return;
+        touchedIds.push(emp.id);
 
         const burden = calculateBurden({
           basic:               sal.basic_salary,
@@ -639,6 +642,12 @@ export default function EmployeesPage() {
         }).eq('id', sal.id);
       })
     );
+
+    if (touchedIds.length > 0) {
+      // Confirms these employees are still active without requiring a full
+      // roster re-import — clears the "not in last import" red flag.
+      await sb.from('employees').update({ last_seen_at: seenAt }).in('id', touchedIds);
+    }
 
     await load();
     setCalculating(false);
