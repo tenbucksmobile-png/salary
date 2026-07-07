@@ -38,9 +38,22 @@ function hasThreshold(entry: IncreaseEntry | undefined): boolean {
   return !isNaN(t) && t !== 0;
 }
 
-// Number of stacked input rows a year cell renders — 2 normally, 5 when a threshold is set
+// Number of stacked input rows a year cell renders before the NMW/Union row:
+// pct + flat + threshold always (3), plus belowPct + belowFlat when a threshold is set (5).
 function entryRowCount(entry: IncreaseEntry | undefined): number {
-  return hasThreshold(entry) ? 5 : 2;
+  return hasThreshold(entry) ? 5 : 3;
+}
+
+// Invisible row matching the height of a real input row — used to pad shorter
+// cells up to a shared height so the NMW/Union row lands on the same line across
+// every year column, and to pad the hotel-name cell so its labels line up too.
+function SpacerRow() {
+  return (
+    <div className="invisible flex items-center gap-0.5" aria-hidden="true">
+      <span className="text-xs">·</span>
+      <span className="w-14 px-1.5 py-0.5 text-xs inline-block">·</span>
+    </div>
+  );
 }
 type UnionData = Record<string, Record<string, string>>; // hotelId → year → adjustment
 
@@ -260,8 +273,11 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
                 const hasUnion  = showUnion(hotel);
                 // Row count is uniform per <tr> (tallest cell wins), so size the
                 // hotel-name spacer off whichever year cell has the most rows.
-                const maxRows     = Math.max(2, ...HISTORIC_YEARS.map(y => entryRowCount(increases[hotel.id]?.[y])));
+                const maxRows     = Math.max(3, ...HISTORIC_YEARS.map(y => entryRowCount(increases[hotel.id]?.[y])));
                 const spacerCount = maxRows - 1;
+                // Only 3 (no year uses a threshold) or 5 (some year does) are possible —
+                // years without a threshold need 2 padding rows to match a threshold year's height.
+                const needsPad    = maxRows === 5;
                 return (
                   <tr key={hotel.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                     {/* Hotel name cell — NMW/Union labels written once here, aligned via invisible spacer rows */}
@@ -271,20 +287,14 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
                         <span className="text-xs font-medium">{hotel.name}</span>
                         {hasNmw && <>
                           {Array.from({ length: spacerCount }).map((_, idx) => (
-                            <div key={`nmw-sp-${idx}`} className="invisible flex items-center gap-0.5" aria-hidden="true">
-                              <span className="text-xs">{sym}</span>
-                              <span className="w-14 px-1.5 py-0.5 text-xs inline-block">·</span>
-                            </div>
+                            <SpacerRow key={`nmw-sp-${idx}`} />
                           ))}
                           {/* NMW label — aligns with the amber NMW input row */}
                           <span className="text-[10px] font-medium text-amber-600">National Minimum Wage</span>
                         </>}
                         {hasUnion && <>
                           {Array.from({ length: spacerCount }).map((_, idx) => (
-                            <div key={`un-sp-${idx}`} className="invisible flex items-center gap-0.5" aria-hidden="true">
-                              <span className="text-xs">{sym}</span>
-                              <span className="w-14 px-1.5 py-0.5 text-xs inline-block">·</span>
-                            </div>
+                            <SpacerRow key={`un-sp-${idx}`} />
                           ))}
                           {/* Union adjustment label — aligns with the blue union input row */}
                           <span className="text-[10px] font-medium text-blue-600">Union Adjustment</span>
@@ -350,6 +360,9 @@ export default function InflationHistoryCard({ hotels }: { hotels: Hotel[] }) {
                                 />
                               </div>
                             </>}
+                            {/* Padding — keeps this cell's height level with sibling years that use a
+                                threshold, so the NMW/Union row below lands on the same line for every column */}
+                            {!hasThresh && needsPad && <><SpacerRow /><SpacerRow /></>}
                             {/* Threshold input — entering a value here reveals the below-threshold band above */}
                             <div className="flex items-center gap-0.5 mt-0.5 pt-0.5 border-t border-dashed border-input/60">
                               <span className="text-xs text-purple-500">{sym}</span>
