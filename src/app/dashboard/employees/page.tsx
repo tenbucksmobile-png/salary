@@ -481,8 +481,17 @@ export default function EmployeesPage() {
       .map(e => `${e.first_name} ${e.surname}`)
       .join(', ');
     if (!window.confirm(`Delete ${ids.length} employee${ids.length > 1 ? 's' : ''} (${names})?\n\nThis will permanently remove them and all their salary records.`)) return;
-    await Promise.all(ids.map(id => sb.from('salary_records').delete().eq('employee_id', id)));
-    await sb.from('employees').delete().in('id', ids);
+    // scenario_lines.employee_id has no ON DELETE CASCADE — an employee referenced
+    // by any past salary review scenario (draft or committed) must be cleared here
+    // first, or the employees delete below fails on the FK constraint.
+    await sb.from('scenario_lines').delete().in('employee_id', ids);
+    await sb.from('salary_records').delete().in('employee_id', ids);
+    const { error } = await sb.from('employees').delete().in('id', ids);
+    if (error) {
+      window.alert(`Delete failed: ${error.message}`);
+      await load();
+      return;
+    }
     setEmployees(prev => prev.filter(e => !ids.includes(e.id)));
     setSalaries(prev => prev.filter(s => !ids.includes(s.employee_id)));
     setSelected(new Set());
