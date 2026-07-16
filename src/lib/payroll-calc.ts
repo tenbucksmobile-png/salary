@@ -16,6 +16,11 @@ const BONUS_DAYS_SA     = 30.42; // 13th cheque equivalent (SA)
 const BONUS_DAYS_BW     = 26;    // 13th cheque equivalent (Botswana)
 const CALENDAR_DAYS_PA  = 365;
 
+// Leave Provision (annual balance payout) — cap applied to the imported
+// balance before computing the Rand/Pula provision value. Unrelated to
+// LEAVE_DAYS_SA/BW above (those drive the forward monthly leave_accrual).
+export const LEAVE_PROVISION_CAP_DAYS = 24;
+
 export function isBotswana(country: string): boolean {
   const c = country.toLowerCase();
   return c.includes('botswana') || c === 'bw';

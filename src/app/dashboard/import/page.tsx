@@ -6,7 +6,7 @@ import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalA
 import { isEmployeeCsvExport, parseEmployeeCsvExport, type RoundtripRow } from '@/lib/employee-csv';
 import { Hotel } from '@/types/database';
 import { fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
-import { isBotswana } from '@/lib/payroll-calc';
+import { isBotswana, LEAVE_PROVISION_CAP_DAYS } from '@/lib/payroll-calc';
 import { Upload, CheckCircle, FileText, ChevronRight } from 'lucide-react';
 
 type Step = 'select' | 'preview' | 'done';
@@ -62,6 +62,7 @@ interface LeaveRow {
   employeeCode: string;
   employeeId: string | null;
   leaveBalanceDays: number;
+  cappedLeaveBalanceDays: number;
   basic: number;
   dailyRate: number;
   provisionValue: number;
@@ -294,14 +295,16 @@ export default function ImportPage() {
 
       const lRows: LeaveRow[] = matched.map(emp => {
         const basic = emp.employeeId ? latestSalMap.get(emp.employeeId)?.basic_salary ?? 0 : 0;
+        const cappedLeaveBalanceDays = Math.min(emp.leaveBalanceDays, LEAVE_PROVISION_CAP_DAYS);
         const dailyRate = Math.round((basic / divisor) * 100) / 100;
-        const provisionValue = Math.round(dailyRate * emp.leaveBalanceDays * 100) / 100;
+        const provisionValue = Math.round(dailyRate * cappedLeaveBalanceDays * 100) / 100;
         return {
           surname:          emp.surname,
           firstName:        emp.firstName,
           employeeCode:     emp.employeeCode,
           employeeId:       emp.employeeId,
           leaveBalanceDays: emp.leaveBalanceDays,
+          cappedLeaveBalanceDays,
           basic,
           dailyRate,
           provisionValue,
@@ -1036,7 +1039,8 @@ export default function ImportPage() {
                 <tr className="border-b bg-muted/40">
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Name</th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Status</th>
-                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Leave Balance (days)</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Actual Leave Balance</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Capped Leave Balance</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Daily Rate</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Provision Value</th>
                 </tr>
@@ -1051,7 +1055,8 @@ export default function ImportPage() {
                         : <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-red-50 text-red-700">Not found</span>
                       }
                     </td>
-                    <td className="px-4 py-2.5 text-right font-mono">{r.leaveBalanceDays}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{r.leaveBalanceDays}</td>
+                    <td className="px-4 py-2.5 text-right font-mono">{r.cappedLeaveBalanceDays}</td>
                     <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(r.dailyRate)}</td>
                     <td className="px-4 py-2.5 text-right font-mono">{fmt(r.provisionValue)}</td>
                   </tr>
