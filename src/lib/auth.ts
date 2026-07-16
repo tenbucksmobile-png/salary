@@ -8,6 +8,7 @@ export const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 export const CONFIGURABLE_TABS = [
   { key: 'dashboard',      label: 'Dashboard' },
   { key: 'employees',      label: 'Employees' },
+  { key: 'leaveProvision', label: 'Leave Provision' },
   { key: 'import',         label: 'Import HR List' },
   { key: 'reconciliation', label: 'Reconciliation' },
   { key: 'reports',        label: 'Reports' },

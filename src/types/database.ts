@@ -24,6 +24,7 @@ export interface Hotel {
   ctc_bonus?: boolean | null;
   leave_accrual_pct?: number | null;
   bonus_provision_pct?: number | null;
+  leave_provision_divisor?: number | null;
   created_at: string;
 }
 
@@ -205,6 +206,22 @@ export interface ReconQuery {
   resolved_at: string | null;
   resolver_name: string | null;
   resolved_message: string | null;
+}
+
+// Leave Provision: annual (July) leave balance import + daily-rate payout calc.
+// Standalone from salary_records — see leave_accrual (forward monthly estimate)
+// and leave_provision (legacy VIP passthrough), which this is unrelated to.
+export interface LeaveProvision {
+  id: string;
+  employee_id: string;
+  hotel_id: string;
+  period_year: number;
+  leave_balance_days: number;
+  daily_rate: number;
+  provision_value: number;
+  basic_at_calc: number;
+  import_id: string | null;
+  imported_at: string;
 }
 
 // Dashboard stat per hotel

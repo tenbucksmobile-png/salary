@@ -369,6 +369,57 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
   return { employees, errors };
 }
 
+// ─── Leave Balance Import (annual, July) ─────────────────────────────────────
+// A narrow, dedicated file — name/code + a leave balance in days. Must NOT
+// match gross/salary so it can't collide with isMedicalAidFile /
+// isTabularEmployeeFile earlier in the detection chain.
+
+export function isLeaveBalanceFile(firstLine: string): boolean {
+  const l = normalizeHeaderCell(firstLine);
+  const hasName    = l.includes('surname') || l.includes('first name');
+  const hasLeave   = l.includes('leave') && (l.includes('balance') || l.includes('days') || l.includes('accrual'));
+  const hasSalary  = l.includes('gross') || l.includes('salary') || l.includes('earnings');
+  return hasName && hasLeave && !hasSalary;
+}
+
+export interface LeaveBalanceEntry {
+  surname: string;
+  firstName: string;
+  employeeCode: string;
+  leaveBalanceDays: number;
+}
+
+export function parseLeaveBalanceFile(text: string): { employees: LeaveBalanceEntry[]; errors: string[] } {
+  const lines = text.split('\n').map(l => l.trimEnd()).filter(Boolean);
+  const delim = detectDelimiter(lines[0] ?? '');
+  const header = splitCSVLine(lines[0], delim).map(normalizeHeaderCell);
+
+  const idx = {
+    surname:   header.findIndex(h => h === 'surname' || h === 'surnmae' || h === 'last name' || h === 'lastname'),
+    firstName: header.findIndex(h => h === 'name' || h === 'first name' || h === 'firstname'),
+    empCode:   header.findIndex(h => h === 'emp code' || h === 'employee code' || h === 'emp no' || h === 'employee no' || h === 'staff no' || h === 'staff code' || h === 'emp #' || h === 'emp#'),
+    leave:     header.findIndex(h => h.includes('leave')),
+  };
+
+  const employees: LeaveBalanceEntry[] = [];
+  const errors: string[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i], delim).map(c => c.trim().replace(/^"|"$/g, ''));
+    if (cols.every(c => !c)) continue;
+    const get = (k: keyof typeof idx) => idx[k] >= 0 ? cols[idx[k]] ?? '' : '';
+    const surname = get('surname');
+    if (!surname) continue;
+    employees.push({
+      surname,
+      firstName:        get('firstName'),
+      employeeCode:      get('empCode'),
+      leaveBalanceDays:  parseTabularAmount(get('leave')),
+    });
+  }
+  return { employees, errors };
+}
+
 // ─── VIP Report 710 parser ────────────────────────────────────────────────────
 
 export function parseVIPReport(text: string): ParseResult {

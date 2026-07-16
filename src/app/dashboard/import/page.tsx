@@ -2,14 +2,15 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile, parseCslPayrollSchedule, type PayrollSchedulePeriod } from '@/lib/vip-parser';
+import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile, isLeaveBalanceFile, parseLeaveBalanceFile, parseCslPayrollSchedule, type PayrollSchedulePeriod } from '@/lib/vip-parser';
 import { isEmployeeCsvExport, parseEmployeeCsvExport, type RoundtripRow } from '@/lib/employee-csv';
 import { Hotel } from '@/types/database';
 import { fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
+import { isBotswana } from '@/lib/payroll-calc';
 import { Upload, CheckCircle, FileText, ChevronRight } from 'lucide-react';
 
 type Step = 'select' | 'preview' | 'done';
-type ImportType = 'vip' | 'employee' | 'medical' | 'roundtrip' | 'payroll-schedule';
+type ImportType = 'vip' | 'employee' | 'medical' | 'roundtrip' | 'payroll-schedule' | 'leave';
 
 interface ImportRow {
   importType: ImportType;
@@ -55,6 +56,17 @@ interface MedicalRow {
   currentMedical: number;
 }
 
+interface LeaveRow {
+  surname: string;
+  firstName: string;
+  employeeCode: string;
+  employeeId: string | null;
+  leaveBalanceDays: number;
+  basic: number;
+  dailyRate: number;
+  provisionValue: number;
+}
+
 const GRADE_MAP: Record<string, string> = {
   'frontline':   'Frontline',
   'front line':  'Frontline',
@@ -92,6 +104,7 @@ export default function ImportPage() {
   const [step, setStep]         = useState<Step>('select');
   const [rows, setRows]         = useState<ImportRow[]>([]);
   const [medicalRows, setMedicalRows] = useState<MedicalRow[]>([]);
+  const [leaveRows, setLeaveRows]     = useState<LeaveRow[]>([]);
   const [errors, setErrors]     = useState<string[]>([]);
   const [importType, setImportType] = useState<ImportType>('vip');
   const [periodMonth, setPeriodMonth] = useState(new Date().getMonth() + 1);
@@ -156,8 +169,9 @@ export default function ImportPage() {
     const firstLine = text.split('\n')[0] ?? '';
     const isMedical    = isMedicalAidFile(firstLine);
     const isRoundtrip  = !isMedical && isEmployeeCsvExport(firstLine);
-    const isEmployee   = !isMedical && !isRoundtrip && isTabularEmployeeFile(firstLine);
-    setImportType(isMedical ? 'medical' : isRoundtrip ? 'roundtrip' : isEmployee ? 'employee' : 'vip');
+    const isLeave      = !isMedical && !isRoundtrip && isLeaveBalanceFile(firstLine);
+    const isEmployee   = !isMedical && !isRoundtrip && !isLeave && isTabularEmployeeFile(firstLine);
+    setImportType(isMedical ? 'medical' : isRoundtrip ? 'roundtrip' : isLeave ? 'leave' : isEmployee ? 'employee' : 'vip');
 
     if (isRoundtrip) {
       // ── Employee CSV round-trip re-import ─────────────────────────────────
@@ -233,6 +247,68 @@ export default function ImportPage() {
       });
 
       setMedicalRows(mRows);
+      setErrors([]);
+      setLoading(false);
+      setStep('preview');
+      return;
+    } else if (isLeave) {
+      // ── Leave Provision balance import (annual, July) ─────────────────────
+      const { employees: emps } = parseLeaveBalanceFile(text);
+
+      const { data: existing } = await sb
+        .from('employees')
+        .select('id, surname, first_name, employee_code')
+        .eq('hotel_id', hotelId);
+
+      const nameMap = new Map(
+        (existing ?? []).map((e: any) => [`${e.surname.toLowerCase()}|${e.first_name.toLowerCase()}`, e.id as string])
+      );
+      const codeMap = new Map(
+        (existing ?? []).filter((e: any) => e.employee_code).map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string])
+      );
+
+      const matched = emps.map(emp => {
+        const codeKey = emp.employeeCode ? emp.employeeCode.toUpperCase() : '';
+        const nameKey = `${emp.surname.toLowerCase()}|${emp.firstName.toLowerCase()}`;
+        const employeeId = (codeKey ? codeMap.get(codeKey) : undefined) ?? nameMap.get(nameKey) ?? null;
+        return { ...emp, employeeId };
+      });
+
+      const employeeIds = matched.filter(m => m.employeeId).map(m => m.employeeId!);
+      const { data: salRecs } = employeeIds.length
+        ? await sb.from('salary_records').select('employee_id, basic_salary, period_year, period_month').in('employee_id', employeeIds)
+        : { data: [] };
+
+      // Latest salary record per employee — gives current basic_salary for the calc
+      const latestSalMap = new Map<string, { basic_salary: number; period_year: number; period_month: number }>();
+      for (const s of (salRecs ?? []) as any[]) {
+        const existingSal = latestSalMap.get(s.employee_id);
+        if (!existingSal || s.period_year > existingSal.period_year || (s.period_year === existingSal.period_year && s.period_month > existingSal.period_month)) {
+          latestSalMap.set(s.employee_id, { basic_salary: s.basic_salary ?? 0, period_year: s.period_year, period_month: s.period_month });
+        }
+      }
+
+      const selectedHotel = hotels.find(h => h.id === hotelId);
+      const bw = selectedHotel ? isBotswana(selectedHotel.country) : false;
+      const divisor = selectedHotel?.leave_provision_divisor ?? (bw ? 26 : 30.42);
+
+      const lRows: LeaveRow[] = matched.map(emp => {
+        const basic = emp.employeeId ? latestSalMap.get(emp.employeeId)?.basic_salary ?? 0 : 0;
+        const dailyRate = Math.round((basic / divisor) * 100) / 100;
+        const provisionValue = Math.round(dailyRate * emp.leaveBalanceDays * 100) / 100;
+        return {
+          surname:          emp.surname,
+          firstName:        emp.firstName,
+          employeeCode:     emp.employeeCode,
+          employeeId:       emp.employeeId,
+          leaveBalanceDays: emp.leaveBalanceDays,
+          basic,
+          dailyRate,
+          provisionValue,
+        };
+      });
+
+      setLeaveRows(lRows);
       setErrors([]);
       setLoading(false);
       setStep('preview');
@@ -357,6 +433,51 @@ export default function ImportPage() {
     setResult({ added: 0, updated });
     setImporting(false);
     setStep('done');
+  }
+
+  async function confirmLeaveProvision() {
+    setImporting(true);
+    const sb2 = createClient();
+    const periodYear = new Date().getFullYear();
+    const matchedRows = leaveRows.filter(r => r.employeeId);
+
+    try {
+      const { data: importRec } = await sb2.from('payroll_imports').insert({
+        hotel_id: hotelId,
+        filename: `Leave_Provision_Import_${periodYear}`,
+        period_month: new Date().getMonth() + 1,
+        period_year: periodYear,
+        employees_added: 0,
+        employees_updated: matchedRows.length,
+        employees_flagged: leaveRows.length - matchedRows.length,
+        status: 'confirmed',
+      }).select().single();
+      const importId = (importRec as any)?.id;
+
+      if (matchedRows.length > 0) {
+        await sb2.from('leave_provisions').upsert(
+          matchedRows.map(r => ({
+            employee_id:        r.employeeId,
+            hotel_id:           hotelId,
+            period_year:        periodYear,
+            leave_balance_days: r.leaveBalanceDays,
+            daily_rate:         r.dailyRate,
+            provision_value:    r.provisionValue,
+            basic_at_calc:      r.basic,
+            import_id:          importId,
+            imported_at:        new Date().toISOString(),
+          })),
+          { onConflict: 'employee_id,period_year' },
+        );
+      }
+
+      setResult({ added: 0, updated: matchedRows.length });
+      setStep('done');
+    } catch (err) {
+      setErrors([`Import failed: ${err instanceof Error ? err.message : String(err)}`]);
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function confirmRoundtrip() {
@@ -724,6 +845,7 @@ export default function ImportPage() {
     setStep('select');
     setRows([]);
     setMedicalRows([]);
+    setLeaveRows([]);
     setRoundtripRows([]);
     setPayrollPeriods([]);
     setSelectedPeriodIdx(0);
@@ -883,6 +1005,69 @@ export default function ImportPage() {
             >
               <FileText className="h-4 w-4" />
               {importing ? 'Updating…' : `Update Medical Aid (${medicalRows.filter(r => r.salaryRecordId).length} records)`}
+            </button>
+            <button onClick={reset} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2: Preview — Leave Provision balance import */}
+      {step === 'preview' && importType === 'leave' && (
+        <div className="space-y-4">
+          <div className="flex gap-3 flex-wrap items-center">
+            <span className="rounded-full px-3 py-1 text-xs font-medium bg-teal-50 text-teal-700 border border-teal-200">
+              Leave Provision Balance Import
+            </span>
+            <span className="rounded-lg bg-blue-50 border border-blue-200 px-3 py-1.5 text-sm text-blue-700">
+              <strong>{leaveRows.filter(r => r.employeeId).length}</strong> matched
+            </span>
+            {leaveRows.some(r => !r.employeeId) && (
+              <span className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-1.5 text-sm text-amber-700">
+                <strong>{leaveRows.filter(r => !r.employeeId).length}</strong> not found
+              </span>
+            )}
+          </div>
+
+          <div className="bg-white rounded-xl border overflow-x-auto">
+            <table className="w-full text-sm whitespace-nowrap">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">Name</th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">Status</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Leave Balance (days)</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Daily Rate</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Provision Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leaveRows.map((r, i) => (
+                  <tr key={i} className="border-b last:border-0 hover:bg-muted/10">
+                    <td className="px-4 py-2.5 font-medium">{r.surname}, {r.firstName}</td>
+                    <td className="px-4 py-2.5">
+                      {r.employeeId
+                        ? <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-blue-50 text-blue-700">Matched</span>
+                        : <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-red-50 text-red-700">Not found</span>
+                      }
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono">{r.leaveBalanceDays}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(r.dailyRate)}</td>
+                    <td className="px-4 py-2.5 text-right font-mono">{fmt(r.provisionValue)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={confirmLeaveProvision}
+              disabled={importing || leaveRows.filter(r => r.employeeId).length === 0}
+              className="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-5 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              <FileText className="h-4 w-4" />
+              {importing ? 'Importing…' : `Import Leave Provision (${leaveRows.filter(r => r.employeeId).length} records)`}
             </button>
             <button onClick={reset} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
               Cancel

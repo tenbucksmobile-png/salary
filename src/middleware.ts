@@ -14,6 +14,7 @@ const SUB_BLOCKED = [
 const TAB_ROUTES: Record<TabKey, string[]> = {
   dashboard:      ['/dashboard'],
   employees:      ['/dashboard/employees'],
+  leaveProvision: ['/dashboard/leave-provision'],
   import:         ['/dashboard/import'],
   reconciliation: ['/dashboard/reconciliation'],
   reports:        ['/dashboard/reports'],

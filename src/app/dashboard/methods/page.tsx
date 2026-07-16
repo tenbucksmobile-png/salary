@@ -31,6 +31,7 @@ type HotelConfig = {
   ctcBonus: boolean;
   leaveAccrualPct: string;
   bonusProvisionPct: string;
+  leaveProvisionDivisor: string;
 };
 
 function fmtRate(decimal: number): string {
@@ -60,6 +61,7 @@ function hotelToConfig(h: Hotel): HotelConfig {
     ctcBonus:              h.ctc_bonus         ?? false,
     leaveAccrualPct:       String((h.leave_accrual_pct   ?? 1) * 100),
     bonusProvisionPct:     String((h.bonus_provision_pct ?? 1) * 100),
+    leaveProvisionDivisor: String(h.leave_provision_divisor ?? (bw ? 26 : 30.42)),
   };
 }
 
@@ -138,6 +140,7 @@ export default function MethodsPage() {
       ctc_bonus:                cfg.ctcBonus,
       leave_accrual_pct:        parseFloat(cfg.leaveAccrualPct) / 100,
       bonus_provision_pct:      parseFloat(cfg.bonusProvisionPct) / 100,
+      leave_provision_divisor:  parseFloat(cfg.leaveProvisionDivisor),
     }).eq('id', hotel.id);
 
     // Load active employees for this hotel
@@ -576,6 +579,40 @@ export default function MethodsPage() {
                   <CbCell field="ctcBonus" />
                 </tr>
 
+              </tbody>
+            </table>
+          </div>
+
+          {/* ── Leave Provision (annual, July balance import) ───────────────── */}
+          <div className="bg-white rounded-xl border mb-7 overflow-hidden">
+            <div className="px-5 py-3 border-b bg-muted/30">
+              <h2 className="text-sm font-semibold">Leave Provision</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Daily rate divisor used to convert an imported leave balance (days) into a Rand/Pula provision value on the Leave Provision tab. Standalone — not part of CTC or payroll burden.
+              </p>
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/10">
+                  <th className={`${thCls} w-72`}>Item</th>
+                  <th className={thCls}>Divisor</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                <tr>
+                  <td className="px-5 py-3">
+                    Daily Rate
+                    <span className="ml-1.5 text-xs text-muted-foreground">= Basic ÷ divisor</span>
+                  </td>
+                  <td className="px-5 py-3">
+                    <input
+                      type="number" step="0.01" min="0.01"
+                      value={cfg.leaveProvisionDivisor}
+                      onChange={e => patch('leaveProvisionDivisor', e.target.value)}
+                      className={inputCls}
+                    />
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>

@@ -148,12 +148,15 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `016_user_allowed_tabs.sql` | `allowed_tabs text[]` on `users` — per-sub-user configurable tab access (Employees/Import/Reconciliation), backfilled to the prior fixed set for existing sub users |
 | `017_employee_last_seen.sql` | `last_seen_at timestamptz` on `employees` — tracks the last full-roster import that matched/added the employee; powers the "not in last import" red flag on the Employees page |
 | `018_ftc_to_fixed_term.sql` | Updates `employees.grade_label = 'FTC'` rows to `'Fixed Term'` (canonical grade value rename) |
+| `019_leave_provisions.sql` | `hotels.leave_provision_divisor`; new `leave_provisions` table (annual leave balance provisioning — see Leave Provision section) |
 
 ### `hotels` configurable method columns (from migration 009)
 
 All rates stored as decimals (e.g. 0.07 = 7%). All displayed as percentages in the Methods UI.
 
 `provident_ee_rate`, `provident_er_rate`, `provident_er_rate_senior` (BW tenure split), `uif_rate`, `uif_cap` (R amount), `sdl_rate`, `meals_standard`, `meals_manager`, `leave_days`, `bonus_days`, `leave_accrual_pct`, `bonus_provision_pct`
+
+`leave_provision_divisor` (migration 019) is a related but separate configurable rate — it feeds the standalone Leave Provision tab, not `calculateBurden()`. See the Leave Provision section below.
 
 CTC inclusion flags (boolean, default false for provisions): `ctc_provident_er`, `ctc_uif_er`, `ctc_sdl`, `ctc_wca`, `ctc_meals`, `ctc_leave_accrual`, `ctc_bonus`
 
@@ -270,6 +273,16 @@ Previously called "Employee Details". The nav tab and page title are "Import HR 
 - Matches by `employee_code` within the selected hotel; updates all employee fields + upserts the full salary record
 - After import, run Calculate Burden or Methods → Save & Update to recalculate contributions
 
+### Leave Provision Balance Import (annual, July)
+
+- Parser: `src/lib/vip-parser.ts` → `isLeaveBalanceFile()` / `parseLeaveBalanceFile()`
+- Detected: header has a name field + a "leave" column mentioning balance/days/accrual, and **no** gross/salary/earnings column (distinguishes it from the generic HR List detector)
+- **Columns parsed**: Surname, First Name, Employee Code (optional — falls back to name match), Leave Balance (days)
+- Matching: employee code first, falls back to surname + first_name
+- Handled as its own preview/confirm pair (`leaveRows` state, `confirmLeaveProvision()`) on the Import page — mirrors the Medical Aid Update branch, does **not** go through the shared `ImportRow`/`confirmImport()` pipeline used by VIP/HR List/CSL/round-trip
+- At preview time, computes `dailyRate = basic ÷ hotel.leave_provision_divisor` (fallback: 26 Botswana / 30.42 South Africa, configurable per hotel on the Methods page) and `provisionValue = dailyRate × leaveBalanceDays`, using each employee's latest `salary_records.basic_salary`
+- Confirm upserts into the `leave_provisions` table (not `salary_records`) on conflict `(employee_id, period_year)`, `period_year = new Date().getFullYear()` — see the Leave Provision section below
+
 ---
 
 ## Key Files
@@ -294,7 +307,8 @@ src/
       employees/
         page.tsx          — Employee list; column picker, hotel CSV export, Calculate Burden
         [id]/page.tsx     — Employee detail + edit form; salary section has Structure (stored in allowances.structure) + Total (Gross) inputs; Basic Salary = Total − Structure is derived read-only; provident fund uses basic for EE and ER (APA Director exception: 14% of gross)
-      import/page.tsx     — Multi-format import (HR List xlsx/CSV/TSV, VIP, Medical Aid, Round-trip CSV, CSL Payroll Schedule xlsx); nav label "Import HR List"; no period selector for HR List type
+      leave-provision/page.tsx — Standalone annual leave balance provisioning; hotel + year selector, Recalculate button; reads the leave_provisions table, populated only via Import HR List
+      import/page.tsx     — Multi-format import (HR List xlsx/CSV/TSV, VIP, Medical Aid, Leave Balance, Round-trip CSV, CSL Payroll Schedule xlsx); nav label "Import HR List"; no period selector for HR List type
       methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All; InflationHistoryCard rendered at bottom
       settings/page.tsx   — Redirects to /dashboard/methods
       salary-review/page.tsx — Per-hotel increase builder; drafts persist to DB; commit to salary_records
@@ -511,6 +525,22 @@ Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE
 **Provisions section**: Staff Meals standard/manager, Leave Accrual (`days / 365 × %`), Bonus Provision (`days / 365 × %`) — each with "Include in CTC" checkbox. The `%` multiplier (stored as `leave_accrual_pct` / `bonus_provision_pct` on `hotels`) is applied after the days/365 factor: `basic × (days/365) × pct`.
 
 **Save & Update All [Hotel] Employees** — saves rates to `hotels` table, then recalculates and updates the latest salary record for every active employee in the hotel. Employees with `incentive_applicable` keep their incentive and receive no `bonus_provision` (this is handled inside `calculateBurden`, not special-cased here).
+
+**Leave Provision section**: a single "Daily Rate" divisor per hotel (`hotels.leave_provision_divisor`, default 26 Botswana / 30.42 South Africa). Feeds only the Leave Provision tab's calculation — not included in `calculateBurden()`, not saved via the "Save & Update All" recompute loop (it's read fresh at import/recalculate time, never baked into a stored payroll burden figure).
+
+---
+
+## Leave Provision
+
+`/dashboard/leave-provision` — standalone annual (July) leave balance provisioning. Nav tab positioned directly under Employees; configurable per sub-user via Access (key `leaveProvision` in `CONFIGURABLE_TABS`, not included in `DEFAULT_SUB_TABS` — same "never accessible before, must be explicitly granted" precedent as Reports/Methods).
+
+**Deliberately standalone from payroll burden** — does not affect `calculateBurden()`, `ctc`, `total_cost`, the Reports field list, or the Employees column picker. It answers a different question ("what would we owe today for banked leave days") from the existing `leave_accrual` column (a forward-looking monthly estimate, `basic × days/365 × pct`) and the legacy `leave_provision` column on `salary_records` (a VIP 710 passthrough) — none of these three are meant to reconcile with each other.
+
+**Data model**: dedicated `leave_provisions` table (migration 019), one row per employee per `period_year`, **not** stored on `salary_records` — avoids any risk of an upsert on `(employee_id, period_year, period_month)` clobbering a real payroll record for that period. Columns: `leave_balance_days` (imported), `daily_rate` + `provision_value` (computed), `basic_at_calc` (the basic salary used for the calc, for audit), `import_id`, `imported_at`.
+
+**Populating data**: only via the Leave Balance Import format on the Import HR List page (see Import Formats above) — there is no manual entry UI. Employees with no row for the selected year are simply omitted from the table (no synthetic zero rows).
+
+**Page**: single-hotel selector (no "All Hotels" — same convention as the Employees page), a Year selector populated from whichever `period_year` values exist for that hotel, a table (Emp Code / Surname / First Name / Grade / Leave Balance days / Daily Rate / Provision Value / Imported date) with a totals row, and a **Recalculate** button that re-reads each employee's *current* `basic_salary` and the hotel's *current* `leave_provision_divisor` to refresh `daily_rate`/`provision_value` in place — useful if a raise happened after the July import. Recalculate never touches `leave_balance_days`; only a fresh import can change the balance itself.
 
 ---
 
