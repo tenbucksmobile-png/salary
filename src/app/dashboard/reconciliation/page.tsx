@@ -889,7 +889,7 @@ export default function ReconciliationPage() {
         dbEmployee: db ?? null,
         dbBasic: db ? (basicMap.get(db.id) ?? null) : null,
         payBasic: l.basic,
-        ftc: db?.grade_label === 'FTC',
+        ftc: db?.grade_label === 'Fixed Term',
       });
     }
     for (const emp of xref.employees) {
@@ -899,7 +899,7 @@ export default function ReconciliationPage() {
           dbEmployee: emp,
           dbBasic: basicMap.get(emp.id) ?? null,
           payBasic: null,
-          ftc: emp.grade_label === 'FTC',
+          ftc: emp.grade_label === 'Fixed Term',
         });
       }
     }
@@ -1339,7 +1339,7 @@ export default function ReconciliationPage() {
                                 <td className="px-3 py-1.5 font-mono text-xs">
                                   {row.empCode && !row.empCode.includes('|') ? row.empCode : '—'}
                                   {row.empCode && ftcCodes.has(row.empCode) && (
-                                    <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
+                                    <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">Fixed Term</span>
                                   )}
                                 </td>
                                 <td className="px-3 py-1.5 max-w-[140px] truncate">{row.name}</td>
@@ -1585,7 +1585,7 @@ export default function ReconciliationPage() {
                           <td className="px-3 py-1.5 font-medium">
                             {row.name}
                             {row.ftc && (
-                              <span className="ml-1.5 text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
+                              <span className="ml-1.5 text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">Fixed Term</span>
                             )}
                           </td>
                           <td className="px-3 py-1.5 text-muted-foreground text-xs">
@@ -1661,7 +1661,7 @@ export default function ReconciliationPage() {
                             <td className="px-3 py-1.5 font-mono text-xs">
                               {e.empCode && !e.empCode.includes('|') ? e.empCode : '—'}
                               {ftcCodes.has(e.empCode) && (
-                                <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
+                                <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">Fixed Term</span>
                               )}
                             </td>
                             <td className="px-3 py-1.5">{e.name}</td>
@@ -1731,7 +1731,7 @@ export default function ReconciliationPage() {
                               <td className="px-3 py-1.5 font-mono text-xs">
                                 {e.empCode && !e.empCode.includes('|') ? e.empCode : '—'}
                                 {ftcCodes.has(e.empCode) && (
-                                  <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">FTC</span>
+                                  <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">Fixed Term</span>
                                 )}
                               </td>
                               <td className="px-3 py-1.5">{e.name}</td>

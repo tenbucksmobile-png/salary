@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useEffect, useMemo, Fragment } from 'react';
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord, ScenarioLine } from '@/types/database';
 import { fmtZAR, fmtCurrency, sortHotels } from '@/lib/utils';
-import { Plus, Minus } from 'lucide-react';
+import { Plus, Minus, ChevronDown } from 'lucide-react';
 
 const GRADE_OPTIONS = [
-  'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible',
+  'ANO', 'Fixed Term', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible',
 ];
 const GRADE_ORDER = [...GRADE_OPTIONS, 'Unclassified'];
 
@@ -84,6 +84,10 @@ export default function SalarySummaryTable() {
   // Filter state
   const [selectedHotels, setSelectedHotels] = useState<Set<string>>(new Set()); // empty = all
   const [selectedGrades, setSelectedGrades] = useState<Set<string>>(new Set()); // empty = all
+  const [hotelDropdownOpen, setHotelDropdownOpen] = useState(false);
+  const [gradeDropdownOpen, setGradeDropdownOpen] = useState(false);
+  const hotelDropdownRef = useRef<HTMLDivElement>(null);
+  const gradeDropdownRef = useRef<HTMLDivElement>(null);
 
   // Two-level expand/collapse: hotel → grade subtotal rows → individual employees
   const [expandedHotels, setExpandedHotels] = useState<Set<string>>(new Set());
@@ -104,6 +108,19 @@ export default function SalarySummaryTable() {
       return next;
     });
   }
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (hotelDropdownRef.current && !hotelDropdownRef.current.contains(e.target as Node)) {
+        setHotelDropdownOpen(false);
+      }
+      if (gradeDropdownRef.current && !gradeDropdownRef.current.contains(e.target as Node)) {
+        setGradeDropdownOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
 
   useEffect(() => {
     async function load() {
@@ -288,70 +305,90 @@ export default function SalarySummaryTable() {
       </div>
 
       {/* ── Filters ── */}
-      <div className="bg-white rounded-xl border p-5 mb-4 flex flex-wrap gap-6">
-        {/* Hotels — checkbox list */}
-        <div>
-          <p className="text-xs font-semibold text-muted-foreground mb-2">Hotel</p>
-          <div className="space-y-1.5">
-            <label className="flex items-center gap-2 cursor-pointer text-sm">
-              <input
-                type="checkbox"
-                checked={selectedHotels.size === 0}
-                onChange={() => setSelectedHotels(new Set())}
-                className="rounded"
-              />
-              <span className="font-medium">All Hotels</span>
-            </label>
-            <div className="border-t my-1" />
-            {hotels.map(h => (
-              <label key={h.id} className="flex items-center gap-2 cursor-pointer text-sm">
+      <div className="bg-white rounded-xl border p-5 mb-4 flex flex-wrap gap-4">
+        {/* Hotels — dropdown checkbox list */}
+        <div className="relative" ref={hotelDropdownRef}>
+          <label className="text-xs font-medium text-muted-foreground block mb-1">Hotel</label>
+          <button
+            type="button"
+            onClick={() => setHotelDropdownOpen(v => !v)}
+            className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white flex items-center gap-2 min-w-[200px] justify-between"
+          >
+            <span>{selectedHotels.size === 0 ? 'All Hotels' : `${selectedHotels.size} hotel${selectedHotels.size > 1 ? 's' : ''} selected`}</span>
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+          </button>
+          {hotelDropdownOpen && (
+            <div className="absolute z-20 mt-1 bg-white border rounded-lg shadow-lg py-1.5 min-w-[220px]">
+              <label className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-muted/30 cursor-pointer text-sm font-medium">
                 <input
                   type="checkbox"
-                  checked={selectedHotels.has(h.id)}
-                  onChange={() => setSelectedHotels(prev => {
-                    const n = new Set(prev);
-                    n.has(h.id) ? n.delete(h.id) : n.add(h.id);
-                    return n;
-                  })}
-                  className="rounded"
+                  checked={selectedHotels.size === 0}
+                  onChange={() => setSelectedHotels(new Set())}
+                  className="rounded accent-primary"
                 />
-                <span>{h.name}</span>
-                <span className="text-xs text-muted-foreground">{h.short_code}</span>
+                All Hotels
               </label>
-            ))}
-          </div>
+              <div className="border-t my-1" />
+              {hotels.map(h => (
+                <label key={h.id} className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-muted/30 cursor-pointer text-sm">
+                  <input
+                    type="checkbox"
+                    checked={selectedHotels.has(h.id)}
+                    onChange={() => setSelectedHotels(prev => {
+                      const n = new Set(prev);
+                      n.has(h.id) ? n.delete(h.id) : n.add(h.id);
+                      return n;
+                    })}
+                    className="rounded accent-primary"
+                  />
+                  <span>{h.name}</span>
+                  <span className="text-xs text-muted-foreground">{h.short_code}</span>
+                </label>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Grades — checkbox list */}
-        <div>
-          <p className="text-xs font-semibold text-muted-foreground mb-2">Grade</p>
-          <div className="space-y-1.5">
-            <label className="flex items-center gap-2 cursor-pointer text-sm">
-              <input
-                type="checkbox"
-                checked={selectedGrades.size === 0}
-                onChange={() => setSelectedGrades(new Set())}
-                className="rounded"
-              />
-              <span className="font-medium">All Grades</span>
-            </label>
-            <div className="border-t my-1" />
-            {GRADE_OPTIONS.map(g => (
-              <label key={g} className="flex items-center gap-2 cursor-pointer text-sm">
+        {/* Grades — dropdown checkbox list */}
+        <div className="relative" ref={gradeDropdownRef}>
+          <label className="text-xs font-medium text-muted-foreground block mb-1">Grade</label>
+          <button
+            type="button"
+            onClick={() => setGradeDropdownOpen(v => !v)}
+            className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white flex items-center gap-2 min-w-[180px] justify-between"
+          >
+            <span>{selectedGrades.size === 0 ? 'All Grades' : `${selectedGrades.size} grade${selectedGrades.size > 1 ? 's' : ''} selected`}</span>
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+          </button>
+          {gradeDropdownOpen && (
+            <div className="absolute z-20 mt-1 bg-white border rounded-lg shadow-lg py-1.5 min-w-[180px]">
+              <label className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-muted/30 cursor-pointer text-sm font-medium">
                 <input
                   type="checkbox"
-                  checked={selectedGrades.has(g)}
-                  onChange={() => setSelectedGrades(prev => {
-                    const n = new Set(prev);
-                    n.has(g) ? n.delete(g) : n.add(g);
-                    return n;
-                  })}
-                  className="rounded"
+                  checked={selectedGrades.size === 0}
+                  onChange={() => setSelectedGrades(new Set())}
+                  className="rounded accent-primary"
                 />
-                <span>{g}</span>
+                All Grades
               </label>
-            ))}
-          </div>
+              <div className="border-t my-1" />
+              {GRADE_OPTIONS.map(g => (
+                <label key={g} className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-muted/30 cursor-pointer text-sm">
+                  <input
+                    type="checkbox"
+                    checked={selectedGrades.has(g)}
+                    onChange={() => setSelectedGrades(prev => {
+                      const n = new Set(prev);
+                      n.has(g) ? n.delete(g) : n.add(g);
+                      return n;
+                    })}
+                    className="rounded accent-primary"
+                  />
+                  <span>{g}</span>
+                </label>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

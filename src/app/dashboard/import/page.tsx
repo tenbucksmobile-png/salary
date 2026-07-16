@@ -63,8 +63,9 @@ const GRADE_MAP: Record<string, string> = {
   'executive':   'Executive',
   'exec':        'Executive',
   'flexible':    'Flexible',
-  'fixed term':  'FTC',
-  'fixed_term':  'FTC',
+  'fixed term':  'Fixed Term',
+  'fixed_term':  'Fixed Term',
+  'ftc':         'Fixed Term',
 };
 function normalizeGrade(g: string | null): string | null {
   if (!g) return null;
@@ -633,7 +634,7 @@ export default function ImportPage() {
             paypoint: row.paypoint || null,
             category: row.category || null,
             job_grade: row.jobGrade || null,
-            grade_label: importAsFtc ? 'FTC' : (row.gradeLabel || null),
+            grade_label: importAsFtc ? 'Fixed Term' : (row.gradeLabel || null),
             ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
             ...(importType === 'employee' ? { last_seen_at: seenAt } : {}),
           }).select().single();
@@ -651,7 +652,7 @@ export default function ImportPage() {
             ...(row.paypoint ? { paypoint: row.paypoint } : {}),
             ...(row.category ? { category: row.category } : {}),
             ...(row.jobGrade ? { job_grade: row.jobGrade } : {}),
-            ...(importAsFtc ? { grade_label: 'FTC' } : row.gradeLabel ? { grade_label: row.gradeLabel } : {}),
+            ...(importAsFtc ? { grade_label: 'Fixed Term' } : row.gradeLabel ? { grade_label: row.gradeLabel } : {}),
             ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
             ...(importType === 'employee' ? { last_seen_at: seenAt } : {}),
             updated_at: new Date().toISOString(),
@@ -792,7 +793,7 @@ export default function ImportPage() {
                   onClick={() => setImportAsFtc(true)}
                   className={`px-4 py-2 text-sm font-medium border-l border-input transition-colors ${importAsFtc ? 'bg-primary text-primary-foreground' : 'bg-white text-muted-foreground hover:bg-muted'}`}
                 >
-                  Fixed Term (FTC)
+                  Fixed Term
                 </button>
               </div>
               {importAsFtc && (

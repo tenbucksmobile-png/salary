@@ -68,20 +68,20 @@ const HOTEL_FILTER_KEY   = 'ihg-salary-emp-hotel';
 
 const DEFAULT_VISIBLE = new Set(ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.id));
 
-const GRADE_OPTIONS  = ['ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
+const GRADE_OPTIONS  = ['ANO', 'Fixed Term', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
 const STATUS_OPTIONS = ['active', 'terminated'] as const;
 
 // Some hotels split their employee list into "Permanent" + a second grade-based
 // tab. Keyed by hotel short_code.
 interface SecondaryGradeTab {
   tabLabel:   string;      // toggle button text
-  countLabel: string;      // header summary text (e.g. "5 FTC employees")
+  countLabel: string;      // header summary text (e.g. "5 Fixed Term employees")
   suffix:     string;      // CSV filename suffix
   grades:     Set<string>; // grade_label values that belong in this tab
 }
 const SECONDARY_GRADE_TABS: Record<string, SecondaryGradeTab> = {
-  CSL:  { tabLabel: 'Fixed Term', countLabel: 'FTC',      suffix: 'ftc',      grades: new Set(['FTC']) },
-  NL:   { tabLabel: 'Fixed Term', countLabel: 'FTC',      suffix: 'ftc',      grades: new Set(['FTC']) },
+  CSL:  { tabLabel: 'Fixed Term', countLabel: 'Fixed Term', suffix: 'ftc',      grades: new Set(['Fixed Term']) },
+  NL:   { tabLabel: 'Fixed Term', countLabel: 'Fixed Term', suffix: 'ftc',      grades: new Set(['Fixed Term']) },
   ILRB: { tabLabel: 'Flexible',   countLabel: 'Flexible', suffix: 'flexible', grades: new Set(['Flexible']) },
 };
 

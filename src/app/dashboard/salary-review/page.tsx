@@ -8,7 +8,7 @@ import { TrendingUp, CheckCircle, Pencil, X, Check, Download, Save, Trash2, Chev
 import { calculateBurden, BurdenResult } from '@/lib/payroll-calc';
 import { exportSalaryReview, ExportHotel, BenchmarkData } from '@/lib/excel-export';
 
-const GRADE_OPTIONS = ['All Grades', 'ANO', 'FTC', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
+const GRADE_OPTIONS = ['All Grades', 'ANO', 'Fixed Term', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
 
 function yearsOfService(date: string | null): number | null {
   if (!date) return null;
