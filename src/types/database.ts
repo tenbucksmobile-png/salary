@@ -219,7 +219,7 @@ export interface LeaveProvision {
   leave_balance_days: number;
   daily_rate: number;
   provision_value: number;
-  basic_at_calc: number;
+  basic_at_calc: number; // despite the name, this is gross salary (total_earnings, inclusive of structure) — never basic or CTC
   import_id: string | null;
   imported_at: string;
 }

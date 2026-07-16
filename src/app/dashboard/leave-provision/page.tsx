@@ -123,12 +123,14 @@ export default function LeaveProvisionPage() {
       const hotel = r.hotel;
       const bw = hotel ? isBotswana(hotel.country) : false;
       const divisor = hotel?.leave_provision_divisor ?? (bw ? 26 : 30.42);
-      const basic = latestSalary.get(r.employee!.id)?.basic_salary ?? r.provision.basic_at_calc;
+      // Gross salary (total_earnings, inclusive of structure) drives the daily
+      // rate — never basic or CTC.
+      const gross = latestSalary.get(r.employee!.id)?.total_earnings ?? r.provision.basic_at_calc;
       const cappedDays = Math.min(r.provision.leave_balance_days, LEAVE_PROVISION_CAP_DAYS);
-      const dailyRate = Math.round((basic / divisor) * 100) / 100;
+      const dailyRate = Math.round((gross / divisor) * 100) / 100;
       const provisionValue = Math.round(dailyRate * cappedDays * 100) / 100;
       return sb.from('leave_provisions').update({
-        basic_at_calc:   basic,
+        basic_at_calc:   gross,
         daily_rate:      dailyRate,
         provision_value: provisionValue,
       }).eq('id', r.provision.id);

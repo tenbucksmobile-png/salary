@@ -11,7 +11,7 @@ CREATE TABLE leave_provisions (
   leave_balance_days numeric NOT NULL DEFAULT 0,
   daily_rate         numeric NOT NULL DEFAULT 0,
   provision_value    numeric NOT NULL DEFAULT 0,
-  basic_at_calc      numeric NOT NULL DEFAULT 0,   -- basic_salary used for the calc, for audit
+  basic_at_calc      numeric NOT NULL DEFAULT 0,   -- despite the name, this is gross salary (total_earnings) used for the calc, for audit
   import_id          uuid REFERENCES payroll_imports(id),
   imported_at        timestamptz DEFAULT now(),
   UNIQUE(employee_id, period_year)

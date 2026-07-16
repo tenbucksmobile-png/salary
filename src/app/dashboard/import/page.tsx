@@ -63,7 +63,7 @@ interface LeaveRow {
   employeeId: string | null;
   leaveBalanceDays: number;
   cappedLeaveBalanceDays: number;
-  basic: number;
+  grossSalary: number;
   dailyRate: number;
   provisionValue: number;
 }
@@ -277,15 +277,16 @@ export default function ImportPage() {
 
       const employeeIds = matched.filter(m => m.employeeId).map(m => m.employeeId!);
       const { data: salRecs } = employeeIds.length
-        ? await sb.from('salary_records').select('employee_id, basic_salary, period_year, period_month').in('employee_id', employeeIds)
+        ? await sb.from('salary_records').select('employee_id, total_earnings, period_year, period_month').in('employee_id', employeeIds)
         : { data: [] };
 
-      // Latest salary record per employee — gives current basic_salary for the calc
-      const latestSalMap = new Map<string, { basic_salary: number; period_year: number; period_month: number }>();
+      // Latest salary record per employee — gross salary (total_earnings, inclusive
+      // of the structure allowance) drives the daily rate, never basic or CTC.
+      const latestSalMap = new Map<string, { total_earnings: number; period_year: number; period_month: number }>();
       for (const s of (salRecs ?? []) as any[]) {
         const existingSal = latestSalMap.get(s.employee_id);
         if (!existingSal || s.period_year > existingSal.period_year || (s.period_year === existingSal.period_year && s.period_month > existingSal.period_month)) {
-          latestSalMap.set(s.employee_id, { basic_salary: s.basic_salary ?? 0, period_year: s.period_year, period_month: s.period_month });
+          latestSalMap.set(s.employee_id, { total_earnings: s.total_earnings ?? 0, period_year: s.period_year, period_month: s.period_month });
         }
       }
 
@@ -294,9 +295,9 @@ export default function ImportPage() {
       const divisor = selectedHotel?.leave_provision_divisor ?? (bw ? 26 : 30.42);
 
       const lRows: LeaveRow[] = matched.map(emp => {
-        const basic = emp.employeeId ? latestSalMap.get(emp.employeeId)?.basic_salary ?? 0 : 0;
+        const gross = emp.employeeId ? latestSalMap.get(emp.employeeId)?.total_earnings ?? 0 : 0;
         const cappedLeaveBalanceDays = Math.min(emp.leaveBalanceDays, LEAVE_PROVISION_CAP_DAYS);
-        const dailyRate = Math.round((basic / divisor) * 100) / 100;
+        const dailyRate = Math.round((gross / divisor) * 100) / 100;
         const provisionValue = Math.round(dailyRate * cappedLeaveBalanceDays * 100) / 100;
         return {
           surname:          emp.surname,
@@ -305,7 +306,7 @@ export default function ImportPage() {
           employeeId:       emp.employeeId,
           leaveBalanceDays: emp.leaveBalanceDays,
           cappedLeaveBalanceDays,
-          basic,
+          grossSalary: gross,
           dailyRate,
           provisionValue,
         };
@@ -466,7 +467,7 @@ export default function ImportPage() {
             leave_balance_days: r.leaveBalanceDays,
             daily_rate:         r.dailyRate,
             provision_value:    r.provisionValue,
-            basic_at_calc:      r.basic,
+            basic_at_calc:      r.grossSalary,
             import_id:          importId,
             imported_at:        new Date().toISOString(),
           })),
