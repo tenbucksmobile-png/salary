@@ -247,6 +247,30 @@ export interface ReconConsolidationEntry {
   updated_by: string | null;
 }
 
+// Employees tab approvals: per-record tickbox state (Basic Salary Mismatch / New
+// Appointment / Termination), captured via the Employees tab's own Submit button.
+// Staging/audit only — a later admin-only "commit" step reads approved=true rows from
+// here and applies them to employees/salary_records. See migration 022.
+export type ReconApprovalCategory = 'basic_mismatch' | 'new_appointment' | 'termination';
+
+export interface ReconEmployeeApproval {
+  id: string;
+  hotel_id: string;
+  period_year: number;
+  period_month: number;
+  category: ReconApprovalCategory;
+  employee_name: string;
+  employee_code: string | null;
+  detail: Record<string, number> | null;
+  approved: boolean;
+  submitted_at: string | null;
+  submitted_by: string | null;
+  committed_at: string | null;
+  committed_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // Leave Provision: annual (July) leave balance import + daily-rate payout calc.
 // Standalone from salary_records — see leave_accrual (forward monthly estimate)
 // and leave_provision (legacy VIP passthrough), which this is unrelated to.

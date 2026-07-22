@@ -150,6 +150,9 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `018_ftc_to_fixed_term.sql` | Updates `employees.grade_label = 'FTC'` rows to `'Fixed Term'` (canonical grade value rename) |
 | `019_leave_provisions.sql` | `hotels.leave_provision_divisor`; new `leave_provisions` table (annual leave balance provisioning — see Leave Provision section) |
 | `020_recon_terminations.sql` | New `recon_terminations` table — Reconciliation's Terminations log (see Reconciliation section) |
+| `021_recon_consolidation.sql` | New `recon_consolidation` table — Reconciliation's Consolidation tab (director bank-release sign-off) |
+| `022_recon_employee_approvals.sql` | New `recon_employee_approvals` table — Reconciliation Employees tab's per-record Submit tickbox state |
+| `023_recon_approvals_commit.sql` | Adds `committed_at`/`committed_by` to `recon_employee_approvals` — tracks the admin-only Commit step |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -530,6 +533,21 @@ Replaces the earlier DB-vs-payroll comparison entirely — the user's explicit i
 The very first period a hotel uploads payroll for has no previous period to compare against, so it shows "nothing to compare against yet" rather than treating the whole roster as missing or new.
 
 **Only Basic Salary crosses months — vendor deductions never do.** `buildEmployeesComparison()` only reads `.basic` off each `PayrollLine`; it never touches `furnmart`/`cbStores`/`bodulo`/the loan columns. The Deductions Check tab (`furnmartStmt`, `mergedTotals`, `payMap`, etc.) and the Consolidation tab are both derived entirely from `uploads`/period-scoped queries keyed to the *currently selected* `hotelId/year/month` — neither references `prevMonth`/`prevYear` anywhere. These are two fully independent computations (`termPayrollByHotel` state vs `uploads` state) with no shared code path, so there's no risk of a vendor deduction accidentally comparing against a prior month, or Basic Salary Mismatch accidentally pulling in a deduction column.
+
+### Employees tab — Submit and Commit (the HR List write-back)
+
+Each row in all three sections gets a checkbox (`approvalTicks`, keyed `` `${category}|${name}` ``). Ticking only updates local React state — nothing is written until **Submit**.
+
+**Submit** (any role with access to this tab) — `submitEmployeeApprovals()` upserts the *current* tick state for every row currently visible into `recon_employee_approvals` (migration 022; `UNIQUE(hotel_id, period_year, period_month, category, employee_name)`), including unticked ones (`approved: false`) so un-ticking something previously submitted also persists. This is purely a staging/audit record — nothing here touches `employees` or `salary_records`. Loaded back on tab open (a separate `useEffect`, keyed to `hotelId`/year/month) so ticks survive navigation.
+
+**Commit** (`commitEmployeeApprovals()`) — **admin-only** (`userRole === 'admin'`, fetched from `/api/auth/me`'s `UserContext.role`; the button doesn't render at all for sub-users, regardless of whether they've been granted the Reconciliation tab via `allowed_tabs`). Gated behind a confirmation popup (`showCommitConfirm`) listing exactly what will be written — including the surname/first-name split for any new appointment, since splitting a payroll file's single name column is inherently a guess (`splitNameForNewEmployee()`: strip salutation, last word = surname, everything before it = first name) and this is the one chance to catch a bad split before it's saved. Per instruction, this is a **straight update/override — no re-flagging afterward**: it directly writes to `employees`/`salary_records` for whichever of CSL/NL is currently selected, matching each approved row to an existing employee by code first (`employee_code`, snapshotted at Submit time) then by `nameKey(surname + first_name)`:
+- **Termination** → `employees.status = 'terminated'`.
+- **Basic Salary Mismatch** → upserts `salary_records.basic_salary` for that employee/period (`onConflict: employee_id,period_year,period_month`) to `detail.currBasic`.
+- **New Appointment** → only if no existing employee resolves — inserts a new `employees` row (status `active`) plus a minimal `salary_records` row, mirroring the shape the HR List import (`confirmImport`) already writes for new hires.
+
+Each committed row gets `committed_at`/`committed_by` set (migration 023) so a later commit run doesn't re-apply it — `pendingCommitApprovals` (what the Commit button acts on and what the confirmation popup lists) is always `approved && !committed_at`. Since the Employees tab's comparison itself is driven entirely by payroll-upload-to-payroll-upload data (see above), committing to `employees` doesn't feed back into or suppress next month's comparison — the two are one-directional (recon → HR List), not a loop.
+
+**Scope**: this entire Submit/Commit flow only exists on the Employees tab, which is CSL/NL-only (see above) — CFE is untouched by any of it.
 
 ### Consolidation tab — director-facing monthly bank release sign-off
 

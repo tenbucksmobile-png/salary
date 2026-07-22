@@ -9,6 +9,8 @@ import type {
   ReconUpload,
   ReconUploadType,
   ReconConsolidationEntry,
+  ReconEmployeeApproval,
+  ReconApprovalCategory,
 } from '@/types/database';
 import {
   parseAfritecXls,
@@ -147,6 +149,7 @@ export default function ReconciliationPage() {
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
   const [username, setUsername] = useState('admin');
+  const [userRole, setUserRole] = useState<'admin' | 'sub' | null>(null);
   const [cfeEmployees, setCfeEmployees] = useState<Employee[]>([]);
 
   // The Employees tab now does month-to-month payroll comparison (Basic Salary Mismatch /
@@ -161,6 +164,24 @@ export default function ReconciliationPage() {
   type TermPayrollState = { current: PayrollLine[]; previous: PayrollLine[]; loaded: boolean };
   const emptyTermPayroll: TermPayrollState = { current: [], previous: [], loaded: false };
   const [termPayrollByHotel, setTermPayrollByHotel] = useState<Record<PayrollReconHotel, TermPayrollState>>({ CSL: emptyTermPayroll, NL: emptyTermPayroll });
+
+  // Employees tab approvals — per-record tickbox state, persisted so it survives navigation.
+  // Loaded from DB on tab open; ticking a checkbox only updates local state (approvalTicks);
+  // clicking Submit is what writes the current tick state to recon_employee_approvals.
+  // Purely a staging record for now — nothing here writes to the employees table yet.
+  const [employeeApprovals, setEmployeeApprovals] = useState<ReconEmployeeApproval[]>([]);
+  const [approvalTicks, setApprovalTicks] = useState<Record<string, boolean>>({});
+  const [submittingApprovals, setSubmittingApprovals] = useState(false);
+  function approvalKey(category: ReconApprovalCategory, name: string) {
+    return `${category}|${name}`;
+  }
+
+  // Commit — admin-only, writes approved (submitted + ticked) rows into employees/
+  // salary_records for CSL/NL. Gated behind a confirm popup showing exactly what will be
+  // written (including how each new-appointment name gets split into surname/first name,
+  // since that's inherently ambiguous from a payroll file's single name column).
+  const [showCommitConfirm, setShowCommitConfirm] = useState(false);
+  const [committingApprovals, setCommittingApprovals] = useState(false);
 
   // CFE cross-reference (Deductions Check, CFEM only): CSL's and NL's own vendor
   // statement uploads for the same period, so CFEM's report can be diffed against
@@ -196,7 +217,10 @@ export default function ReconciliationPage() {
   useEffect(() => {
     fetch('/api/auth/me')
       .then(r => r.json())
-      .then(d => { if (d?.username) setUsername(d.username); })
+      .then(d => {
+        if (d?.username) setUsername(d.username);
+        if (d?.role) setUserRole(d.role);
+      })
       .catch(() => {});
   }, []);
 
@@ -296,6 +320,25 @@ export default function ReconciliationPage() {
       setTermPayrollByHotel(Object.fromEntries(PAYROLL_RECON_HOTELS.map((h, i) => [h, results[i]])) as Record<PayrollReconHotel, TermPayrollState>);
     });
   }, [tab, year, month, hotels]);
+
+  // Load any previously-submitted approvals for the currently selected hotel/period,
+  // so ticks survive navigating away and back.
+  useEffect(() => {
+    if (tab !== 'crossref' || !hotelId) return;
+    const code = hotels.find(h => h.id === hotelId)?.short_code;
+    if (code !== 'CSL' && code !== 'NL') return;
+
+    supabase.from('recon_employee_approvals')
+      .select('*')
+      .eq('hotel_id', hotelId)
+      .eq('period_year', year)
+      .eq('period_month', month)
+      .then(({ data }) => {
+        const approvals = (data ?? []) as ReconEmployeeApproval[];
+        setEmployeeApprovals(approvals);
+        setApprovalTicks(Object.fromEntries(approvals.map(a => [approvalKey(a.category, a.employee_name), a.approved])));
+      });
+  }, [tab, hotelId, year, month, hotels]);
 
   // CFE cross-reference: load CSL's and NL's own 5 vendor statement uploads for the
   // SAME period being viewed on the CFEM tab, so CFE-employee lines mixed into those
@@ -1089,6 +1132,149 @@ export default function ReconciliationPage() {
   const employeesTabBadge = employeesComparisonByHotel[employeesActiveHotel];
   const employeesTabBadgeCount = employeesTabBadge.basicMismatches.length + employeesTabBadge.newAppointments.length + employeesTabBadge.terminations.length;
 
+  const tickedApprovalCount = [
+    ...activeEmployeesComparison.basicMismatches.map(r => approvalKey('basic_mismatch', r.name)),
+    ...activeEmployeesComparison.newAppointments.map(r => approvalKey('new_appointment', r.name)),
+    ...activeEmployeesComparison.terminations.map(r => approvalKey('termination', r.name)),
+  ].filter(k => approvalTicks[k]).length;
+
+  // Writes the CURRENT tick state for every row currently visible on the Employees tab to
+  // recon_employee_approvals (upsert — ticked rows become approved:true, unticked rows
+  // become approved:false, so un-ticking something previously submitted also persists).
+  // Purely a staging record — nothing here touches the employees table.
+  async function submitEmployeeApprovals() {
+    if (!hotelId) return;
+    setSubmittingApprovals(true);
+    try {
+      const rows = [
+        ...activeEmployeesComparison.basicMismatches.map(r => ({
+          category: 'basic_mismatch' as ReconApprovalCategory, name: r.name, code: r.empCode,
+          detail: { prevBasic: r.prevBasic, currBasic: r.currBasic, diff: r.diff },
+        })),
+        ...activeEmployeesComparison.newAppointments.map(r => ({
+          category: 'new_appointment' as ReconApprovalCategory, name: r.name, code: r.empCode,
+          detail: { basic: r.basic },
+        })),
+        ...activeEmployeesComparison.terminations.map(r => ({
+          category: 'termination' as ReconApprovalCategory, name: r.name, code: r.empCode,
+          detail: { basic: r.basic },
+        })),
+      ];
+      const payload = rows.map(r => ({
+        hotel_id: hotelId,
+        period_year: year,
+        period_month: month,
+        category: r.category,
+        employee_name: r.name,
+        employee_code: r.code || null,
+        detail: r.detail,
+        approved: !!approvalTicks[approvalKey(r.category, r.name)],
+        submitted_at: new Date().toISOString(),
+        submitted_by: username,
+        updated_at: new Date().toISOString(),
+      }));
+      if (payload.length === 0) return;
+      const { data } = await supabase
+        .from('recon_employee_approvals')
+        .upsert(payload, { onConflict: 'hotel_id,period_year,period_month,category,employee_name' })
+        .select();
+      if (data) setEmployeeApprovals(data as ReconEmployeeApproval[]);
+    } finally {
+      setSubmittingApprovals(false);
+    }
+  }
+
+  // Splits a raw payroll name into { surname, firstName } for a new employees row —
+  // inherently a guess (payroll files store names inconsistently: "Title First Last",
+  // "Last First", multiple middle names). Convention: strip any salutation, treat the
+  // LAST word as surname, everything before it as first name. Shown in the commit
+  // confirmation popup so an admin gets one last look before it's actually written.
+  function splitNameForNewEmployee(raw: string): { surname: string; firstName: string } {
+    const tokens = nameTokens(raw);
+    const toTitle = (s: string) => s.split(' ').filter(Boolean).map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
+    if (tokens.length === 0) return { surname: raw.trim() || 'Unknown', firstName: '' };
+    if (tokens.length === 1) return { surname: toTitle(tokens[0]), firstName: '' };
+    return { surname: toTitle(tokens[tokens.length - 1]), firstName: toTitle(tokens.slice(0, -1).join(' ')) };
+  }
+
+  const pendingCommitApprovals = employeeApprovals.filter(a => a.approved && !a.committed_at);
+
+  // Admin-only. Resolves each approved row to an existing employee (code first, then name)
+  // and writes directly to employees/salary_records — no re-flagging, per instruction this
+  // is a straight update/override. Only ever touches CSL/NL, matching this tab's scope.
+  async function commitEmployeeApprovals() {
+    if (userRole !== 'admin' || !hotelId || pendingCommitApprovals.length === 0) return;
+    setCommittingApprovals(true);
+    try {
+      const { data: existingEmps } = await supabase.from('employees').select('*').eq('hotel_id', hotelId);
+      const empList = (existingEmps ?? []) as Employee[];
+      const codeMap = new Map(empList.filter(e => e.employee_code).map(e => [e.employee_code!.toUpperCase(), e]));
+      const nameMap = new Map(empList.map(e => [nameKey(`${e.surname} ${e.first_name}`), e]));
+      function resolve(a: ReconEmployeeApproval): Employee | undefined {
+        if (a.employee_code) {
+          const byCode = codeMap.get(a.employee_code.toUpperCase());
+          if (byCode) return byCode;
+        }
+        return nameMap.get(nameKey(a.employee_name));
+      }
+
+      const nowIso = new Date().toISOString();
+      for (const a of pendingCommitApprovals) {
+        if (a.category === 'termination') {
+          const emp = resolve(a);
+          if (emp) {
+            await supabase.from('employees').update({ status: 'terminated', updated_at: nowIso }).eq('id', emp.id);
+          }
+        } else if (a.category === 'basic_mismatch') {
+          const emp = resolve(a);
+          const newBasic = a.detail?.currBasic;
+          if (emp && newBasic != null) {
+            await supabase.from('salary_records').upsert(
+              { employee_id: emp.id, period_year: a.period_year, period_month: a.period_month, basic_salary: newBasic },
+              { onConflict: 'employee_id,period_year,period_month' },
+            );
+          }
+        } else if (a.category === 'new_appointment') {
+          const existing = resolve(a);
+          if (!existing) {
+            const { surname, firstName } = splitNameForNewEmployee(a.employee_name);
+            const { data: newEmp } = await supabase.from('employees').insert({
+              hotel_id: hotelId,
+              employee_code: a.employee_code || null,
+              surname,
+              first_name: firstName,
+              status: 'active',
+            }).select().single();
+            const empId = (newEmp as any)?.id;
+            if (empId && a.detail?.basic != null) {
+              await supabase.from('salary_records').insert({
+                employee_id: empId,
+                period_year: a.period_year,
+                period_month: a.period_month,
+                basic_salary: a.detail.basic,
+                allowances: {},
+                total_earnings: a.detail.basic,
+                tax_paye: 0, uif_employee: 0, medical_employee: 0, ancilla_employee: 0, provident_employee: 0, total_deductions: 0,
+                uif_company: 0, medical_company: 0, provident_company: 0, sdl_company: 0, ancilla_company: 0, total_company_contrib: 0,
+                total_payroll_burden: 0, total_cost: a.detail.basic,
+                net_salary: a.detail.basic, ctc: a.detail.basic,
+              });
+            }
+          }
+        }
+        await supabase.from('recon_employee_approvals').update({ committed_at: nowIso, committed_by: username }).eq('id', a.id);
+      }
+
+      const { data: refreshed } = await supabase
+        .from('recon_employee_approvals').select('*')
+        .eq('hotel_id', hotelId).eq('period_year', year).eq('period_month', month);
+      setEmployeeApprovals((refreshed ?? []) as ReconEmployeeApproval[]);
+      setShowCommitConfirm(false);
+    } finally {
+      setCommittingApprovals(false);
+    }
+  }
+
   // ── Consolidation (director bank-release sign-off) ────────────────────────
   function getConsolidationEntry(hotelCode: ConsolidationHotel, lineItem: LineItem) {
     return consolidationEntries.find(e => e.hotel_short_code === hotelCode && e.line_item === lineItem);
@@ -1852,6 +2038,7 @@ export default function ReconciliationPage() {
                     <table className="text-sm border rounded w-full max-w-2xl">
                       <thead>
                         <tr className="bg-muted/40">
+                          <th className="px-3 py-2 text-center">Approve</th>
                           <th className="px-3 py-2 text-left">Name</th>
                           <th className="px-3 py-2 text-right">Prior Basic</th>
                           <th className="px-3 py-2 text-right">Current Basic</th>
@@ -1859,16 +2046,26 @@ export default function ReconciliationPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {activeEmployeesComparison.basicMismatches.map((r, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="px-3 py-1.5">{r.name}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.prevBasic, country)}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.currBasic, country)}</td>
-                            <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.diff > 0 ? 'text-green-700' : 'text-red-600'}`}>
-                              {r.diff > 0 ? '+' : ''}{fmt(r.diff, country)}
-                            </td>
-                          </tr>
-                        ))}
+                        {activeEmployeesComparison.basicMismatches.map((r, i) => {
+                          const key = approvalKey('basic_mismatch', r.name);
+                          return (
+                            <tr key={i} className="border-t">
+                              <td className="px-3 py-1.5 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={!!approvalTicks[key]}
+                                  onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
+                                />
+                              </td>
+                              <td className="px-3 py-1.5">{r.name}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.prevBasic, country)}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.currBasic, country)}</td>
+                              <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.diff > 0 ? 'text-green-700' : 'text-red-600'}`}>
+                                {r.diff > 0 ? '+' : ''}{fmt(r.diff, country)}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}
@@ -1885,17 +2082,28 @@ export default function ReconciliationPage() {
                     <table className="text-sm border rounded w-full max-w-xl">
                       <thead>
                         <tr className="bg-muted/40">
+                          <th className="px-3 py-2 text-center">New Appointment</th>
                           <th className="px-3 py-2 text-left">Name</th>
                           <th className="px-3 py-2 text-right">Basic</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {activeEmployeesComparison.newAppointments.map((r, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="px-3 py-1.5">{r.name}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
-                          </tr>
-                        ))}
+                        {activeEmployeesComparison.newAppointments.map((r, i) => {
+                          const key = approvalKey('new_appointment', r.name);
+                          return (
+                            <tr key={i} className="border-t">
+                              <td className="px-3 py-1.5 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={!!approvalTicks[key]}
+                                  onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
+                                />
+                              </td>
+                              <td className="px-3 py-1.5">{r.name}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}
@@ -1912,21 +2120,119 @@ export default function ReconciliationPage() {
                     <table className="text-sm border rounded w-full max-w-xl">
                       <thead>
                         <tr className="bg-muted/40">
+                          <th className="px-3 py-2 text-center">Termination</th>
                           <th className="px-3 py-2 text-left">Name</th>
                           <th className="px-3 py-2 text-right">Prior Basic</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {activeEmployeesComparison.terminations.map((r, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="px-3 py-1.5">{r.name}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
-                          </tr>
-                        ))}
+                        {activeEmployeesComparison.terminations.map((r, i) => {
+                          const key = approvalKey('termination', r.name);
+                          return (
+                            <tr key={i} className="border-t">
+                              <td className="px-3 py-1.5 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={!!approvalTicks[key]}
+                                  onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
+                                />
+                              </td>
+                              <td className="px-3 py-1.5">{r.name}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}
                 </div>
+
+                {/* Consolidated submit — persists the current tick state. Purely a staging
+                    record; the admin-only Commit step below is what actually writes to
+                    employees/salary_records. */}
+                {employeesTabBadgeCount > 0 && (
+                  <div className="flex flex-wrap items-center gap-3 pt-2 border-t">
+                    <button
+                      onClick={submitEmployeeApprovals}
+                      disabled={submittingApprovals}
+                      className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                    >
+                      {submittingApprovals ? 'Submitting…' : `Submit (${tickedApprovalCount} of ${employeesTabBadgeCount} ticked)`}
+                    </button>
+                    {employeeApprovals.some(a => a.submitted_at) && (
+                      <span className="text-xs text-muted-foreground">
+                        Last submitted {new Date(
+                          employeeApprovals.reduce((latest, a) => a.submitted_at && a.submitted_at > latest ? a.submitted_at : latest, '')
+                        ).toLocaleString('en-ZA')}
+                        {' '}by {employeeApprovals.find(a => a.submitted_at)?.submitted_by ?? 'unknown'}
+                      </span>
+                    )}
+
+                    {/* Commit — admin-only. Writes approved rows straight into employees/
+                        salary_records for CSL/NL, no re-flagging afterward. */}
+                    {userRole === 'admin' && (
+                      <button
+                        onClick={() => setShowCommitConfirm(true)}
+                        disabled={pendingCommitApprovals.length === 0 || committingApprovals}
+                        className="px-4 py-2 bg-red-700 text-white rounded text-sm font-medium hover:bg-red-800 disabled:opacity-50"
+                      >
+                        Commit to HR List ({pendingCommitApprovals.length} pending)
+                      </button>
+                    )}
+                    {employeeApprovals.some(a => a.committed_at) && (
+                      <span className="text-xs text-green-700">
+                        Last committed {new Date(
+                          employeeApprovals.reduce((latest, a) => a.committed_at && a.committed_at > latest ? a.committed_at : latest, '')
+                        ).toLocaleString('en-ZA')}
+                        {' '}by {[...employeeApprovals].reverse().find(a => a.committed_at)?.committed_by ?? 'unknown'}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Commit confirmation popup — secondary confirm/cancel before anything is
+                    written, per instruction. Shows exactly what will change, including the
+                    surname/first-name split for new appointments (inherently a guess from a
+                    single payroll name column) so there's a last visual check before commit. */}
+                {showCommitConfirm && (
+                  <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-auto p-6">
+                      <h3 className="text-base font-semibold mb-1">Commit to HR List?</h3>
+                      <p className="text-sm text-muted-foreground mb-4">
+                        This writes directly to the employees table for {employeesActiveHotel} — new appointments are
+                        added, terminations are marked, basic salary changes are applied. This cannot be undone from here.
+                      </p>
+                      <div className="border rounded divide-y mb-4">
+                        {pendingCommitApprovals.map(a => (
+                          <div key={a.id} className="px-3 py-2 text-sm">
+                            {a.category === 'new_appointment' && (() => {
+                              const { surname, firstName } = splitNameForNewEmployee(a.employee_name);
+                              return <>Add employee: <strong>{firstName} {surname}</strong> (code {a.employee_code || '—'}, basic {fmt(a.detail?.basic ?? 0, country)})</>;
+                            })()}
+                            {a.category === 'termination' && <>Mark terminated: <strong>{a.employee_name}</strong></>}
+                            {a.category === 'basic_mismatch' && <>Update basic salary: <strong>{a.employee_name}</strong> → {fmt(a.detail?.currBasic ?? 0, country)}</>}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => setShowCommitConfirm(false)}
+                          disabled={committingApprovals}
+                          className="px-4 py-2 rounded text-sm font-medium border hover:bg-muted disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={commitEmployeeApprovals}
+                          disabled={committingApprovals}
+                          className="px-4 py-2 rounded text-sm font-medium bg-red-700 text-white hover:bg-red-800 disabled:opacity-50"
+                        >
+                          {committingApprovals ? 'Committing…' : 'Commit'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>
