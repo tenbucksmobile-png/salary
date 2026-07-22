@@ -154,7 +154,6 @@ export default function ReconciliationPage() {
   // Deductions Check cross-reference below.
   type PayrollReconHotel = 'CSL' | 'NL';
   const PAYROLL_RECON_HOTELS: PayrollReconHotel[] = ['CSL', 'NL'];
-  const [employeesSubTab, setEmployeesSubTab] = useState<PayrollReconHotel>('CSL');
 
   // Current + previous period's payroll lines per hotel — the sole basis for the
   // Employees tab's three sections. Never compared against the DB employee list.
@@ -231,6 +230,14 @@ export default function ReconciliationPage() {
     if (!hotelId) return;
     loadPeriod();
   }, [hotelId, year, month]);
+
+  // The Employees tab only applies to CSL/NL — if the hotel pill switches to CFEM
+  // while it's open, drop back to Upload rather than showing a stale/mislabeled view.
+  useEffect(() => {
+    if (tab !== 'crossref') return;
+    const code = hotels.find(h => h.id === hotelId)?.short_code;
+    if (code !== 'CSL' && code !== 'NL') setTab('upload');
+  }, [hotelId, hotels, tab]);
 
   // Load payroll lines uploaded for a given hotel/period's recon upload (payroll +
   // ftc_payroll merged, deduplicated by nameKey). Shared by the Employees tab (current
@@ -1018,13 +1025,15 @@ export default function ReconciliationPage() {
     PAYROLL_RECON_HOTELS.map(h => [h, buildEmployeesComparison(termPayrollByHotel[h])])
   ) as Record<PayrollReconHotel, ReturnType<typeof buildEmployeesComparison>>;
 
-  const activeEmployeesComparison = employeesComparisonByHotel[employeesSubTab];
-  const activeTermPayrollForEmployees = termPayrollByHotel[employeesSubTab];
+  // The Employees tab always reflects whichever hotel is currently selected via the
+  // header pill (CSL or NL) — no separate internal sub-tab, so what you see always
+  // matches the pill you're on.
+  const employeesActiveHotel: PayrollReconHotel = hotel?.short_code === 'NL' ? 'NL' : 'CSL';
+  const activeEmployeesComparison = employeesComparisonByHotel[employeesActiveHotel];
+  const activeTermPayrollForEmployees = termPayrollByHotel[employeesActiveHotel];
 
-  const employeesTabBadge = PAYROLL_RECON_HOTELS.reduce((sum, h) => {
-    const c = employeesComparisonByHotel[h];
-    return sum + c.basicMismatches.length + c.newAppointments.length + c.terminations.length;
-  }, 0);
+  const employeesTabBadge = employeesComparisonByHotel[employeesActiveHotel];
+  const employeesTabBadgeCount = employeesTabBadge.basicMismatches.length + employeesTabBadge.newAppointments.length + employeesTabBadge.terminations.length;
 
   // ── Consolidation (director bank-release sign-off) ────────────────────────
   function getConsolidationEntry(hotelCode: ConsolidationHotel, lineItem: LineItem) {
@@ -1095,13 +1104,13 @@ export default function ReconciliationPage() {
           <h1 className="text-lg font-semibold text-foreground">Payroll Reconciliation</h1>
 
           {/* Hotel tabs */}
-          <div className="flex gap-1 flex-wrap">
+          <div className="flex gap-1 flex-wrap items-center">
             {hotels.map(h => (
               <button
                 key={h.id}
-                onClick={() => setHotelId(h.id)}
+                onClick={() => { setHotelId(h.id); if (tab === 'consolidation') setTab('upload'); }}
                 className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                  h.id === hotelId
+                  tab !== 'consolidation' && h.id === hotelId
                     ? 'bg-primary text-primary-foreground'
                     : 'bg-muted text-muted-foreground hover:bg-muted/80'
                 }`}
@@ -1109,6 +1118,17 @@ export default function ReconciliationPage() {
                 {h.short_code}
               </button>
             ))}
+            <span className="mx-1 h-5 w-px bg-border" />
+            <button
+              onClick={() => setTab('consolidation')}
+              className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                tab === 'consolidation'
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted text-muted-foreground hover:bg-muted/80'
+              }`}
+            >
+              Consolidation
+            </button>
           </div>
 
           {/* Status + workflow — right side */}
@@ -1147,43 +1167,40 @@ export default function ReconciliationPage() {
         </div>
       </div>
 
-      {/* ── Tab nav ── */}
-      <div className="border-b bg-white px-6">
-        <div className="flex gap-1">
-          {(['upload', 'deductions'] as const).map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize ${
-                tab === t ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {t === 'deductions' ? 'Deductions Check' : 'Upload'}
-            </button>
-          ))}
-          <button
-            onClick={() => setTab('crossref')}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              tab === 'crossref' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Employees
-            {employeesTabBadge > 0 && (
-              <span className="ml-1.5 bg-orange-100 text-orange-700 rounded-full px-1.5 text-xs">
-                {employeesTabBadge}
-              </span>
+      {/* ── Tab nav — hidden while viewing Consolidation, which isn't hotel-scoped ── */}
+      {tab !== 'consolidation' && (
+        <div className="border-b bg-white px-6">
+          <div className="flex gap-1">
+            {(['upload', 'deductions'] as const).map(t => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize ${
+                  tab === t ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {t === 'deductions' ? 'Deductions Check' : 'Upload'}
+              </button>
+            ))}
+            {/* Employees only applies to CSL/NL — CFE has no payroll upload to compare month-to-month */}
+            {(hotel?.short_code === 'CSL' || hotel?.short_code === 'NL') && (
+              <button
+                onClick={() => setTab('crossref')}
+                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                  tab === 'crossref' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                Employees
+                {employeesTabBadgeCount > 0 && (
+                  <span className="ml-1.5 bg-orange-100 text-orange-700 rounded-full px-1.5 text-xs">
+                    {employeesTabBadgeCount}
+                  </span>
+                )}
+              </button>
             )}
-          </button>
-          <button
-            onClick={() => setTab('consolidation')}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              tab === 'consolidation' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Consolidation
-          </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* ── Content ── */}
       <div className="flex-1 overflow-auto p-6">
@@ -1715,33 +1732,11 @@ export default function ReconciliationPage() {
               but missing this period show as Terminations.
             </p>
 
-            {/* CSL / NL sub-tabs */}
-            <div className="flex gap-1 border-b">
-              {PAYROLL_RECON_HOTELS.map(code => {
-                const c = employeesComparisonByHotel[code];
-                const count = c.basicMismatches.length + c.newAppointments.length + c.terminations.length;
-                return (
-                  <button
-                    key={code}
-                    onClick={() => setEmployeesSubTab(code)}
-                    className={`px-5 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                      employeesSubTab === code ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    {code}
-                    {count > 0 && (
-                      <span className="ml-1.5 bg-orange-100 text-orange-700 rounded-full px-1.5 text-xs">{count}</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
             {!activeTermPayrollForEmployees.loaded ? (
               <p className="text-sm text-muted-foreground">Loading…</p>
             ) : activeTermPayrollForEmployees.previous.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                No payroll uploaded for {employeesSubTab}&apos;s previous period — nothing to compare against yet.
+                No payroll uploaded for {employeesActiveHotel}&apos;s previous period — nothing to compare against yet.
               </p>
             ) : (
               <>
