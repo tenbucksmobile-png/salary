@@ -1,15 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, Fragment } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { MONTH_NAMES, sortHotels, fmtCurrency } from '@/lib/utils';
-import type { Hotel, Employee, SalaryRecord } from '@/types/database';
+import type { Hotel, Employee } from '@/types/database';
 import type {
   ReconciliationPeriod,
   ReconUpload,
   ReconUploadType,
-  ReconQuery,
-  ReconTermination,
+  ReconConsolidationEntry,
 } from '@/types/database';
 import {
   parseAfritecXls,
@@ -22,6 +21,7 @@ import {
   type PayrollLine,
 } from '@/lib/recon-parsers';
 import type { ParsedStatement, ParsedPayroll, ReconLine, ParsedCfemDeductions } from '@/lib/recon-parsers';
+import { exportReport, type ReportSheet } from '@/lib/reports-export';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -44,11 +44,6 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
   {
     type: 'ftc_payroll', label: 'Fixed Term Contract Payroll', required: false,
     accept: '.xls,.xlsx', desc: 'FTC / casual pay register (.xls or .xlsx)',
-    payrollKey: null,
-  },
-  {
-    type: 'twelve_months', label: '12 Months Payroll Report', required: false,
-    accept: '.pdf', desc: '12-month monthly analysis report (PDF)',
     payrollKey: null,
   },
   {
@@ -145,49 +140,27 @@ export default function ReconciliationPage() {
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [period, setPeriod] = useState<ReconciliationPeriod | null>(null);
   const [uploads, setUploads] = useState<ReconUpload[]>([]);
-  const [queries, setQueries] = useState<ReconQuery[]>([]);
-  const [tab, setTab] = useState<'upload' | 'deductions' | 'crossref' | 'changes' | 'terminations' | 'queries'>('upload');
+  const [tab, setTab] = useState<'upload' | 'deductions' | 'crossref' | 'consolidation'>('upload');
   const [dedFilter, setDedFilter] = useState<'all' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo'>('all');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
-  const [newQuery, setNewQuery] = useState('');
   const [username, setUsername] = useState('admin');
-  const [prevRecords, setPrevRecords] = useState<Array<{
-    basic_salary: number;
-    employees: { employee_code: string | null; surname: string; first_name: string };
-  }>>([]);
-  // prevPayrollLines: loaded from previous period's recon upload (preferred source);
-  // null = no recon upload found for prev period → fall back to prevRecords from salary_records
-  const [prevPayrollLines, setPrevPayrollLines] = useState<PayrollLine[] | null>(null);
   const [cfeEmployees, setCfeEmployees] = useState<Employee[]>([]);
 
-  // The three hotels with their own Employees/Terminations sub-tab — kept as a keyed
-  // map (rather than one variable pair per hotel) so adding a hotel here is a one-line change.
-  type ReconSubHotel = 'CSL' | 'NL' | 'CFE';
-  const RECON_SUB_HOTELS: ReconSubHotel[] = ['CSL', 'NL', 'CFE'];
-  // CFE Management's actual hotels.short_code is "CFEM", not "CFE" — this map lets the
-  // UI keep the friendly "CFE" label while resolving to the real DB short code.
-  const RECON_SHORT_CODE: Record<ReconSubHotel, string> = { CSL: 'CSL', NL: 'NL', CFE: 'CFEM' };
+  // The Employees tab now does month-to-month payroll comparison (Basic Salary Mismatch /
+  // New Appointments / Terminations) for CSL and NL only — CFE has no payroll uploaded here
+  // at all (by design), so it isn't part of this comparison; it keeps its own separate
+  // Deductions Check cross-reference below.
+  type PayrollReconHotel = 'CSL' | 'NL';
+  const PAYROLL_RECON_HOTELS: PayrollReconHotel[] = ['CSL', 'NL'];
+  const [employeesSubTab, setEmployeesSubTab] = useState<PayrollReconHotel>('CSL');
 
-  // DB cross-reference data — independent per hotel, not tied to the main hotel selector
-  type HotelXRefData = {
-    employees: Employee[];
-    salaryRecords: Array<Pick<SalaryRecord, 'employee_id' | 'basic_salary' | 'period_year' | 'period_month'>>;
-    payrollLines: PayrollLine[]; // deduplicated by nameKey
-    loaded: boolean;
-  };
-  const emptyXRef: HotelXRefData = { employees: [], salaryRecords: [], payrollLines: [], loaded: false };
-  const [xrefByHotel, setXrefByHotel] = useState<Record<ReconSubHotel, HotelXRefData>>({ CSL: emptyXRef, NL: emptyXRef, CFE: emptyXRef });
-  const [crossRefSubTab, setCrossRefSubTab] = useState<ReconSubHotel>('CSL');
-  const [crossRefFilter, setCrossRefFilter] = useState<'all' | 'mismatch' | 'payonly' | 'dbonly'>('all');
-
-  // Terminations tracking — compares each hotel's own payroll upload month-to-month
-  // (never against the DB employee list), independent of the main hotel selector.
-  const [terminationsByHotel, setTerminationsByHotel] = useState<Record<ReconSubHotel, ReconTermination[]>>({ CSL: [], NL: [], CFE: [] });
+  // Current + previous period's payroll lines per hotel — the sole basis for the
+  // Employees tab's three sections. Never compared against the DB employee list.
   type TermPayrollState = { current: PayrollLine[]; previous: PayrollLine[]; loaded: boolean };
   const emptyTermPayroll: TermPayrollState = { current: [], previous: [], loaded: false };
-  const [termPayrollByHotel, setTermPayrollByHotel] = useState<Record<ReconSubHotel, TermPayrollState>>({ CSL: emptyTermPayroll, NL: emptyTermPayroll, CFE: emptyTermPayroll });
+  const [termPayrollByHotel, setTermPayrollByHotel] = useState<Record<PayrollReconHotel, TermPayrollState>>({ CSL: emptyTermPayroll, NL: emptyTermPayroll });
 
   // CFE cross-reference (Deductions Check, CFEM only): CSL's and NL's own vendor
   // statement uploads for the same period, so CFEM's report can be diffed against
@@ -196,6 +169,25 @@ export default function ReconciliationPage() {
   type OtherHotelStmts = Partial<Record<CfeVendorType, ParsedStatement>>;
   const emptyOtherHotelStmts: { CSL: OtherHotelStmts; NL: OtherHotelStmts; loaded: boolean } = { CSL: {}, NL: {}, loaded: false };
   const [csnStmtsForCfe, setCsnStmtsForCfe] = useState(emptyOtherHotelStmts);
+
+  // Consolidation tab: director-facing monthly bank release sign-off, spanning all
+  // three hotels for the selected month regardless of the main hotel selector.
+  type ConsolidationHotel = 'CSL' | 'NL' | 'CFEM';
+  const CONSOLIDATION_HOTELS: ConsolidationHotel[] = ['CSL', 'NL', 'CFEM'];
+  type LineItem = 'basic_salary' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo';
+  const LINE_ITEMS: LineItem[] = ['basic_salary', 'furnmart', 'afritec', 'topline', 'cbstores', 'bodulo'];
+  const LINE_ITEM_LABELS: Record<LineItem, string> = {
+    basic_salary: 'Basic Salary', furnmart: 'Furnmart', afritec: 'Afritec',
+    topline: 'Topline', cbstores: 'CB Stores', bodulo: 'Bodulo / Afri Insurance',
+  };
+  // null = no automatic source in this app for that line item (only CFEM's Basic Salary,
+  // since CFEM payroll is never uploaded here) — falls back to a manual system_amount entry.
+  type SystemTotals = Record<LineItem, number | null>;
+  const emptySystemTotals: SystemTotals = { basic_salary: 0, furnmart: 0, afritec: 0, topline: 0, cbstores: 0, bodulo: 0 };
+  const [consolidationSystem, setConsolidationSystem] = useState<Record<ConsolidationHotel, SystemTotals> & { loaded: boolean }>({
+    CSL: emptySystemTotals, NL: emptySystemTotals, CFEM: emptySystemTotals, loaded: false,
+  });
+  const [consolidationEntries, setConsolidationEntries] = useState<ReconConsolidationEntry[]>([]);
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -237,16 +229,12 @@ export default function ReconciliationPage() {
 
   useEffect(() => {
     if (!hotelId) return;
-    setPrevRecords([]);
-    setPrevPayrollLines(null);
     loadPeriod();
-    loadPrevRecords();
   }, [hotelId, year, month]);
 
   // Load payroll lines uploaded for a given hotel/period's recon upload (payroll +
-  // ftc_payroll merged, deduplicated by nameKey). Shared by the Employees cross-reference
-  // (current period only) and the Terminations tab (current period AND previous period,
-  // compared against each other — never against the DB employee list).
+  // ftc_payroll merged, deduplicated by nameKey). Shared by the Employees tab (current
+  // period AND previous period, compared against each other) and the CFE cross-reference.
   async function loadPeriodPayrollLines(hotelId: string, y: number, m: number): Promise<PayrollLine[]> {
     const { data: periodRow } = await supabase
       .from('reconciliation_periods')
@@ -275,53 +263,18 @@ export default function ReconciliationPage() {
     });
   }
 
-  // Load Employees cross-reference for CSL, NL, and CFE independently.
-  // Triggered when the Employees tab is opened, or year/month/hotels changes.
-  // Payroll lines come from each hotel's own recon upload (not the main hotel selector).
+  // Employees tab: compare the current period's payroll upload against the PREVIOUS
+  // period's payroll upload only, for CSL and NL — never against the DB employee list,
+  // which stays static regardless of how many payroll-only months are uploaded and would
+  // just re-flag the same people every month. Triggered when the Employees tab opens or
+  // year/month/hotels changes.
   useEffect(() => {
     if (tab !== 'crossref' || !hotels.length) return;
-
-    async function loadXRef(shortCode: ReconSubHotel): Promise<HotelXRefData> {
-      const hotel = hotels.find(h => h.short_code === RECON_SHORT_CODE[shortCode]);
-      if (!hotel) return { ...emptyXRef, loaded: true };
-
-      const { data: emps } = await supabase
-        .from('employees').select('*').eq('hotel_id', hotel.id).eq('status', 'active');
-      const employees = (emps ?? []) as Employee[];
-
-      let salaryRecords: HotelXRefData['salaryRecords'] = [];
-      if (employees.length > 0) {
-        const { data: recs } = await supabase
-          .from('salary_records')
-          .select('employee_id, basic_salary, period_year, period_month')
-          .in('employee_id', employees.map(e => e.id))
-          .order('period_year', { ascending: false })
-          .order('period_month', { ascending: false });
-        salaryRecords = (recs ?? []) as HotelXRefData['salaryRecords'];
-      }
-
-      const payrollLines = await loadPeriodPayrollLines(hotel.id, year, month);
-      return { employees, salaryRecords, payrollLines, loaded: true };
-    }
-
-    setXrefByHotel(prev => Object.fromEntries(RECON_SUB_HOTELS.map(h => [h, { ...prev[h], loaded: false }])) as Record<ReconSubHotel, HotelXRefData>);
-    Promise.all(RECON_SUB_HOTELS.map(loadXRef)).then(results => {
-      setXrefByHotel(Object.fromEntries(RECON_SUB_HOTELS.map((h, i) => [h, results[i]])) as Record<ReconSubHotel, HotelXRefData>);
-    });
-  }, [tab, year, month, hotels]);
-
-  // Terminations: compare the current period's payroll upload against the PREVIOUS
-  // period's payroll upload only — never against the DB employee list, which stays
-  // static regardless of how many payroll-only months are uploaded and would just
-  // re-flag the same people every month. Triggered when the Terminations tab opens
-  // or year/month/hotels changes.
-  useEffect(() => {
-    if (tab !== 'terminations' || !hotels.length) return;
     const prevMonth = month === 1 ? 12 : month - 1;
     const prevYear  = month === 1 ? year - 1 : year;
 
-    async function load(shortCode: ReconSubHotel): Promise<TermPayrollState> {
-      const hotel = hotels.find(h => h.short_code === RECON_SHORT_CODE[shortCode]);
+    async function load(shortCode: PayrollReconHotel): Promise<TermPayrollState> {
+      const hotel = hotels.find(h => h.short_code === shortCode);
       if (!hotel) return { ...emptyTermPayroll, loaded: true };
       const [current, previous] = await Promise.all([
         loadPeriodPayrollLines(hotel.id, year, month),
@@ -330,33 +283,11 @@ export default function ReconciliationPage() {
       return { current, previous, loaded: true };
     }
 
-    setTermPayrollByHotel(prev => Object.fromEntries(RECON_SUB_HOTELS.map(h => [h, { ...prev[h], loaded: false }])) as Record<ReconSubHotel, TermPayrollState>);
-    Promise.all(RECON_SUB_HOTELS.map(load)).then(results => {
-      setTermPayrollByHotel(Object.fromEntries(RECON_SUB_HOTELS.map((h, i) => [h, results[i]])) as Record<ReconSubHotel, TermPayrollState>);
+    setTermPayrollByHotel(prev => Object.fromEntries(PAYROLL_RECON_HOTELS.map(h => [h, { ...prev[h], loaded: false }])) as Record<PayrollReconHotel, TermPayrollState>);
+    Promise.all(PAYROLL_RECON_HOTELS.map(load)).then(results => {
+      setTermPayrollByHotel(Object.fromEntries(PAYROLL_RECON_HOTELS.map((h, i) => [h, results[i]])) as Record<PayrollReconHotel, TermPayrollState>);
     });
   }, [tab, year, month, hotels]);
-
-  // Load the full Terminations log (all periods, not scoped to year/month) for
-  // CSL, NL, and CFE whenever the Terminations tab is opened or hotels load.
-  useEffect(() => {
-    if (tab !== 'terminations' || !hotels.length) return;
-
-    async function loadTerminations(shortCode: ReconSubHotel): Promise<ReconTermination[]> {
-      const h = hotels.find(x => x.short_code === RECON_SHORT_CODE[shortCode]);
-      if (!h) return [];
-      const { data } = await supabase
-        .from('recon_terminations')
-        .select('*')
-        .eq('hotel_id', h.id)
-        .order('detected_year', { ascending: false })
-        .order('detected_month', { ascending: false });
-      return (data ?? []) as ReconTermination[];
-    }
-
-    Promise.all(RECON_SUB_HOTELS.map(loadTerminations)).then(results => {
-      setTerminationsByHotel(Object.fromEntries(RECON_SUB_HOTELS.map((h, i) => [h, results[i]])) as Record<ReconSubHotel, ReconTermination[]>);
-    });
-  }, [tab, hotels]);
 
   // CFE cross-reference: load CSL's and NL's own 5 vendor statement uploads for the
   // SAME period being viewed on the CFEM tab, so CFE-employee lines mixed into those
@@ -393,51 +324,98 @@ export default function ReconciliationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, hotelId, year, month, hotels]);
 
-  async function flagTermination(shortCode: ReconSubHotel, line: { empCode: string; name: string }) {
-    const h = hotels.find(x => x.short_code === RECON_SHORT_CODE[shortCode]);
-    if (!h) return;
-    // employee_id is always null now (no DB employee comparison), so the table's
-    // UNIQUE(hotel_id, employee_id, ...) constraint can't catch duplicates — guard here instead.
-    // Matched by name, not code — payroll code formats can change between periods (see termKey).
-    const { data: dupe } = await supabase
-      .from('recon_terminations')
-      .select('id')
-      .eq('hotel_id', h.id)
-      .eq('employee_name', line.name)
-      .eq('detected_year', year)
-      .eq('detected_month', month)
-      .maybeSingle();
-    if (dupe) return;
-    const { data, error } = await supabase
-      .from('recon_terminations')
-      .insert({
-        hotel_id: h.id,
-        employee_id: null, // no DB employee comparison — this is a payroll-to-payroll diff only
-        employee_name: line.name,
-        employee_code: line.empCode || null,
-        detected_year: year,
-        detected_month: month,
-        status: 'flagged',
-        created_by: username,
-      })
-      .select()
-      .single();
-    if (error || !data) return;
-    setTerminationsByHotel(prev => ({ ...prev, [shortCode]: [data as ReconTermination, ...prev[shortCode]] }));
-  }
+  // Consolidation tab: load each hotel's "system" totals (auto from whatever's already
+  // parsed — payroll spreadsheets for CSL/NL, the CFEM Deductions Summary for CFEM) plus
+  // any manual bank/system figures already saved for this period, for all 3 hotels at once.
+  useEffect(() => {
+    if (tab !== 'consolidation' || !hotels.length) return;
 
-  async function resolveTermination(shortCode: ReconSubHotel, id: string, status: 'confirmed' | 'reinstated', note: string) {
+    async function loadSystemTotals(shortCode: ConsolidationHotel): Promise<SystemTotals> {
+      const h = hotels.find(x => x.short_code === shortCode);
+      if (!h) return emptySystemTotals;
+      const { data: periodRow } = await supabase
+        .from('reconciliation_periods')
+        .select('id')
+        .eq('hotel_id', h.id)
+        .eq('period_year', year)
+        .eq('period_month', month)
+        .maybeSingle();
+      if (!periodRow) return shortCode === 'CFEM' ? { ...emptySystemTotals, basic_salary: null } : emptySystemTotals;
+
+      const { data: ups } = await supabase
+        .from('recon_uploads')
+        .select('upload_type, parsed_data')
+        .eq('period_id', periodRow.id);
+      const byType = new Map((ups ?? []).map((u: any) => [u.upload_type, u.parsed_data]));
+
+      if (shortCode === 'CFEM') {
+        const cfem = byType.get('cfem_deductions') as ParsedCfemDeductions | undefined;
+        const totals: SystemTotals = { ...emptySystemTotals, basic_salary: null };
+        cfem?.sections.forEach(sec => {
+          const t = CFEM_VENDOR_TO_TYPE[sec.vendor];
+          if (t) totals[t] = sec.total;
+        });
+        return totals;
+      }
+
+      const payroll = byType.get('payroll') as ParsedPayroll | undefined;
+      const ftc = byType.get('ftc_payroll') as ParsedPayroll | undefined;
+      const basicSalary = (payroll?.lines.reduce((s, l) => s + l.basic, 0) ?? 0)
+                         + (ftc?.lines.reduce((s, l) => s + l.basic, 0) ?? 0);
+      const get = (t: string) => (byType.get(t) as ParsedStatement | undefined)?.total ?? 0;
+      return {
+        basic_salary: basicSalary,
+        furnmart: get('furnmart'), afritec: get('afritec'), topline: get('topline'),
+        cbstores: get('cbstores'), bodulo: get('bodulo'),
+      };
+    }
+
+    async function loadEntries(): Promise<ReconConsolidationEntry[]> {
+      const { data } = await supabase
+        .from('recon_consolidation')
+        .select('*')
+        .eq('period_year', year)
+        .eq('period_month', month);
+      return (data ?? []) as ReconConsolidationEntry[];
+    }
+
+    setConsolidationSystem(s => ({ ...s, loaded: false }));
+    Promise.all([loadSystemTotals('CSL'), loadSystemTotals('NL'), loadSystemTotals('CFEM'), loadEntries()]).then(
+      ([CSL, NL, CFEM, entries]) => {
+        setConsolidationSystem({ CSL, NL, CFEM, loaded: true });
+        setConsolidationEntries(entries);
+      }
+    );
+  }, [tab, year, month, hotels]);
+
+  async function saveConsolidationEntry(
+    hotelCode: ConsolidationHotel,
+    lineItem: LineItem,
+    field: 'system_amount' | 'bank_amount',
+    value: number | null,
+  ) {
+    const existing = consolidationEntries.find(e => e.hotel_short_code === hotelCode && e.line_item === lineItem);
+    const payload = {
+      period_year: year,
+      period_month: month,
+      hotel_short_code: hotelCode,
+      line_item: lineItem,
+      system_amount: field === 'system_amount' ? value : existing?.system_amount ?? null,
+      bank_amount: field === 'bank_amount' ? value : existing?.bank_amount ?? null,
+      updated_at: new Date().toISOString(),
+      updated_by: username,
+    };
     const { data } = await supabase
-      .from('recon_terminations')
-      .update({ status, resolved_at: new Date().toISOString(), resolved_by: username, resolved_note: note || null })
-      .eq('id', id)
+      .from('recon_consolidation')
+      .upsert(payload, { onConflict: 'period_year,period_month,hotel_short_code,line_item' })
       .select()
       .single();
-    if (!data) return;
-    setTerminationsByHotel(prev => ({
-      ...prev,
-      [shortCode]: prev[shortCode].map(x => x.id === id ? data as ReconTermination : x),
-    }));
+    if (data) {
+      setConsolidationEntries(prev => [
+        ...prev.filter(e => !(e.hotel_short_code === hotelCode && e.line_item === lineItem)),
+        data as ReconConsolidationEntry,
+      ]);
+    }
   }
 
   async function loadPeriod() {
@@ -458,57 +436,9 @@ export default function ReconciliationPage() {
         .eq('period_id', data.id)
         .order('uploaded_at');
       setUploads((ups || []) as ReconUpload[]);
-
-      const { data: qs } = await supabase
-        .from('recon_queries')
-        .select('*')
-        .eq('period_id', data.id)
-        .order('created_at');
-      setQueries((qs || []) as ReconQuery[]);
     } else {
       setUploads([]);
-      setQueries([]);
     }
-  }
-
-  async function loadPrevRecords() {
-    const prevMonth = month === 1 ? 12 : month - 1;
-    const prevYear = month === 1 ? year - 1 : year;
-
-    // Prefer the previous period's uploaded payroll — consistent empCode matching,
-    // works for CSL/NL where salary_records have no employee_code
-    const { data: prevPeriod } = await supabase
-      .from('reconciliation_periods')
-      .select('id')
-      .eq('hotel_id', hotelId)
-      .eq('period_year', prevYear)
-      .eq('period_month', prevMonth)
-      .maybeSingle();
-
-    if (prevPeriod) {
-      const [{ data: payUp }, { data: ftcUp }] = await Promise.all([
-        supabase.from('recon_uploads').select('parsed_data').eq('period_id', prevPeriod.id).eq('upload_type', 'payroll').maybeSingle(),
-        supabase.from('recon_uploads').select('parsed_data').eq('period_id', prevPeriod.id).eq('upload_type', 'ftc_payroll').maybeSingle(),
-      ]);
-      const lines: PayrollLine[] = [
-        ...((payUp?.parsed_data as any)?.lines ?? []),
-        ...((ftcUp?.parsed_data as any)?.lines ?? []),
-      ];
-      if (lines.length > 0) {
-        setPrevPayrollLines(lines);
-        return;
-      }
-    }
-
-    // Fall back to salary_records in DB
-    setPrevPayrollLines(null);
-    const { data } = await supabase
-      .from('salary_records')
-      .select('basic_salary, employees!inner(employee_code, surname, first_name, hotel_id)')
-      .eq('employees.hotel_id', hotelId)
-      .eq('period_year', prevYear)
-      .eq('period_month', prevMonth);
-    setPrevRecords((data || []) as any[]);
   }
 
   // ── Period management ─────────────────────────────────────────────────────
@@ -527,38 +457,10 @@ export default function ReconciliationPage() {
 
   // ── File upload ───────────────────────────────────────────────────────────
 
-  function viewPdf(upload: ReconUpload) {
-    const b64 = upload.parsed_data?.base64 as string | undefined;
-    if (!b64) return;
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-    window.open(url, '_blank');
-  }
-
   async function handleUpload(type: ReconUploadType, file: File) {
     setUploading(type);
     try {
       const buf = await file.arrayBuffer();
-
-      // PDF — store as base64, no parsing
-      if (type === 'twelve_months') {
-        const bytes = new Uint8Array(buf);
-        let binary = '';
-        bytes.forEach(b => { binary += String.fromCharCode(b); });
-        const base64 = btoa(binary);
-        const pid = await ensurePeriod();
-        const { error } = await supabase.from('recon_uploads').upsert(
-          { period_id: pid, upload_type: type, file_name: file.name,
-            parsed_data: { base64 }, row_count: null, total_amount: null, uploaded_by: username },
-          { onConflict: 'period_id,upload_type' },
-        );
-        if (error) throw error;
-        const { data: ups } = await supabase.from('recon_uploads').select('*').eq('period_id', pid).order('uploaded_at');
-        setUploads((ups || []) as ReconUpload[]);
-        return;
-      }
 
       // CFEM Deductions Summary — plain text/CSV, multi-vendor sections, own shape
       if (type === 'cfem_deductions') {
@@ -649,29 +551,6 @@ export default function ReconciliationPage() {
   async function saveNotes(notes: string) {
     if (!period) return;
     await supabase.from('reconciliation_periods').update({ notes }).eq('id', period.id);
-  }
-
-  // ── Queries ───────────────────────────────────────────────────────────────
-
-  async function addQuery() {
-    if (!newQuery.trim()) return;
-    const pid = await ensurePeriod();
-    const { data } = await supabase
-      .from('recon_queries')
-      .insert({ period_id: pid, message: newQuery.trim(), author_name: username })
-      .select()
-      .single();
-    if (data) { setQueries(q => [...q, data as ReconQuery]); setNewQuery(''); }
-  }
-
-  async function resolveQuery(id: string, msg: string) {
-    const { data } = await supabase
-      .from('recon_queries')
-      .update({ resolved_at: new Date().toISOString(), resolver_name: username, resolved_message: msg })
-      .eq('id', id)
-      .select()
-      .single();
-    if (data) setQueries(q => q.map(x => x.id === id ? data as ReconQuery : x));
   }
 
   // ── Cross-check computation ───────────────────────────────────────────────
@@ -1105,141 +984,102 @@ export default function ReconciliationPage() {
       };
     }) : [];
 
-  // ── Prior-month changes ───────────────────────────────────────────────────
-  // Unified prev-month shape regardless of source (recon upload or salary_records)
-  type PrevEmp = { empCode: string; name: string; basic: number };
-
-  const prevDataList: PrevEmp[] = prevPayrollLines != null
-    ? prevPayrollLines.map(l => ({ empCode: l.empCode, name: l.name, basic: l.basic }))
-    : prevRecords.map(r => ({
-        empCode: (r.employees.employee_code ?? '').toUpperCase(),
-        name: `${r.employees.first_name} ${r.employees.surname}`.trim(),
-        basic: r.basic_salary,
-      }));
-
-  const prevMap = new Map(prevDataList.map(d => [d.empCode, d]));
-  const curCodes = new Set(allPayrollLines.map(l => l.empCode));
-  const prevCodes = new Set(prevMap.keys());
-
-  const newEmps       = allPayrollLines.filter(l => !prevCodes.has(l.empCode));
-  const leftEmps      = prevDataList.filter(d => !curCodes.has(d.empCode));
-  const salaryChanges = allPayrollLines.filter(l => {
-    const prev = prevMap.get(l.empCode);
-    if (!prev) return false;
-    return Math.abs(l.basic - prev.basic) > 0.5;
-  });
-
-  // ── DB cross-reference (CSL / NL — per sub-tab) ──────────────────────────
-  type CrossRefRow = {
-    name: string;
-    dbEmployee: Employee | null;
-    dbBasic: number | null;
-    payBasic: number | null;
-    ftc: boolean;
-  };
-
-  function buildCrossRef(xref: HotelXRefData): CrossRefRow[] {
-    const basicMap = new Map<string, number>();
-    xref.salaryRecords.forEach(r => {
-      if (!basicMap.has(r.employee_id)) basicMap.set(r.employee_id, r.basic_salary);
-    });
-    const byNameKey = new Map<string, Employee>();
-    xref.employees.forEach(e => byNameKey.set(nameKey(`${e.surname} ${e.first_name}`), e));
-
-    const rows: CrossRefRow[] = [];
-    const matched = new Set<string>();
-
-    for (const l of xref.payrollLines) {
-      const db = byNameKey.get(nameKey(l.name));
-      if (db) matched.add(db.id);
-      rows.push({
-        name: l.name,
-        dbEmployee: db ?? null,
-        dbBasic: db ? (basicMap.get(db.id) ?? null) : null,
-        payBasic: l.basic,
-        ftc: db?.grade_label === 'Fixed Term',
-      });
-    }
-    for (const emp of xref.employees) {
-      if (!matched.has(emp.id)) {
-        rows.push({
-          name: `${emp.first_name} ${emp.surname}`.trim(),
-          dbEmployee: emp,
-          dbBasic: basicMap.get(emp.id) ?? null,
-          payBasic: null,
-          ftc: emp.grade_label === 'Fixed Term',
-        });
-      }
-    }
-    rows.sort((a, b) => a.name.localeCompare(b.name));
-    return rows;
-  }
-
-  const activeXRef  = xrefByHotel[crossRefSubTab];
-  const crossRefRows = buildCrossRef(activeXRef);
-
-  function xrefStats(rows: CrossRefRow[]) {
-    return {
-      matched:  rows.filter(r => r.dbEmployee && r.payBasic != null && r.dbBasic != null && Math.abs((r.payBasic ?? 0) - (r.dbBasic ?? 0)) <= 0.5).length,
-      mismatch: rows.filter(r => r.dbEmployee && r.payBasic != null && r.dbBasic != null && Math.abs((r.payBasic ?? 0) - (r.dbBasic ?? 0)) > 0.5).length,
-      payOnly:  rows.filter(r => !r.dbEmployee).length,
-      dbOnly:   rows.filter(r => r.dbEmployee && r.payBasic == null).length,
-    };
-  }
-
-  const crossRefStats = xrefStats(crossRefRows);
-  const statsByHotel = Object.fromEntries(
-    RECON_SUB_HOTELS.map(h => [h, xrefStats(buildCrossRef(xrefByHotel[h]))])
-  ) as Record<ReconSubHotel, ReturnType<typeof xrefStats>>;
-  const totalBadge = RECON_SUB_HOTELS.reduce((sum, h) => {
-    const s = statsByHotel[h];
-    return sum + s.mismatch + s.payOnly + s.dbOnly;
-  }, 0);
-
-  const filteredCrossRef = crossRefRows.filter(r => {
-    if (crossRefFilter === 'mismatch') return r.dbEmployee && r.payBasic != null && r.dbBasic != null && Math.abs((r.payBasic ?? 0) - (r.dbBasic ?? 0)) > 0.5;
-    if (crossRefFilter === 'payonly')  return !r.dbEmployee;
-    if (crossRefFilter === 'dbonly')   return r.dbEmployee && r.payBasic == null;
-    return true;
-  });
-
-  // ── Terminations (month-to-month payroll comparison, per hotel) ───────────
-  // A candidate is anyone present in the PREVIOUS period's payroll but absent from
-  // the CURRENT period's payroll — never compared against the DB employee list, so
-  // re-uploading payroll-only months doesn't keep re-flagging the same static roster.
-  type TermCandidate = { empCode: string; name: string };
-
-  // Match by name, not employee code — a hotel's payroll provider can change code
+  // ── Employees tab: month-to-month payroll comparison (CSL/NL only) ────────
+  // Matched by name, not employee code — a hotel's payroll provider can change code
   // formats between periods (observed for NL: "NL0020"-style in one month, "BAB001"
   // mnemonic-style the next), which would otherwise make every employee look like a
-  // termination even though nothing actually changed.
-  function termKey(l: PayrollLine): string {
-    return nameKey(l.name);
+  // termination/new-appointment even though nothing actually changed. Never compared
+  // against the DB employee list — see termPayrollByHotel above.
+  interface BasicMismatchRow { name: string; empCode: string; prevBasic: number; currBasic: number; diff: number }
+  interface RosterChangeRow { name: string; empCode: string; basic: number }
+
+  function buildEmployeesComparison(state: TermPayrollState) {
+    const prevByKey = new Map(state.previous.map(l => [nameKey(l.name), l]));
+    const currByKey = new Map(state.current.map(l => [nameKey(l.name), l]));
+
+    const basicMismatches: BasicMismatchRow[] = [];
+    const newAppointments: RosterChangeRow[] = [];
+    for (const l of state.current) {
+      const prev = prevByKey.get(nameKey(l.name));
+      if (!prev) {
+        newAppointments.push({ name: l.name, empCode: l.empCode, basic: l.basic });
+      } else if (Math.abs(l.basic - prev.basic) > 0.5) {
+        basicMismatches.push({ name: l.name, empCode: l.empCode, prevBasic: prev.basic, currBasic: l.basic, diff: l.basic - prev.basic });
+      }
+    }
+    const terminations: RosterChangeRow[] = state.previous
+      .filter(l => !currByKey.has(nameKey(l.name)))
+      .map(l => ({ name: l.name, empCode: l.empCode, basic: l.basic }));
+
+    return { basicMismatches, newAppointments, terminations };
   }
 
-  function terminationCandidates(state: TermPayrollState, existing: ReconTermination[]): TermCandidate[] {
-    const curKeys = new Set(state.current.map(termKey));
-    const flaggedKeys = new Set(
-      existing
-        .filter(t => t.detected_year === year && t.detected_month === month)
-        .map(t => nameKey(t.employee_name))
-    );
-    return state.previous
-      .filter(l => !curKeys.has(termKey(l)))
-      .filter(l => !flaggedKeys.has(nameKey(l.name)))
-      .map(l => ({ empCode: l.empCode, name: l.name }));
+  const employeesComparisonByHotel = Object.fromEntries(
+    PAYROLL_RECON_HOTELS.map(h => [h, buildEmployeesComparison(termPayrollByHotel[h])])
+  ) as Record<PayrollReconHotel, ReturnType<typeof buildEmployeesComparison>>;
+
+  const activeEmployeesComparison = employeesComparisonByHotel[employeesSubTab];
+  const activeTermPayrollForEmployees = termPayrollByHotel[employeesSubTab];
+
+  const employeesTabBadge = PAYROLL_RECON_HOTELS.reduce((sum, h) => {
+    const c = employeesComparisonByHotel[h];
+    return sum + c.basicMismatches.length + c.newAppointments.length + c.terminations.length;
+  }, 0);
+
+  // ── Consolidation (director bank-release sign-off) ────────────────────────
+  function getConsolidationEntry(hotelCode: ConsolidationHotel, lineItem: LineItem) {
+    return consolidationEntries.find(e => e.hotel_short_code === hotelCode && e.line_item === lineItem);
+  }
+  function consolidationIsManualSystem(hotelCode: ConsolidationHotel, lineItem: LineItem): boolean {
+    return consolidationSystem[hotelCode][lineItem] == null;
+  }
+  function consolidationSystemValue(hotelCode: ConsolidationHotel, lineItem: LineItem): number {
+    const auto = consolidationSystem[hotelCode][lineItem];
+    if (auto != null) return auto;
+    return getConsolidationEntry(hotelCode, lineItem)?.system_amount ?? 0;
+  }
+  function consolidationBankValue(hotelCode: ConsolidationHotel, lineItem: LineItem): number {
+    return getConsolidationEntry(hotelCode, lineItem)?.bank_amount ?? 0;
   }
 
-  const candidatesByHotel = Object.fromEntries(
-    RECON_SUB_HOTELS.map(h => [h, terminationCandidates(termPayrollByHotel[h], terminationsByHotel[h])])
-  ) as Record<ReconSubHotel, TermCandidate[]>;
-  const terminationsSubTab = crossRefSubTab; // reuse the same CSL/NL/CFE toggle as the Employees tab
-  const activeCandidates    = candidatesByHotel[terminationsSubTab];
-  const activeTermPayroll   = termPayrollByHotel[terminationsSubTab];
-  const activeTerminations  = terminationsByHotel[terminationsSubTab];
-  const openTerminationsBadge = RECON_SUB_HOTELS.reduce(
-    (sum, h) => sum + terminationsByHotel[h].filter(t => t.status === 'flagged').length, 0
-  );
+  async function handleExportConsolidation() {
+    const rows: Array<Array<string | number | null>> = LINE_ITEMS.map(li => {
+      const row: Array<string | number | null> = [LINE_ITEM_LABELS[li]];
+      let totalSys = 0, totalBank = 0;
+      for (const h of CONSOLIDATION_HOTELS) {
+        const sys = consolidationSystemValue(h, li);
+        const bank = consolidationBankValue(h, li);
+        row.push(sys, bank, sys - bank);
+        totalSys += sys; totalBank += bank;
+      }
+      row.push(totalSys, totalBank, totalSys - totalBank);
+      return row;
+    });
+    const totalsRow: Array<string | number | null> = ['Total'];
+    let grandSys = 0, grandBank = 0;
+    for (const h of CONSOLIDATION_HOTELS) {
+      const sys = LINE_ITEMS.reduce((s, li) => s + consolidationSystemValue(h, li), 0);
+      const bank = LINE_ITEMS.reduce((s, li) => s + consolidationBankValue(h, li), 0);
+      totalsRow.push(sys, bank, sys - bank);
+      grandSys += sys; grandBank += bank;
+    }
+    totalsRow.push(grandSys, grandBank, grandSys - grandBank);
+
+    const headers = [
+      'Line Item',
+      'CSL System', 'CSL Bank', 'CSL Diff',
+      'NL System', 'NL Bank', 'NL Diff',
+      'CFEM System', 'CFEM Bank', 'CFEM Diff',
+      'Total System', 'Total Bank', 'Total Diff',
+    ];
+    const sheet: ReportSheet = {
+      name: 'Consolidation',
+      headers,
+      rows: [...rows, totalsRow],
+      isTotalsRow: [...rows.map(() => false), true],
+    };
+    await exportReport('Consolidation', `Consolidation_${MONTH_NAMES[month - 1]}_${year}.xlsx`, [sheet]);
+  }
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -1328,33 +1168,20 @@ export default function ReconciliationPage() {
             }`}
           >
             Employees
-            {totalBadge > 0 && (
+            {employeesTabBadge > 0 && (
               <span className="ml-1.5 bg-orange-100 text-orange-700 rounded-full px-1.5 text-xs">
-                {totalBadge}
+                {employeesTabBadge}
               </span>
             )}
           </button>
-          {(['changes', 'terminations', 'queries'] as const).map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-                tab === t ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              {t === 'changes' ? 'Prior Month Changes' : t === 'terminations' ? 'Terminations' : 'Queries'}
-              {t === 'terminations' && openTerminationsBadge > 0 && (
-                <span className="ml-1.5 bg-red-100 text-red-700 rounded-full px-1.5 text-xs">
-                  {openTerminationsBadge}
-                </span>
-              )}
-              {t === 'queries' && queries.filter(q => !q.resolved_at).length > 0 && (
-                <span className="ml-1.5 bg-red-100 text-red-700 rounded-full px-1.5 text-xs">
-                  {queries.filter(q => !q.resolved_at).length}
-                </span>
-              )}
-            </button>
-          ))}
+          <button
+            onClick={() => setTab('consolidation')}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              tab === 'consolidation' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            Consolidation
+          </button>
         </div>
       </div>
 
@@ -1411,14 +1238,6 @@ export default function ReconciliationPage() {
                       )}
                       {existing.row_count != null && (
                         <span className="text-xs text-muted-foreground">{existing.row_count} rows</span>
-                      )}
-                      {cfg.type === 'twelve_months' && (
-                        <button
-                          onClick={() => viewPdf(existing)}
-                          className="text-xs text-blue-600 hover:underline"
-                        >
-                          View
-                        </button>
                       )}
                       <button
                         onClick={() => fileRefs.current[cfg.type]?.click()}
@@ -1886,218 +1705,57 @@ export default function ReconciliationPage() {
           </div>
         )}
 
-        {/* ═════ CROSS-REFERENCE TAB (CSL, NL, CFE) ═════ */}
+        {/* ═════ EMPLOYEES TAB — CSL/NL month-to-month payroll comparison ═════ */}
         {tab === 'crossref' && (
-          <div className="space-y-4">
-            {/* CSL / NL / CFE sub-tabs */}
+          <div className="space-y-6">
+            <p className="text-sm text-muted-foreground max-w-3xl">
+              Compares this period&apos;s uploaded Payroll Spreadsheet against the <strong>previous period&apos;s</strong> upload
+              — never against the HR List (employees table). Matched names with a different Basic Salary show as
+              Basic Salary Mismatch; names new this period show as New Appointments; names in last period&apos;s payroll
+              but missing this period show as Terminations.
+            </p>
+
+            {/* CSL / NL sub-tabs */}
             <div className="flex gap-1 border-b">
-              {RECON_SUB_HOTELS.map(code => {
-                const stats = statsByHotel[code];
-                const disc = stats.mismatch + stats.payOnly + stats.dbOnly;
+              {PAYROLL_RECON_HOTELS.map(code => {
+                const c = employeesComparisonByHotel[code];
+                const count = c.basicMismatches.length + c.newAppointments.length + c.terminations.length;
                 return (
                   <button
                     key={code}
-                    onClick={() => { setCrossRefSubTab(code); setCrossRefFilter('all'); }}
+                    onClick={() => setEmployeesSubTab(code)}
                     className={`px-5 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                      crossRefSubTab === code ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+                      employeesSubTab === code ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
                     }`}
                   >
                     {code}
-                    {disc > 0 && (
-                      <span className="ml-1.5 bg-orange-100 text-orange-700 rounded-full px-1.5 text-xs">{disc}</span>
+                    {count > 0 && (
+                      <span className="ml-1.5 bg-orange-100 text-orange-700 rounded-full px-1.5 text-xs">{count}</span>
                     )}
                   </button>
                 );
               })}
             </div>
 
-            {/* Filter chips */}
-            <div className="flex flex-wrap gap-2">
-              <button onClick={() => setCrossRefFilter('all')} className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'all' ? 'bg-primary text-primary-foreground border-primary' : 'bg-white text-muted-foreground border-input hover:bg-muted'}`}>
-                All ({crossRefRows.length})
-              </button>
-              <button onClick={() => setCrossRefFilter('mismatch')} className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'mismatch' ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-orange-700 border-orange-200 hover:bg-orange-50'}`}>
-                Basic Mismatch ({crossRefStats.mismatch})
-              </button>
-              <button onClick={() => setCrossRefFilter('payonly')} className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'payonly' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-red-700 border-red-200 hover:bg-red-50'}`}>
-                Not in DB ({crossRefStats.payOnly})
-              </button>
-              <button onClick={() => setCrossRefFilter('dbonly')} className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${crossRefFilter === 'dbonly' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-blue-700 border-blue-200 hover:bg-blue-50'}`}>
-                Not in Payroll ({crossRefStats.dbOnly})
-              </button>
-              <span className="px-3 py-1 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">
-                ✓ Matched ({crossRefStats.matched})
-              </span>
-            </div>
-
-            {!activeXRef.loaded ? (
+            {!activeTermPayrollForEmployees.loaded ? (
               <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : activeXRef.payrollLines.length === 0 && activeXRef.employees.length === 0 ? (
+            ) : activeTermPayrollForEmployees.previous.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                No payroll uploaded for {crossRefSubTab} in {MONTH_NAMES[month - 1]} {year} and no active employees in DB.
-              </p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="text-sm border rounded w-full whitespace-nowrap">
-                  <thead>
-                    <tr className="bg-muted/40 text-left">
-                      <th className="px-3 py-2">Name</th>
-                      <th className="px-3 py-2">Grade</th>
-                      <th className="px-3 py-2">Department</th>
-                      <th className="px-3 py-2 text-right">DB Basic</th>
-                      <th className="px-3 py-2 text-right">Payroll Basic</th>
-                      <th className="px-3 py-2 text-right">Diff</th>
-                      <th className="px-3 py-2">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredCrossRef.map((row, i) => {
-                      const diff = row.dbBasic != null && row.payBasic != null
-                        ? row.payBasic - row.dbBasic
-                        : null;
-                      const isMatch    = diff != null && Math.abs(diff) <= 0.5;
-                      const isMismatch = diff != null && Math.abs(diff) > 0.5;
-                      const isPayOnly  = !row.dbEmployee;
-                      const isDbOnly   = row.dbEmployee && row.payBasic == null;
-                      return (
-                        <tr
-                          key={`xref-${i}`}
-                          className={`border-t ${isMismatch ? 'bg-orange-50/50' : isPayOnly ? 'bg-red-50/40' : isDbOnly ? 'bg-blue-50/40' : i % 2 === 0 ? 'bg-white' : 'bg-muted/10'}`}
-                        >
-                          <td className="px-3 py-1.5 font-medium">
-                            {row.name}
-                            {row.ftc && (
-                              <span className="ml-1.5 text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">Fixed Term</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-1.5 text-muted-foreground text-xs">
-                            {row.dbEmployee?.grade_label ?? '—'}
-                          </td>
-                          <td className="px-3 py-1.5 text-muted-foreground text-xs">
-                            {row.dbEmployee?.department_code ?? '—'}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {row.dbBasic != null ? fmt(row.dbBasic, country) : <span className="text-muted-foreground">—</span>}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {row.payBasic != null ? fmt(row.payBasic, country) : <span className="text-muted-foreground">—</span>}
-                          </td>
-                          <td className={`px-3 py-1.5 text-right tabular-nums font-medium ${isMatch ? 'text-green-700' : isMismatch ? (diff! > 0 ? 'text-red-600' : 'text-orange-600') : 'text-muted-foreground'}`}>
-                            {isMatch ? '✓' : diff != null ? `${diff > 0 ? '+' : ''}${fmt(diff, country)}` : '—'}
-                          </td>
-                          <td className="px-3 py-1.5">
-                            {isPayOnly  && <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-medium">Not in DB</span>}
-                            {isDbOnly   && <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">Not in payroll</span>}
-                            {isMismatch && <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">Basic diff</span>}
-                            {isMatch    && <span className="text-xs text-green-700">Matched</span>}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {filteredCrossRef.length === 0 && (
-                      <tr>
-                        <td colSpan={7} className="px-3 py-4 text-center text-muted-foreground text-sm">
-                          No records match this filter.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ═════ CHANGES TAB ═════ */}
-        {tab === 'changes' && (
-          <div className="space-y-6">
-            {!hasAnyPayroll ? (
-              <p className="text-muted-foreground text-sm">Upload a payroll spreadsheet first.</p>
-            ) : prevDataList.length === 0 ? (
-              <p className="text-muted-foreground text-sm">
-                No payroll data found for the previous month (
-                {MONTH_NAMES[month === 1 ? 11 : month - 2]} {month === 1 ? year - 1 : year}).
-                Upload that month&apos;s payroll spreadsheet via the Upload tab, or import it via Import HR List.
+                No payroll uploaded for {employeesSubTab}&apos;s previous period — nothing to compare against yet.
               </p>
             ) : (
               <>
-                {/* New employees */}
+                {/* Basic Salary Mismatch */}
                 <div>
                   <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                    New Employees ({newEmps.length})
+                    Basic Salary Mismatch ({activeEmployeesComparison.basicMismatches.length})
                   </h2>
-                  {newEmps.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">None — headcount unchanged.</p>
-                  ) : (
-                    <table className="text-sm border rounded w-full max-w-xl">
-                      <thead>
-                        <tr className="bg-muted/40">
-                          <th className="px-3 py-2 text-left">Code</th>
-                          <th className="px-3 py-2 text-left">Name</th>
-                          <th className="px-3 py-2 text-right">Basic</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {newEmps.map(e => (
-                          <tr key={e.empCode} className="border-t">
-                            <td className="px-3 py-1.5 font-mono text-xs">
-                              {e.empCode && !e.empCode.includes('|') ? e.empCode : '—'}
-                              {ftcCodes.has(e.empCode) && (
-                                <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">Fixed Term</span>
-                              )}
-                            </td>
-                            <td className="px-3 py-1.5">{e.name}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(e.basic, country)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-
-                {/* Employees no longer in payroll */}
-                <div>
-                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                    Not in Current Payroll ({leftEmps.length})
-                  </h2>
-                  {leftEmps.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">None — no departures.</p>
-                  ) : (
-                    <table className="text-sm border rounded w-full max-w-xl">
-                      <thead>
-                        <tr className="bg-muted/40">
-                          <th className="px-3 py-2 text-left">Code</th>
-                          <th className="px-3 py-2 text-left">Name</th>
-                          <th className="px-3 py-2 text-right">Prev Basic</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {leftEmps.map((d, i) => (
-                          <tr key={i} className="border-t">
-                            <td className="px-3 py-1.5 font-mono text-xs">
-                              {d.empCode && !d.empCode.includes('|') ? d.empCode : '—'}
-                            </td>
-                            <td className="px-3 py-1.5">{d.name}</td>
-                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(d.basic, country)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-
-                {/* Basic salary changes */}
-                <div>
-                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                    Basic Salary Changes ({salaryChanges.length})
-                  </h2>
-                  {salaryChanges.length === 0 ? (
+                  {activeEmployeesComparison.basicMismatches.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No basic salary changes from prior month.</p>
                   ) : (
                     <table className="text-sm border rounded w-full max-w-2xl">
                       <thead>
                         <tr className="bg-muted/40">
-                          <th className="px-3 py-2 text-left">Code</th>
                           <th className="px-3 py-2 text-left">Name</th>
                           <th className="px-3 py-2 text-right">Prior Basic</th>
                           <th className="px-3 py-2 text-right">Current Basic</th>
@@ -2105,26 +1763,70 @@ export default function ReconciliationPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {salaryChanges.map(e => {
-                          const prev = prevMap.get(e.empCode);
-                          const chg = e.basic - (prev?.basic ?? 0);
-                          return (
-                            <tr key={e.empCode} className="border-t">
-                              <td className="px-3 py-1.5 font-mono text-xs">
-                                {e.empCode && !e.empCode.includes('|') ? e.empCode : '—'}
-                                {ftcCodes.has(e.empCode) && (
-                                  <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">Fixed Term</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-1.5">{e.name}</td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(prev?.basic ?? 0, country)}</td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(e.basic, country)}</td>
-                              <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${chg > 0 ? 'text-green-700' : 'text-red-600'}`}>
-                                {chg > 0 ? '+' : ''}{fmt(chg, country)}
-                              </td>
-                            </tr>
-                          );
-                        })}
+                        {activeEmployeesComparison.basicMismatches.map((r, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-3 py-1.5">{r.name}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.prevBasic, country)}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.currBasic, country)}</td>
+                            <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.diff > 0 ? 'text-green-700' : 'text-red-600'}`}>
+                              {r.diff > 0 ? '+' : ''}{fmt(r.diff, country)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {/* New Appointments */}
+                <div>
+                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                    New Appointments ({activeEmployeesComparison.newAppointments.length})
+                  </h2>
+                  {activeEmployeesComparison.newAppointments.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">None — headcount unchanged.</p>
+                  ) : (
+                    <table className="text-sm border rounded w-full max-w-xl">
+                      <thead>
+                        <tr className="bg-muted/40">
+                          <th className="px-3 py-2 text-left">Name</th>
+                          <th className="px-3 py-2 text-right">Basic</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeEmployeesComparison.newAppointments.map((r, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-3 py-1.5">{r.name}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {/* Terminations */}
+                <div>
+                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                    Terminations ({activeEmployeesComparison.terminations.length})
+                  </h2>
+                  {activeEmployeesComparison.terminations.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">None — no departures.</p>
+                  ) : (
+                    <table className="text-sm border rounded w-full max-w-xl">
+                      <thead>
+                        <tr className="bg-muted/40">
+                          <th className="px-3 py-2 text-left">Name</th>
+                          <th className="px-3 py-2 text-right">Prior Basic</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeEmployeesComparison.terminations.map((r, i) => (
+                          <tr key={i} className="border-t">
+                            <td className="px-3 py-1.5">{r.name}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   )}
@@ -2134,261 +1836,141 @@ export default function ReconciliationPage() {
           </div>
         )}
 
-        {/* ═════ TERMINATIONS TAB ═════ */}
-        {tab === 'terminations' && (
-          <div className="space-y-6 max-w-4xl">
-            <p className="text-sm text-muted-foreground">
-              Compares this period&apos;s uploaded Payroll Spreadsheet against the <strong>previous period&apos;s</strong> upload
-              only — never against the DB employee list, so re-uploading payroll-only months doesn&apos;t keep re-flagging
-              the same people. The list below is the outcome: names in last period&apos;s payroll that are missing this period.
-              Flagging only writes to this log — it never changes any employee record.
-            </p>
-
-            {/* CSL / NL / CFE sub-tabs (shared with the Employees tab) */}
-            <div className="flex gap-1 border-b">
-              {RECON_SUB_HOTELS.map(code => {
-                const cands = candidatesByHotel[code];
-                return (
-                  <button
-                    key={code}
-                    onClick={() => setCrossRefSubTab(code)}
-                    className={`px-5 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                      terminationsSubTab === code ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    {code}
-                    {cands.length > 0 && (
-                      <span className="ml-1.5 bg-blue-100 text-blue-700 rounded-full px-1.5 text-xs">{cands.length}</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Outcome for the currently selected period: names not found in that month's payroll */}
-            <div>
-              <h3 className="text-sm font-semibold mb-2">
-                {MONTH_NAMES[month - 1]} {year} — Terminations
-              </h3>
-              {!activeTermPayroll.loaded ? (
-                <p className="text-sm text-muted-foreground">Loading…</p>
-              ) : activeTermPayroll.previous.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No payroll uploaded for {terminationsSubTab}&apos;s previous period — nothing to compare against yet.
-                </p>
-              ) : activeCandidates.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No names missing from {terminationsSubTab}&apos;s payroll this period.
-                </p>
-              ) : (
-                <ul className="divide-y rounded border bg-white">
-                  {activeCandidates.map((row, i) => (
-                    <li key={`cand-${i}`} className="flex items-center justify-between gap-3 px-4 py-2">
-                      <span className="text-sm font-medium">{row.name}</span>
-                      <button
-                        onClick={() => flagTermination(terminationsSubTab, row)}
-                        className="px-2.5 py-1 rounded text-xs font-medium bg-red-600 text-white hover:bg-red-700 shrink-0"
-                      >
-                        Flag as Termination
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            {/* Historical log across all periods */}
-            <div>
-              <h3 className="text-sm font-semibold mb-2">Termination Log — {terminationsSubTab}</h3>
-              {activeTerminations.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No terminations recorded yet for {terminationsSubTab}.</p>
-              ) : (
-                <div className="space-y-3">
-                  {activeTerminations.map(t => (
-                    <TerminationItem
-                      key={t.id}
-                      termination={t}
-                      onResolve={(status, note) => resolveTermination(terminationsSubTab, t.id, status, note)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ═════ QUERIES TAB ═════ */}
-        {tab === 'queries' && (
-          <div className="max-w-2xl space-y-4">
-            {queries.length === 0 && (
-              <p className="text-sm text-muted-foreground">No queries yet for this period.</p>
-            )}
-
-            {queries.map(q => (
-              <QueryItem
-                key={q.id}
-                query={q}
-                onResolve={(msg) => resolveQuery(q.id, msg)}
-              />
-            ))}
-
-            {/* New query input */}
-            <div className="border rounded p-4 bg-white mt-4">
-              <label className="block text-sm font-medium mb-2">Raise a Query</label>
-              <textarea
-                value={newQuery}
-                onChange={e => setNewQuery(e.target.value)}
-                rows={3}
-                placeholder="Describe the discrepancy or question…"
-                className="w-full border rounded px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
-              />
-              <button
-                onClick={addQuery}
-                disabled={!newQuery.trim()}
-                className="mt-2 px-4 py-1.5 bg-primary text-primary-foreground rounded text-sm font-medium hover:opacity-90 disabled:opacity-50"
+        {/* ═════ CONSOLIDATION TAB — director bank-release sign-off ═════ */}
+        {tab === 'consolidation' && (
+          <div className="space-y-4 max-w-6xl">
+            <div className="flex items-center gap-3 rounded-lg border bg-white px-4 py-3">
+              <span className="text-sm font-medium text-muted-foreground">Consolidating for</span>
+              <select
+                value={month}
+                onChange={e => setMonth(Number(e.target.value))}
+                className="border rounded px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary"
               >
-                Submit Query
+                {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+              </select>
+              <select
+                value={year}
+                onChange={e => setYear(Number(e.target.value))}
+                className="border rounded px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-primary"
+              >
+                {years.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <button
+                onClick={handleExportConsolidation}
+                className="ml-auto px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm font-medium hover:opacity-90"
+              >
+                Export to Excel
               </button>
             </div>
+
+            <p className="text-sm text-muted-foreground">
+              System figures are pulled automatically from each hotel&apos;s uploaded payroll / statements / CFEM Deductions
+              Summary for this period. Bank figures are entered manually, reflecting what was actually paid to the bank.
+              Everything should balance to zero once the bank release is confirmed.
+            </p>
+
+            {!consolidationSystem.loaded ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="text-sm border rounded w-full whitespace-nowrap">
+                  <thead>
+                    <tr className="bg-[#1B3A5C] text-white">
+                      <th className="px-3 py-2 text-left">Line Item</th>
+                      {CONSOLIDATION_HOTELS.map(h => (
+                        <Fragment key={h}>
+                          <th className="px-2 py-2 text-right border-l border-white/20">{h} System</th>
+                          <th className="px-2 py-2 text-right">{h} Bank</th>
+                          <th className="px-2 py-2 text-right">{h} Diff</th>
+                        </Fragment>
+                      ))}
+                      <th className="px-2 py-2 text-right border-l border-white/20">Total System</th>
+                      <th className="px-2 py-2 text-right">Total Bank</th>
+                      <th className="px-2 py-2 text-right">Total Diff</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {LINE_ITEMS.map((li, i) => {
+                      let totalSys = 0, totalBank = 0;
+                      const hotelCells = CONSOLIDATION_HOTELS.map(h => {
+                        const sys = consolidationSystemValue(h, li);
+                        const bank = consolidationBankValue(h, li);
+                        const diff = sys - bank;
+                        totalSys += sys; totalBank += bank;
+                        const manual = consolidationIsManualSystem(h, li);
+                        return (
+                          <Fragment key={h}>
+                            <td className="px-2 py-1.5 text-right border-t border-l">
+                              {manual ? (
+                                <input
+                                  type="number"
+                                  defaultValue={sys || ''}
+                                  onBlur={e => saveConsolidationEntry(h, li, 'system_amount', e.target.value === '' ? null : Number(e.target.value))}
+                                  className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
+                                />
+                              ) : (
+                                <span className="tabular-nums">{fmt(sys, country)}</span>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 text-right border-t">
+                              <input
+                                type="number"
+                                defaultValue={bank || ''}
+                                onBlur={e => saveConsolidationEntry(h, li, 'bank_amount', e.target.value === '' ? null : Number(e.target.value))}
+                                className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
+                              />
+                            </td>
+                            <td className={`px-2 py-1.5 text-right border-t tabular-nums ${diffClass(diff)}`}>
+                              {fmtDiff(diff, country)}
+                            </td>
+                          </Fragment>
+                        );
+                      });
+                      return (
+                        <tr key={li} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/10'}>
+                          <td className="px-3 py-1.5 font-medium border-t">{LINE_ITEM_LABELS[li]}</td>
+                          {hotelCells}
+                          <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmt(totalSys, country)}</td>
+                          <td className="px-2 py-1.5 text-right border-t tabular-nums font-medium">{fmt(totalBank, country)}</td>
+                          <td className={`px-2 py-1.5 text-right border-t tabular-nums font-medium ${diffClass(totalSys - totalBank)}`}>
+                            {fmtDiff(totalSys - totalBank, country)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    {(() => {
+                      let grandSys = 0, grandBank = 0;
+                      const cells = CONSOLIDATION_HOTELS.map(h => {
+                        const sys = LINE_ITEMS.reduce((s, li) => s + consolidationSystemValue(h, li), 0);
+                        const bank = LINE_ITEMS.reduce((s, li) => s + consolidationBankValue(h, li), 0);
+                        grandSys += sys; grandBank += bank;
+                        return (
+                          <Fragment key={h}>
+                            <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(sys, country)}</td>
+                            <td className="px-2 py-2 text-right border-t tabular-nums">{fmt(bank, country)}</td>
+                            <td className={`px-2 py-2 text-right border-t tabular-nums ${diffClass(sys - bank)}`}>{fmtDiff(sys - bank, country)}</td>
+                          </Fragment>
+                        );
+                      });
+                      return (
+                        <tr className="bg-muted/40 font-semibold">
+                          <td className="px-3 py-2 border-t">Total</td>
+                          {cells}
+                          <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(grandSys, country)}</td>
+                          <td className="px-2 py-2 text-right border-t tabular-nums">{fmt(grandBank, country)}</td>
+                          <td className={`px-2 py-2 text-right border-t tabular-nums ${diffClass(grandSys - grandBank)}`}>{fmtDiff(grandSys - grandBank, country)}</td>
+                        </tr>
+                      );
+                    })()}
+                  </tfoot>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-// ── Query item sub-component ──────────────────────────────────────────────────
-
-function QueryItem({ query, onResolve }: { query: ReconQuery; onResolve: (msg: string) => void }) {
-  const [resolveMsg, setResolveMsg] = useState('');
-  const [showResolve, setShowResolve] = useState(false);
-
-  return (
-    <div className={`border rounded p-4 ${query.resolved_at ? 'bg-green-50 border-green-200' : 'bg-white'}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1">
-          <p className="text-sm font-medium">{query.message}</p>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {query.author_name} · {new Date(query.created_at).toLocaleDateString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric' })}
-          </p>
-        </div>
-        {!query.resolved_at && (
-          <button
-            onClick={() => setShowResolve(v => !v)}
-            className="text-xs text-blue-600 hover:underline shrink-0"
-          >
-            Resolve
-          </button>
-        )}
-      </div>
-
-      {query.resolved_at && (
-        <div className="mt-2 pl-3 border-l-2 border-green-400">
-          <p className="text-sm text-green-800">{query.resolved_message}</p>
-          <p className="text-xs text-green-600 mt-0.5">
-            Resolved by {query.resolver_name} · {new Date(query.resolved_at).toLocaleDateString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric' })}
-          </p>
-        </div>
-      )}
-
-      {showResolve && !query.resolved_at && (
-        <div className="mt-3">
-          <textarea
-            value={resolveMsg}
-            onChange={e => setResolveMsg(e.target.value)}
-            rows={2}
-            placeholder="Resolution / explanation…"
-            className="w-full border rounded px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
-          />
-          <button
-            onClick={() => { onResolve(resolveMsg); setShowResolve(false); }}
-            disabled={!resolveMsg.trim()}
-            className="mt-1 px-3 py-1 bg-green-700 text-white rounded text-sm hover:bg-green-800 disabled:opacity-50"
-          >
-            Mark Resolved
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Termination log item sub-component ────────────────────────────────────────
-
-const TERM_STATUS_LABELS: Record<string, string> = {
-  flagged: 'Flagged', confirmed: 'Confirmed', reinstated: 'Reinstated',
-};
-const TERM_STATUS_COLORS: Record<string, string> = {
-  flagged: 'bg-red-100 text-red-700', confirmed: 'bg-orange-100 text-orange-800', reinstated: 'bg-green-100 text-green-800',
-};
-
-function TerminationItem({ termination, onResolve }: {
-  termination: ReconTermination;
-  onResolve: (status: 'confirmed' | 'reinstated', note: string) => void;
-}) {
-  const [note, setNote] = useState('');
-  const [showResolve, setShowResolve] = useState(false);
-
-  return (
-    <div className={`border rounded p-4 ${termination.status === 'reinstated' ? 'bg-green-50 border-green-200' : termination.status === 'confirmed' ? 'bg-orange-50 border-orange-200' : 'bg-white'}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1">
-          <p className="text-sm font-medium">
-            {termination.employee_name}
-            {termination.employee_code && <span className="ml-1.5 text-xs font-mono text-muted-foreground">({termination.employee_code})</span>}
-          </p>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Missing from {MONTH_NAMES[termination.detected_month - 1]} {termination.detected_year} payroll
-            {termination.created_by ? ` · flagged by ${termination.created_by}` : ''}
-          </p>
-        </div>
-        <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded font-medium ${TERM_STATUS_COLORS[termination.status]}`}>
-          {TERM_STATUS_LABELS[termination.status]}
-        </span>
-      </div>
-
-      {termination.status !== 'flagged' && termination.resolved_note && (
-        <div className="mt-2 pl-3 border-l-2 border-muted">
-          <p className="text-sm">{termination.resolved_note}</p>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {termination.resolved_by} · {termination.resolved_at && new Date(termination.resolved_at).toLocaleDateString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric' })}
-          </p>
-        </div>
-      )}
-
-      {termination.status === 'flagged' && (
-        <div className="mt-2">
-          {!showResolve ? (
-            <button onClick={() => setShowResolve(true)} className="text-xs text-blue-600 hover:underline">
-              Confirm / Reinstate
-            </button>
-          ) : (
-            <div className="mt-1 space-y-2">
-              <textarea
-                value={note}
-                onChange={e => setNote(e.target.value)}
-                rows={2}
-                placeholder="Note (e.g. last day worked, or reason for reinstating)…"
-                className="w-full border rounded px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
-              />
-              <div className="flex gap-2">
-                <button
-                  onClick={() => { onResolve('confirmed', note); setShowResolve(false); }}
-                  className="px-3 py-1 bg-orange-700 text-white rounded text-sm hover:bg-orange-800"
-                >
-                  Confirm Termination
-                </button>
-                <button
-                  onClick={() => { onResolve('reinstated', note); setShowResolve(false); }}
-                  className="px-3 py-1 bg-green-700 text-white rounded text-sm hover:bg-green-800"
-                >
-                  Reinstate (false alarm)
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

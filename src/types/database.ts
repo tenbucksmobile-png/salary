@@ -169,7 +169,7 @@ export interface EmployeeWithSalary extends Employee {
 }
 
 // Reconciliation types
-export type ReconUploadType = 'payroll' | 'ftc_payroll' | 'twelve_months' | 'afritec' | 'topline' | 'furnmart' | 'cbstores' | 'bodulo' | 'medical' | 'cfem_deductions';
+export type ReconUploadType = 'payroll' | 'ftc_payroll' | 'afritec' | 'topline' | 'furnmart' | 'cbstores' | 'bodulo' | 'medical' | 'cfem_deductions';
 export type ReconStatus = 'open' | 'submitted' | 'approved';
 
 export interface ReconciliationPeriod {
@@ -228,6 +228,23 @@ export interface ReconTermination {
   resolved_at: string | null;
   resolved_by: string | null;
   resolved_note: string | null;
+}
+
+// Consolidation: director-facing monthly bank release sign-off. One row per
+// (period, hotel, line item). system_amount is a manual override, only used
+// where no automatic source exists in this app (CFEM's Basic Salary — CFEM's
+// payroll is never uploaded here); bank_amount is always manual, reflecting
+// what was actually paid to the bank. See migration 021_recon_consolidation.sql.
+export interface ReconConsolidationEntry {
+  id: string;
+  period_year: number;
+  period_month: number;
+  hotel_short_code: string;
+  line_item: string;
+  system_amount: number | null;
+  bank_amount: number | null;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 // Leave Provision: annual (July) leave balance import + daily-rate payout calc.
