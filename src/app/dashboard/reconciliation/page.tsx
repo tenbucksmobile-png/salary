@@ -917,26 +917,40 @@ export default function ReconciliationPage() {
     bodulo:   mgtEmpRows.reduce((s, r) => s + (r.bodulo_stmt   ?? 0), 0),
   };
 
-  // CFE employee token index for management cross-reference — matches on a SINGLE shared
-  // name token (surname OR first name, min 3 letters), not the full name as an exact set.
-  // CFE Management's own deductions report often uses initials for first names ("MR B.A.
-  // BAAKILE") while the statement it's being cross-checked against uses the full name
-  // ("BABOLOKI BAAKILE") — an exact nameKey() match would never link these, even though
-  // the surname alone makes it unambiguous. Short tokens are excluded to avoid a stray
-  // initial ("O", "BT") spuriously matching an unrelated employee.
-  const CFE_TOKEN_MIN_LEN = 3;
-  const cfeTokenIndex = new Map<string, Employee>();
-  cfeEmployees.forEach(e => {
-    const tokens = new Set([...nameTokens(e.surname), ...nameTokens(e.first_name)]);
-    tokens.forEach(t => { if (t.length >= CFE_TOKEN_MIN_LEN && !cfeTokenIndex.has(t)) cfeTokenIndex.set(t, e); });
-  });
+  // Code index for CFEM's own report lines — used only as a FALLBACK when name resolution
+  // fails outright, never to override a name match. CFEM's own report isn't fully self-
+  // consistent: one CB Stores line lists "MRS D FRENCH" (Diane) tagged with code "FRE002",
+  // which actually belongs to James French in the DB (Diane's real code is "FRE001") —
+  // trusting code over name here would misattribute Diane's deduction to James. Name
+  // (surname + first-initial, see matchCfeEmployee below) stays authoritative.
+  const cfeCodeIndex = new Map<string, Employee>();
+  cfeEmployees.forEach(e => { if (e.employee_code) cfeCodeIndex.set(e.employee_code.toUpperCase(), e); });
+
+  // Requires the SURNAME to appear as a token AND the first name's initial to match — not
+  // just any single shared token. Pure "any token" matching (an earlier version) produced
+  // false positives on real July data: a different CSL employee named "Dorcus" (matched CFE's
+  // Dorcus Shamukuni on first name alone) and a different CSL employee surnamed "Nkwazi"
+  // (matched CFE's Thomas Nkwazi on surname alone). Surname + initial correctly rejects both
+  // while still linking CFEM's initials-only report names ("MR B.A. BAAKILE", initial B) to
+  // CSL's full-name statement lines ("BABOLOKI BAAKILE", also initial B).
   function matchCfeEmployee(name: string): Employee | undefined {
-    for (const t of nameTokens(name)) {
-      if (t.length < CFE_TOKEN_MIN_LEN) continue;
-      const match = cfeTokenIndex.get(t);
-      if (match) return match;
+    const tokens = nameTokens(name);
+    if (!tokens.length) return undefined;
+    for (const e of cfeEmployees) {
+      const surnameTokens = nameTokens(e.surname);
+      if (!surnameTokens.some(st => tokens.includes(st))) continue;
+      const firstInitial = nameTokens(e.first_name)[0]?.[0];
+      if (!firstInitial || tokens.some(t => t[0] === firstInitial)) return e;
     }
     return undefined;
+  }
+
+  // Name first (authoritative — see note above), code only as a fallback if the name
+  // doesn't resolve to anyone at all.
+  function resolveCfemLine(l: ReconLine): Employee | undefined {
+    const byName = matchCfeEmployee(l.name);
+    if (byName) return byName;
+    return l.empCode ? cfeCodeIndex.get(l.empCode.toUpperCase()) : undefined;
   }
 
   // Map vendor label → management amount so we can split summary rows
@@ -1003,7 +1017,7 @@ export default function ReconciliationPage() {
       // (CSL's statement, full name) are recognised as the same person by identity —
       // comparing raw name strings here would wrongly list him as unmatched on both sides.
       const cfemByEmp = new Map<string, ReconLine>();
-      cfemLines.forEach(l => { const emp = matchCfeEmployee(l.name); if (emp) cfemByEmp.set(emp.id, l); });
+      cfemLines.forEach(l => { const emp = resolveCfemLine(l); if (emp) cfemByEmp.set(emp.id, l); });
       const embeddedByEmp = new Map<string, ReconLine>();
       embeddedLines.forEach(l => { const emp = matchCfeEmployee(l.name); if (emp) embeddedByEmp.set(emp.id, l); });
 
