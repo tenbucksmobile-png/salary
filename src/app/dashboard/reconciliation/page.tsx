@@ -1843,8 +1843,9 @@ export default function ReconciliationPage() {
         {tab === 'terminations' && (
           <div className="space-y-6 max-w-4xl">
             <p className="text-sm text-muted-foreground">
-              Candidates are DB-active employees missing from a month&apos;s uploaded Payroll Spreadsheet.
-              Flagging or resolving here only writes to this log — it never changes the employee record itself.
+              The current employee list is used only as a backend comparison against each month&apos;s uploaded
+              Payroll Spreadsheet — it is never displayed here. The list below is the outcome: names not found
+              in that month&apos;s payroll. Flagging only writes to this log — it never changes the employee record itself.
             </p>
 
             {/* CSL / NL sub-tabs (shared with the Employees tab) */}
@@ -1868,53 +1869,31 @@ export default function ReconciliationPage() {
               })}
             </div>
 
-            {/* Candidates for the currently selected period */}
+            {/* Outcome for the currently selected period: names not found in that month's payroll */}
             <div>
               <h3 className="text-sm font-semibold mb-2">
-                Candidates — {MONTH_NAMES[month - 1]} {year}
+                {MONTH_NAMES[month - 1]} {year} — Terminations
               </h3>
               {!(terminationsSubTab === 'CSL' ? cslXRef : nlXRef).loaded ? (
                 <p className="text-sm text-muted-foreground">Loading…</p>
               ) : activeCandidates.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  No active employees are missing from {terminationsSubTab}&apos;s payroll this period.
+                  No names missing from {terminationsSubTab}&apos;s payroll this period.
                 </p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="text-sm border rounded w-full whitespace-nowrap">
-                    <thead>
-                      <tr className="bg-muted/40 text-left">
-                        <th className="px-3 py-2">Name</th>
-                        <th className="px-3 py-2">Code</th>
-                        <th className="px-3 py-2">Grade</th>
-                        <th className="px-3 py-2">Department</th>
-                        <th className="px-3 py-2 text-right">DB Basic</th>
-                        <th className="px-3 py-2"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activeCandidates.map((row, i) => (
-                        <tr key={`cand-${i}`} className={`border-t ${i % 2 === 0 ? 'bg-white' : 'bg-muted/10'}`}>
-                          <td className="px-3 py-1.5 font-medium">{row.name}</td>
-                          <td className="px-3 py-1.5 text-muted-foreground text-xs">{row.dbEmployee?.employee_code ?? '—'}</td>
-                          <td className="px-3 py-1.5 text-muted-foreground text-xs">{row.dbEmployee?.grade_label ?? '—'}</td>
-                          <td className="px-3 py-1.5 text-muted-foreground text-xs">{row.dbEmployee?.department_code ?? '—'}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {row.dbBasic != null ? fmt(row.dbBasic, country) : <span className="text-muted-foreground">—</span>}
-                          </td>
-                          <td className="px-3 py-1.5 text-right">
-                            <button
-                              onClick={() => flagTermination(terminationsSubTab, row)}
-                              className="px-2.5 py-1 rounded text-xs font-medium bg-red-600 text-white hover:bg-red-700"
-                            >
-                              Flag as Termination
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <ul className="divide-y rounded border bg-white">
+                  {activeCandidates.map((row, i) => (
+                    <li key={`cand-${i}`} className="flex items-center justify-between gap-3 px-4 py-2">
+                      <span className="text-sm font-medium">{row.name}</span>
+                      <button
+                        onClick={() => flagTermination(terminationsSubTab, row)}
+                        className="px-2.5 py-1 rounded text-xs font-medium bg-red-600 text-white hover:bg-red-700 shrink-0"
+                      >
+                        Flag as Termination
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
 

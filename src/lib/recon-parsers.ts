@@ -45,12 +45,19 @@ function normalizeCode(code: string): string {
   return String(code || '').trim().toUpperCase().replace(/\s+/g, '');
 }
 
+// Salutations that appear in some source files' name fields (e.g. the CSL payroll
+// spreadsheet's "Employee Name" column: "MR DENNIS BAANI") but never in the DB's
+// surname/first_name fields — left in, these break every single match for that file.
+const NAME_TITLES = new Set(['MR', 'MRS', 'MISS', 'MS', 'MSTR', 'DR', 'PROF', 'ADV', 'REV', 'HON', 'MX']);
+
 // Sorts the words in a name so "BEAUTY LISEHU" and "LISEHU BEAUTY" produce the same key.
 // Used for name-based matching where the statement may store names as First Last or Last First.
 export function nameKey(raw: string): string {
   return (raw || '').toUpperCase()
     .replace(/[^A-Z\s]/g, '').trim()
-    .split(/\s+/).filter(Boolean).sort().join('|');
+    .split(/\s+/).filter(Boolean)
+    .filter(w => !NAME_TITLES.has(w))
+    .sort().join('|');
 }
 
 async function getXLSX() {
