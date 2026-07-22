@@ -136,6 +136,14 @@ export default function ReconciliationPage() {
   const [prevPayrollLines, setPrevPayrollLines] = useState<PayrollLine[] | null>(null);
   const [cfeEmployees, setCfeEmployees] = useState<Employee[]>([]);
 
+  // The three hotels with their own Employees/Terminations sub-tab — kept as a keyed
+  // map (rather than one variable pair per hotel) so adding a hotel here is a one-line change.
+  type ReconSubHotel = 'CSL' | 'NL' | 'CFE';
+  const RECON_SUB_HOTELS: ReconSubHotel[] = ['CSL', 'NL', 'CFE'];
+  // CFE Management's actual hotels.short_code is "CFEM", not "CFE" — this map lets the
+  // UI keep the friendly "CFE" label while resolving to the real DB short code.
+  const RECON_SHORT_CODE: Record<ReconSubHotel, string> = { CSL: 'CSL', NL: 'NL', CFE: 'CFEM' };
+
   // DB cross-reference data — independent per hotel, not tied to the main hotel selector
   type HotelXRefData = {
     employees: Employee[];
@@ -144,19 +152,16 @@ export default function ReconciliationPage() {
     loaded: boolean;
   };
   const emptyXRef: HotelXRefData = { employees: [], salaryRecords: [], payrollLines: [], loaded: false };
-  const [cslXRef, setCslXRef] = useState<HotelXRefData>(emptyXRef);
-  const [nlXRef,  setNlXRef]  = useState<HotelXRefData>(emptyXRef);
-  const [crossRefSubTab, setCrossRefSubTab] = useState<'CSL' | 'NL'>('CSL');
+  const [xrefByHotel, setXrefByHotel] = useState<Record<ReconSubHotel, HotelXRefData>>({ CSL: emptyXRef, NL: emptyXRef, CFE: emptyXRef });
+  const [crossRefSubTab, setCrossRefSubTab] = useState<ReconSubHotel>('CSL');
   const [crossRefFilter, setCrossRefFilter] = useState<'all' | 'mismatch' | 'payonly' | 'dbonly'>('all');
 
   // Terminations tracking — compares each hotel's own payroll upload month-to-month
   // (never against the DB employee list), independent of the main hotel selector.
-  const [cslTerminations, setCslTerminations] = useState<ReconTermination[]>([]);
-  const [nlTerminations, setNlTerminations] = useState<ReconTermination[]>([]);
+  const [terminationsByHotel, setTerminationsByHotel] = useState<Record<ReconSubHotel, ReconTermination[]>>({ CSL: [], NL: [], CFE: [] });
   type TermPayrollState = { current: PayrollLine[]; previous: PayrollLine[]; loaded: boolean };
   const emptyTermPayroll: TermPayrollState = { current: [], previous: [], loaded: false };
-  const [cslTermPayroll, setCslTermPayroll] = useState<TermPayrollState>(emptyTermPayroll);
-  const [nlTermPayroll, setNlTermPayroll]   = useState<TermPayrollState>(emptyTermPayroll);
+  const [termPayrollByHotel, setTermPayrollByHotel] = useState<Record<ReconSubHotel, TermPayrollState>>({ CSL: emptyTermPayroll, NL: emptyTermPayroll, CFE: emptyTermPayroll });
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -175,7 +180,7 @@ export default function ReconciliationPage() {
       fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
     ]).then(([{ data }, me]) => {
       if (data) {
-        const RECON_CODES = ['CFE', 'CSL', 'NL'];
+        const RECON_CODES = ['CFEM', 'CSL', 'NL'];
         let filtered = sortHotels(data as Hotel[]).filter(h => RECON_CODES.includes(h.short_code));
         const meData = me as { role: string; hotelIds: string[] | null } | null;
         if (meData?.role === 'sub' && meData.hotelIds?.length) {
@@ -186,7 +191,7 @@ export default function ReconciliationPage() {
         if (csl) setHotelId(csl.id);
 
         // Load CFE employees for management cross-reference (all users, unfiltered)
-        const cfeHotel = (data as Hotel[]).find(h => h.short_code === 'CFE');
+        const cfeHotel = (data as Hotel[]).find(h => h.short_code === 'CFEM');
         if (cfeHotel) {
           supabase.from('employees').select('*').eq('hotel_id', cfeHotel.id)
             .then(({ data: emps }) => setCfeEmployees((emps ?? []) as Employee[]));
@@ -236,14 +241,14 @@ export default function ReconciliationPage() {
     });
   }
 
-  // Load Employees cross-reference for both CSL and NL independently.
+  // Load Employees cross-reference for CSL, NL, and CFE independently.
   // Triggered when the Employees tab is opened, or year/month/hotels changes.
   // Payroll lines come from each hotel's own recon upload (not the main hotel selector).
   useEffect(() => {
     if (tab !== 'crossref' || !hotels.length) return;
 
-    async function loadXRef(shortCode: 'CSL' | 'NL'): Promise<HotelXRefData> {
-      const hotel = hotels.find(h => h.short_code === shortCode);
+    async function loadXRef(shortCode: ReconSubHotel): Promise<HotelXRefData> {
+      const hotel = hotels.find(h => h.short_code === RECON_SHORT_CODE[shortCode]);
       if (!hotel) return { ...emptyXRef, loaded: true };
 
       const { data: emps } = await supabase
@@ -265,11 +270,9 @@ export default function ReconciliationPage() {
       return { employees, salaryRecords, payrollLines, loaded: true };
     }
 
-    setCslXRef(prev => ({ ...prev, loaded: false }));
-    setNlXRef(prev => ({ ...prev, loaded: false }));
-    Promise.all([loadXRef('CSL'), loadXRef('NL')]).then(([csl, nl]) => {
-      setCslXRef(csl);
-      setNlXRef(nl);
+    setXrefByHotel(prev => Object.fromEntries(RECON_SUB_HOTELS.map(h => [h, { ...prev[h], loaded: false }])) as Record<ReconSubHotel, HotelXRefData>);
+    Promise.all(RECON_SUB_HOTELS.map(loadXRef)).then(results => {
+      setXrefByHotel(Object.fromEntries(RECON_SUB_HOTELS.map((h, i) => [h, results[i]])) as Record<ReconSubHotel, HotelXRefData>);
     });
   }, [tab, year, month, hotels]);
 
@@ -283,8 +286,8 @@ export default function ReconciliationPage() {
     const prevMonth = month === 1 ? 12 : month - 1;
     const prevYear  = month === 1 ? year - 1 : year;
 
-    async function load(shortCode: 'CSL' | 'NL'): Promise<TermPayrollState> {
-      const hotel = hotels.find(h => h.short_code === shortCode);
+    async function load(shortCode: ReconSubHotel): Promise<TermPayrollState> {
+      const hotel = hotels.find(h => h.short_code === RECON_SHORT_CODE[shortCode]);
       if (!hotel) return { ...emptyTermPayroll, loaded: true };
       const [current, previous] = await Promise.all([
         loadPeriodPayrollLines(hotel.id, year, month),
@@ -293,21 +296,19 @@ export default function ReconciliationPage() {
       return { current, previous, loaded: true };
     }
 
-    setCslTermPayroll(p => ({ ...p, loaded: false }));
-    setNlTermPayroll(p => ({ ...p, loaded: false }));
-    Promise.all([load('CSL'), load('NL')]).then(([csl, nl]) => {
-      setCslTermPayroll(csl);
-      setNlTermPayroll(nl);
+    setTermPayrollByHotel(prev => Object.fromEntries(RECON_SUB_HOTELS.map(h => [h, { ...prev[h], loaded: false }])) as Record<ReconSubHotel, TermPayrollState>);
+    Promise.all(RECON_SUB_HOTELS.map(load)).then(results => {
+      setTermPayrollByHotel(Object.fromEntries(RECON_SUB_HOTELS.map((h, i) => [h, results[i]])) as Record<ReconSubHotel, TermPayrollState>);
     });
   }, [tab, year, month, hotels]);
 
   // Load the full Terminations log (all periods, not scoped to year/month) for
-  // CSL and NL whenever the Terminations tab is opened or hotels load.
+  // CSL, NL, and CFE whenever the Terminations tab is opened or hotels load.
   useEffect(() => {
     if (tab !== 'terminations' || !hotels.length) return;
 
-    async function loadTerminations(shortCode: 'CSL' | 'NL'): Promise<ReconTermination[]> {
-      const h = hotels.find(x => x.short_code === shortCode);
+    async function loadTerminations(shortCode: ReconSubHotel): Promise<ReconTermination[]> {
+      const h = hotels.find(x => x.short_code === RECON_SHORT_CODE[shortCode]);
       if (!h) return [];
       const { data } = await supabase
         .from('recon_terminations')
@@ -318,14 +319,13 @@ export default function ReconciliationPage() {
       return (data ?? []) as ReconTermination[];
     }
 
-    Promise.all([loadTerminations('CSL'), loadTerminations('NL')]).then(([csl, nl]) => {
-      setCslTerminations(csl);
-      setNlTerminations(nl);
+    Promise.all(RECON_SUB_HOTELS.map(loadTerminations)).then(results => {
+      setTerminationsByHotel(Object.fromEntries(RECON_SUB_HOTELS.map((h, i) => [h, results[i]])) as Record<ReconSubHotel, ReconTermination[]>);
     });
   }, [tab, hotels]);
 
-  async function flagTermination(shortCode: 'CSL' | 'NL', line: { empCode: string; name: string }) {
-    const h = hotels.find(x => x.short_code === shortCode);
+  async function flagTermination(shortCode: ReconSubHotel, line: { empCode: string; name: string }) {
+    const h = hotels.find(x => x.short_code === RECON_SHORT_CODE[shortCode]);
     if (!h) return;
     // employee_id is always null now (no DB employee comparison), so the table's
     // UNIQUE(hotel_id, employee_id, ...) constraint can't catch duplicates — guard here instead.
@@ -354,11 +354,10 @@ export default function ReconciliationPage() {
       .select()
       .single();
     if (error || !data) return;
-    const setter = shortCode === 'CSL' ? setCslTerminations : setNlTerminations;
-    setter(list => [data as ReconTermination, ...list]);
+    setTerminationsByHotel(prev => ({ ...prev, [shortCode]: [data as ReconTermination, ...prev[shortCode]] }));
   }
 
-  async function resolveTermination(shortCode: 'CSL' | 'NL', id: string, status: 'confirmed' | 'reinstated', note: string) {
+  async function resolveTermination(shortCode: ReconSubHotel, id: string, status: 'confirmed' | 'reinstated', note: string) {
     const { data } = await supabase
       .from('recon_terminations')
       .update({ status, resolved_at: new Date().toISOString(), resolved_by: username, resolved_note: note || null })
@@ -366,8 +365,10 @@ export default function ReconciliationPage() {
       .select()
       .single();
     if (!data) return;
-    const setter = shortCode === 'CSL' ? setCslTerminations : setNlTerminations;
-    setter(list => list.map(x => x.id === id ? data as ReconTermination : x));
+    setTerminationsByHotel(prev => ({
+      ...prev,
+      [shortCode]: prev[shortCode].map(x => x.id === id ? data as ReconTermination : x),
+    }));
   }
 
   async function loadPeriod() {
@@ -1018,7 +1019,7 @@ export default function ReconciliationPage() {
     return rows;
   }
 
-  const activeXRef  = crossRefSubTab === 'CSL' ? cslXRef : nlXRef;
+  const activeXRef  = xrefByHotel[crossRefSubTab];
   const crossRefRows = buildCrossRef(activeXRef);
 
   function xrefStats(rows: CrossRefRow[]) {
@@ -1031,10 +1032,13 @@ export default function ReconciliationPage() {
   }
 
   const crossRefStats = xrefStats(crossRefRows);
-  const cslStats = xrefStats(buildCrossRef(cslXRef));
-  const nlStats  = xrefStats(buildCrossRef(nlXRef));
-  const totalBadge = cslStats.mismatch + cslStats.payOnly + cslStats.dbOnly
-                   + nlStats.mismatch  + nlStats.payOnly  + nlStats.dbOnly;
+  const statsByHotel = Object.fromEntries(
+    RECON_SUB_HOTELS.map(h => [h, xrefStats(buildCrossRef(xrefByHotel[h]))])
+  ) as Record<ReconSubHotel, ReturnType<typeof xrefStats>>;
+  const totalBadge = RECON_SUB_HOTELS.reduce((sum, h) => {
+    const s = statsByHotel[h];
+    return sum + s.mismatch + s.payOnly + s.dbOnly;
+  }, 0);
 
   const filteredCrossRef = crossRefRows.filter(r => {
     if (crossRefFilter === 'mismatch') return r.dbEmployee && r.payBasic != null && r.dbBasic != null && Math.abs((r.payBasic ?? 0) - (r.dbBasic ?? 0)) > 0.5;
@@ -1070,14 +1074,16 @@ export default function ReconciliationPage() {
       .map(l => ({ empCode: l.empCode, name: l.name }));
   }
 
-  const cslCandidates = terminationCandidates(cslTermPayroll, cslTerminations);
-  const nlCandidates  = terminationCandidates(nlTermPayroll, nlTerminations);
-  const terminationsSubTab = crossRefSubTab; // reuse the same CSL/NL toggle as the Employees tab
-  const activeCandidates    = terminationsSubTab === 'CSL' ? cslCandidates : nlCandidates;
-  const activeTermPayroll   = terminationsSubTab === 'CSL' ? cslTermPayroll : nlTermPayroll;
-  const activeTerminations  = terminationsSubTab === 'CSL' ? cslTerminations : nlTerminations;
-  const openTerminationsBadge = cslTerminations.filter(t => t.status === 'flagged').length
-                               + nlTerminations.filter(t => t.status === 'flagged').length;
+  const candidatesByHotel = Object.fromEntries(
+    RECON_SUB_HOTELS.map(h => [h, terminationCandidates(termPayrollByHotel[h], terminationsByHotel[h])])
+  ) as Record<ReconSubHotel, TermCandidate[]>;
+  const terminationsSubTab = crossRefSubTab; // reuse the same CSL/NL/CFE toggle as the Employees tab
+  const activeCandidates    = candidatesByHotel[terminationsSubTab];
+  const activeTermPayroll   = termPayrollByHotel[terminationsSubTab];
+  const activeTerminations  = terminationsByHotel[terminationsSubTab];
+  const openTerminationsBadge = RECON_SUB_HOTELS.reduce(
+    (sum, h) => sum + terminationsByHotel[h].filter(t => t.status === 'flagged').length, 0
+  );
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -1656,13 +1662,13 @@ export default function ReconciliationPage() {
           </div>
         )}
 
-        {/* ═════ CROSS-REFERENCE TAB (CSL and NL) ═════ */}
+        {/* ═════ CROSS-REFERENCE TAB (CSL, NL, CFE) ═════ */}
         {tab === 'crossref' && (
           <div className="space-y-4">
-            {/* CSL / NL sub-tabs */}
+            {/* CSL / NL / CFE sub-tabs */}
             <div className="flex gap-1 border-b">
-              {(['CSL', 'NL'] as const).map(code => {
-                const stats = code === 'CSL' ? cslStats : nlStats;
+              {RECON_SUB_HOTELS.map(code => {
+                const stats = statsByHotel[code];
                 const disc = stats.mismatch + stats.payOnly + stats.dbOnly;
                 return (
                   <button
@@ -1914,10 +1920,10 @@ export default function ReconciliationPage() {
               Flagging only writes to this log — it never changes any employee record.
             </p>
 
-            {/* CSL / NL sub-tabs (shared with the Employees tab) */}
+            {/* CSL / NL / CFE sub-tabs (shared with the Employees tab) */}
             <div className="flex gap-1 border-b">
-              {(['CSL', 'NL'] as const).map(code => {
-                const cands = code === 'CSL' ? cslCandidates : nlCandidates;
+              {RECON_SUB_HOTELS.map(code => {
+                const cands = candidatesByHotel[code];
                 return (
                   <button
                     key={code}

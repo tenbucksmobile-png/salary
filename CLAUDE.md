@@ -439,7 +439,9 @@ Grand Total row uses `SUM(G{first}:G{last})` etc. so it aggregates live hotel va
 
 ## Reconciliation
 
-`/dashboard/reconciliation` — admin-only monthly payroll cross-check for **CSL, NL, and CFE** only (hotel tabs are filtered to these three short codes).
+`/dashboard/reconciliation` — admin-only monthly payroll cross-check for **CSL, NL, and CFE Management** only (hotel tabs are filtered to these three short codes: `RECON_CODES = ['CFEM', 'CSL', 'NL']`).
+
+**CFE Management's `hotels.short_code` is `"CFEM"`, not `"CFE"`.** A prior version of this page filtered/matched on the literal string `'CFE'` everywhere (the top hotel-tab filter, the Deductions Check "Management" section's employee lookup, and initially the Employees/Terminations sub-tabs too) — since no hotel actually has that short code, CFE Management silently never appeared anywhere on this page despite the code and comments claiming it did. Fixed by matching on `'CFEM'` throughout; the UI still *labels* it "CFE" for brevity via `RECON_SHORT_CODE: Record<ReconSubHotel, string> = { CSL: 'CSL', NL: 'NL', CFE: 'CFEM' }` in the Employees/Terminations tabs. If CFE Management data ever looks missing again on this page, check for a stray literal `'CFE'` comparison before assuming a data problem.
 
 **Workflow**: Upload tab → Deductions Check tab → **Employees tab** → Prior Month Changes tab → Terminations tab → Queries tab. Status moves Open → Submitted → Approved.
 
@@ -484,9 +486,11 @@ All parsers are async and dynamically import `xlsx-js-style` (avoids SSR issues 
 
 **Upload label**: "Topline Loan Statement" was renamed to "Topline Deductions" in `UPLOAD_CONFIGS`.
 
-**Employees tab** — cross-reference between the uploaded payroll and the DB `employees` table for CSL and NL. Always visible (not conditional on which hotel is selected in the main selector). Contains [CSL | NL] sub-tabs; each loads data independently. Data reloads whenever the tab is opened or year/month/hotels changes.
+**Employees tab** — cross-reference between the uploaded payroll and the DB `employees` table for CSL, NL, and CFE. Always visible (not conditional on which hotel is selected in the main selector). Contains [CSL | NL | CFE] sub-tabs; each loads data independently. Data reloads whenever the tab is opened or year/month/hotels changes.
 
-Per hotel: loads active `employees` + `salary_records` from DB, plus payroll lines from the hotel's own `recon_uploads` for the current period (permanent + `ftc_payroll` merged, then deduplicated by `nameKey`). Cross-reference output type `CrossRefRow`: `{ name, dbEmployee, dbBasic, payBasic, ftc }`. Filter chips: All / Basic Mismatch / Not in DB / Not in Payroll. The badge on the main "Employees" tab shows the combined discrepancy count across both CSL and NL.
+Per hotel: loads active `employees` + `salary_records` from DB, plus payroll lines from the hotel's own `recon_uploads` for the current period (permanent + `ftc_payroll` merged, then deduplicated by `nameKey`). Cross-reference output type `CrossRefRow`: `{ name, dbEmployee, dbBasic, payBasic, ftc }`. Filter chips: All / Basic Mismatch / Not in DB / Not in Payroll. The badge on the main "Employees" tab shows the combined discrepancy count across all three hotels.
+
+**State is a `Record<ReconSubHotel, T>` keyed map, not one variable pair per hotel** (`xrefByHotel`, `termPayrollByHotel`, `terminationsByHotel`, plus a derived `statsByHotel`/`candidatesByHotel`) — `RECON_SUB_HOTELS: ReconSubHotel[] = ['CSL', 'NL', 'CFE']` drives every loop/`Promise.all`/tab-render, so adding a fourth hotel to either the Employees or Terminations tab is a one-line change to that array (plus `RECON_SHORT_CODE` if its DB short code doesn't match its `ReconSubHotel` label). This replaced an earlier version with separate `cslXRef`/`nlXRef` (etc.) variables and hand-written two-way ternaries everywhere, which didn't scale when CFE was added.
 
 State: `cslXRef: HotelXRefData`, `nlXRef: HotelXRefData`, `crossRefSubTab: 'CSL' | 'NL'`. `HotelXRefData = { employees, salaryRecords, payrollLines, loaded }`. `buildCrossRef(xref)` is a pure function that produces `CrossRefRow[]` from a `HotelXRefData` — called for both the active sub-tab (for rendering) and both hotels (for badge counts).
 
