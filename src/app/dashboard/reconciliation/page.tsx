@@ -17,10 +17,11 @@ import {
   parseBodulo,
   parsePayrollXlsx,
   parseFtcPayrollXls,
+  parseCfemDeductions,
   nameKey,
   type PayrollLine,
 } from '@/lib/recon-parsers';
-import type { ParsedStatement, ParsedPayroll, ReconLine } from '@/lib/recon-parsers';
+import type { ParsedStatement, ParsedPayroll, ReconLine, ParsedCfemDeductions } from '@/lib/recon-parsers';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -75,7 +76,31 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
     accept: '.xlsx', desc: 'Employee funeral scheme premium list (.xlsx)',
     payrollKey: 'bodulo',
   },
+  {
+    type: 'cfem_deductions', label: 'CFEM Deductions Summary', required: true,
+    accept: '.csv,.txt', desc: 'Combined per-vendor deductions report exported from the CFEM payroll system',
+    payrollKey: null,
+  },
 ];
+
+// CFEM has its own confidential payroll and never uploads a Payroll Spreadsheet here —
+// its single combined deductions report replaces all 5 individual vendor upload slots.
+const CFEM_UPLOAD_TYPES: ReconUploadType[] = ['cfem_deductions', 'twelve_months'];
+const NON_CFEM_UPLOAD_TYPES: ReconUploadType[] = UPLOAD_CONFIGS
+  .map(c => c.type)
+  .filter(t => t !== 'cfem_deductions');
+
+// Maps a CFEM Deductions Summary section's vendor label to the existing vendor upload_type
+// keys the Deductions Check tab already knows how to render — "Afri Insurance" is CFEM's
+// name for the same kind of deduction CSL/NL call "Bodulo Funeral Scheme"; "Taku" has no
+// current equivalent (zero entries so far) and is intentionally left unmapped/unused.
+const CFEM_VENDOR_TO_TYPE: Record<string, 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo'> = {
+  'Furnmart': 'furnmart',
+  'Afritec': 'afritec',
+  'Topline': 'topline',
+  'CB Stores': 'cbstores',
+  'Afri Insurance': 'bodulo',
+};
 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -162,6 +187,14 @@ export default function ReconciliationPage() {
   type TermPayrollState = { current: PayrollLine[]; previous: PayrollLine[]; loaded: boolean };
   const emptyTermPayroll: TermPayrollState = { current: [], previous: [], loaded: false };
   const [termPayrollByHotel, setTermPayrollByHotel] = useState<Record<ReconSubHotel, TermPayrollState>>({ CSL: emptyTermPayroll, NL: emptyTermPayroll, CFE: emptyTermPayroll });
+
+  // CFE cross-reference (Deductions Check, CFEM only): CSL's and NL's own vendor
+  // statement uploads for the same period, so CFEM's report can be diffed against
+  // whatever CFE-employee lines are mixed into the shared third-party statements.
+  type CfeVendorType = 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo';
+  type OtherHotelStmts = Partial<Record<CfeVendorType, ParsedStatement>>;
+  const emptyOtherHotelStmts: { CSL: OtherHotelStmts; NL: OtherHotelStmts; loaded: boolean } = { CSL: {}, NL: {}, loaded: false };
+  const [csnStmtsForCfe, setCsnStmtsForCfe] = useState(emptyOtherHotelStmts);
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -323,6 +356,41 @@ export default function ReconciliationPage() {
       setTerminationsByHotel(Object.fromEntries(RECON_SUB_HOTELS.map((h, i) => [h, results[i]])) as Record<ReconSubHotel, ReconTermination[]>);
     });
   }, [tab, hotels]);
+
+  // CFE cross-reference: load CSL's and NL's own 5 vendor statement uploads for the
+  // SAME period being viewed on the CFEM tab, so CFE-employee lines mixed into those
+  // shared statements can be diffed against CFEM's own combined report.
+  useEffect(() => {
+    const currentHotelCode = hotels.find(h => h.id === hotelId)?.short_code;
+    if (tab !== 'deductions' || currentHotelCode !== 'CFEM' || !hotels.length) return;
+
+    async function loadForHotel(shortCode: 'CSL' | 'NL'): Promise<OtherHotelStmts> {
+      const h = hotels.find(x => x.short_code === shortCode);
+      if (!h) return {};
+      const { data: periodRow } = await supabase
+        .from('reconciliation_periods')
+        .select('id')
+        .eq('hotel_id', h.id)
+        .eq('period_year', year)
+        .eq('period_month', month)
+        .maybeSingle();
+      if (!periodRow) return {};
+      const { data: ups } = await supabase
+        .from('recon_uploads')
+        .select('upload_type, parsed_data')
+        .eq('period_id', periodRow.id)
+        .in('upload_type', ['furnmart', 'afritec', 'topline', 'cbstores', 'bodulo']);
+      const result: OtherHotelStmts = {};
+      (ups ?? []).forEach((u: any) => { result[u.upload_type as CfeVendorType] = u.parsed_data as ParsedStatement; });
+      return result;
+    }
+
+    setCsnStmtsForCfe(s => ({ ...s, loaded: false }));
+    Promise.all([loadForHotel('CSL'), loadForHotel('NL')]).then(([CSL, NL]) => {
+      setCsnStmtsForCfe({ CSL, NL, loaded: true });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, hotelId, year, month, hotels]);
 
   async function flagTermination(shortCode: ReconSubHotel, line: { empCode: string; name: string }) {
     const h = hotels.find(x => x.short_code === RECON_SHORT_CODE[shortCode]);
@@ -491,6 +559,24 @@ export default function ReconciliationPage() {
         return;
       }
 
+      // CFEM Deductions Summary — plain text/CSV, multi-vendor sections, own shape
+      if (type === 'cfem_deductions') {
+        const text = new TextDecoder().decode(buf);
+        const parsedCfem = parseCfemDeductions(text, file.name);
+        const pid = await ensurePeriod();
+        const rowCount = parsedCfem.sections.reduce((s, sec) => s + sec.lines.length, 0);
+        const totalAmount = parsedCfem.sections.reduce((s, sec) => s + sec.total, 0);
+        const { error } = await supabase.from('recon_uploads').upsert(
+          { period_id: pid, upload_type: type, file_name: file.name,
+            parsed_data: parsedCfem, row_count: rowCount, total_amount: totalAmount, uploaded_by: username },
+          { onConflict: 'period_id,upload_type' },
+        );
+        if (error) throw error;
+        const { data: ups } = await supabase.from('recon_uploads').select('*').eq('period_id', pid).order('uploaded_at');
+        setUploads((ups || []) as ReconUpload[]);
+        return;
+      }
+
       let parsed: ParsedStatement | ParsedPayroll;
 
       const hotelCode = hotels.find(h => h.id === hotelId)?.short_code ?? '';
@@ -591,6 +677,13 @@ export default function ReconciliationPage() {
 
   const hotel = hotels.find(h => h.id === hotelId);
   const country = hotel?.country ?? '';
+  const isCfem = hotel?.short_code === 'CFEM';
+
+  // CFEM never uploads salaries — its one combined deductions file replaces the
+  // 5 individual vendor slots (and the Payroll Spreadsheet, which doesn't apply here).
+  const visibleUploadConfigs = UPLOAD_CONFIGS.filter(c =>
+    isCfem ? CFEM_UPLOAD_TYPES.includes(c.type) : NON_CFEM_UPLOAD_TYPES.includes(c.type)
+  );
 
   const payrollUpload = uploads.find(u => u.upload_type === 'payroll');
   const payroll = payrollUpload?.parsed_data as ParsedPayroll | undefined;
@@ -615,11 +708,31 @@ export default function ReconciliationPage() {
     return uploads.find(u => u.upload_type === type)?.parsed_data as ParsedStatement | undefined;
   }
 
-  const furnmartStmt = getStmt('furnmart');
-  const afritecStmt  = getStmt('afritec');
-  const toplineStmt  = getStmt('topline');
-  const cbStmt       = getStmt('cbstores');
-  const boduloStmt   = getStmt('bodulo');
+  // CFEM: derive the same 5 vendor ParsedStatement shapes from its one combined
+  // upload instead of 5 separate ones, so all the existing statement-vs-payroll
+  // rendering below works unchanged (payroll side just stays empty/null for CFEM).
+  const cfemDeductionsUpload = uploads.find(u => u.upload_type === 'cfem_deductions');
+  const cfemParsed = cfemDeductionsUpload?.parsed_data as ParsedCfemDeductions | undefined;
+  const cfemStatements: Partial<Record<'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo', ParsedStatement>> = {};
+  if (cfemParsed) {
+    for (const section of cfemParsed.sections) {
+      const vendorType = CFEM_VENDOR_TO_TYPE[section.vendor];
+      if (!vendorType) continue; // e.g. "Taku" — no equivalent slot yet
+      cfemStatements[vendorType] = {
+        uploadType: vendorType,
+        lines: section.lines.map(l => ({ empCode: l.empCode, name: l.name, amount: l.empAmount })),
+        unmatchedLines: [],
+        total: section.total,
+        fileName: cfemDeductionsUpload!.file_name ?? 'CFEM Deductions Summary',
+      };
+    }
+  }
+
+  const furnmartStmt = isCfem ? cfemStatements.furnmart : getStmt('furnmart');
+  const afritecStmt  = isCfem ? cfemStatements.afritec  : getStmt('afritec');
+  const toplineStmt  = isCfem ? cfemStatements.topline  : getStmt('topline');
+  const cbStmt       = isCfem ? cfemStatements.cbstores : getStmt('cbstores');
+  const boduloStmt   = isCfem ? cfemStatements.bodulo   : getStmt('bodulo');
 
   // Determine if payroll has separate columns per lender (vs one combined staffLoans)
   const payrollHasSeparateLoanCols = mergedTotals.afritecLoans > 0 || mergedTotals.toplineLoans > 0;
@@ -627,20 +740,21 @@ export default function ReconciliationPage() {
   const bothLenders = !!afritecStmt && !!toplineStmt;
 
   // Summary rows for the deductions tab
-  // pay/diff are null when payroll has no comparable column (statement shown for reference only)
+  // pay/diff are null when payroll has no comparable column (statement shown for reference only).
+  // CFEM never has payroll data at all — its rows always show stmt-only (pay/diff null).
   type SummaryRow = { label: string; stmt: number; pay: number | null; diff: number | null; isCombined?: boolean; isMgmt?: boolean };
   const summaryRows: SummaryRow[] = [];
-  if (hasAnyPayroll) {
+  if (hasAnyPayroll || isCfem) {
     if (furnmartStmt) summaryRows.push({
       label: 'Furnmart',
       stmt: furnmartStmt.total,
-      pay: mergedTotals.furnmart,
-      diff: furnmartStmt.total - mergedTotals.furnmart,
+      pay: isCfem ? null : mergedTotals.furnmart,
+      diff: isCfem ? null : furnmartStmt.total - mergedTotals.furnmart,
     });
 
     // Afritec Loans
     if (afritecStmt) {
-      const afritecPay = payrollHasSeparateLoanCols
+      const afritecPay = isCfem ? null : payrollHasSeparateLoanCols
         ? mergedTotals.afritecLoans
         : (!toplineStmt ? mergedTotals.staffLoans : null);
       summaryRows.push({
@@ -654,13 +768,13 @@ export default function ReconciliationPage() {
     if (cbStmt) summaryRows.push({
       label: 'CB Stores',
       stmt: cbStmt.total,
-      pay: mergedTotals.cbStores,
-      diff: cbStmt.total - mergedTotals.cbStores,
+      pay: isCfem ? null : mergedTotals.cbStores,
+      diff: isCfem ? null : cbStmt.total - mergedTotals.cbStores,
     });
 
     // Topline
     if (toplineStmt) {
-      const toplinePay = payrollHasSeparateLoanCols
+      const toplinePay = isCfem ? null : payrollHasSeparateLoanCols
         ? mergedTotals.toplineLoans
         : (!afritecStmt ? mergedTotals.staffLoans : null);
       summaryRows.push({
@@ -673,7 +787,7 @@ export default function ReconciliationPage() {
 
     // Combined loan reconciliation row — only needed when both lenders present
     // but payroll has no separate columns (each row above shows stmt only in that case)
-    if (bothLenders && !payrollHasSeparateLoanCols) {
+    if (bothLenders && !payrollHasSeparateLoanCols && !isCfem) {
       summaryRows.push({
         label: 'Total Loans',
         stmt: loanStmtTotal,
@@ -686,8 +800,8 @@ export default function ReconciliationPage() {
     if (boduloStmt) summaryRows.push({
       label: 'Bodulo Funeral',
       stmt: boduloStmt.total,
-      pay: mergedTotals.bodulo,
-      diff: boduloStmt.total - mergedTotals.bodulo,
+      pay: isCfem ? null : mergedTotals.bodulo,
+      diff: isCfem ? null : boduloStmt.total - mergedTotals.bodulo,
     });
   }
 
@@ -949,6 +1063,47 @@ export default function ReconciliationPage() {
     }
   }
 
+  // ── CFE cross-reference (CFEM tab only) ──────────────────────────────────
+  // Diffs CFEM's own combined deductions report against whatever CFE-employee
+  // lines are mixed into CSL's/NL's own shared vendor statements for the same
+  // period — the actual "merge the cross reference" ask, not just a viewer.
+  const CFEM_VENDOR_LABELS: Record<CfeVendorType, string> = {
+    furnmart: 'Furnmart', afritec: 'Afritec', topline: 'Topline', cbstores: 'CB Stores', bodulo: 'Bodulo / Afri Insurance',
+  };
+  interface CfeCrossCheckRow {
+    type: CfeVendorType;
+    label: string;
+    cfemTotal: number;
+    embeddedTotal: number;
+    diff: number;
+    onlyInCfem: ReconLine[];
+    onlyInEmbedded: ReconLine[];
+  }
+  const cfeCrossCheck: CfeCrossCheckRow[] = isCfem ? (Object.keys(CFEM_VENDOR_LABELS) as CfeVendorType[])
+    .filter(type => cfemStatements[type] || csnStmtsForCfe.CSL[type] || csnStmtsForCfe.NL[type])
+    .map(type => {
+      const cfemLines = cfemStatements[type]?.lines ?? [];
+      const embeddedLines: ReconLine[] = [];
+      (['CSL', 'NL'] as const).forEach(code => {
+        const stmt = csnStmtsForCfe[code][type];
+        if (!stmt) return;
+        [...stmt.lines, ...stmt.unmatchedLines].forEach(l => {
+          if (cfeNameMap.has(nameKey(l.name))) embeddedLines.push(l);
+        });
+      });
+      const cfemKeys = new Set(cfemLines.map(l => nameKey(l.name)));
+      const embeddedKeys = new Set(embeddedLines.map(l => nameKey(l.name)));
+      return {
+        type,
+        label: CFEM_VENDOR_LABELS[type],
+        cfemTotal: cfemLines.reduce((s, l) => s + l.amount, 0),
+        embeddedTotal: embeddedLines.reduce((s, l) => s + l.amount, 0),
+        diff: cfemLines.reduce((s, l) => s + l.amount, 0) - embeddedLines.reduce((s, l) => s + l.amount, 0),
+        onlyInCfem: cfemLines.filter(l => !embeddedKeys.has(nameKey(l.name))),
+        onlyInEmbedded: embeddedLines.filter(l => !cfemKeys.has(nameKey(l.name))),
+      };
+    }) : [];
+
   // ── Prior-month changes ───────────────────────────────────────────────────
   // Unified prev-month shape regardless of source (recon upload or salary_records)
   type PrevEmp = { empCode: string; name: string; basic: number };
@@ -1132,7 +1287,7 @@ export default function ReconciliationPage() {
             {period?.status === 'open' && (
               <button
                 onClick={() => updateStatus('submitted')}
-                disabled={saving || !payrollUpload}
+                disabled={saving || (hotel?.short_code === 'CFEM' ? !cfemDeductionsUpload : !payrollUpload)}
                 className="px-3 py-1 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
               >
                 Submit
@@ -1230,7 +1385,7 @@ export default function ReconciliationPage() {
               <span className="text-sm text-muted-foreground">— <strong>{hotel?.name}</strong></span>
             </div>
 
-            {UPLOAD_CONFIGS.map(cfg => {
+            {visibleUploadConfigs.map(cfg => {
               const existing = uploads.find(u => u.upload_type === cfg.type);
               return (
                 <div
@@ -1321,8 +1476,10 @@ export default function ReconciliationPage() {
         {/* ═════ DEDUCTIONS TAB ═════ */}
         {tab === 'deductions' && (
           <div className="space-y-6">
-            {!hasAnyPayroll ? (
+            {!hasAnyPayroll && !isCfem ? (
               <p className="text-muted-foreground text-sm">Upload a payroll spreadsheet first to enable cross-checks.</p>
+            ) : !hasAnyPayroll && isCfem && !cfemParsed ? (
+              <p className="text-muted-foreground text-sm">Upload the CFEM Deductions Summary first to enable cross-checks.</p>
             ) : (
               <>
                 {/* Unmatched entries — truly absent from payroll (not resolved by code or name) */}
@@ -1404,6 +1561,72 @@ export default function ReconciliationPage() {
                   <p className="text-muted-foreground text-sm">
                     Upload at least one third-party statement (Furnmart, Afritec, Bodulo, etc.) to see the cross-check.
                   </p>
+                )}
+
+                {/* CFE cross-reference — CFEM's own report vs CFE lines embedded in CSL/NL's statements */}
+                {isCfem && (
+                  <div>
+                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                      Cross-Reference — CFEM Report vs CSL/NL Statements
+                    </h2>
+                    <p className="text-xs text-muted-foreground mb-3">
+                      CFEM&apos;s deductions are mixed into CSL&apos;s and NL&apos;s shared vendor statements. This compares
+                      CFEM&apos;s own report against the CFE-employee lines found in CSL&apos;s and NL&apos;s uploads for
+                      {' '}{MONTH_NAMES[month - 1]} {year}.
+                    </p>
+                    {!csnStmtsForCfe.loaded ? (
+                      <p className="text-sm text-muted-foreground">Loading…</p>
+                    ) : !cfemParsed ? (
+                      <p className="text-sm text-muted-foreground">Upload the CFEM Deductions Summary to see this comparison.</p>
+                    ) : cfeCrossCheck.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        No matching vendor statements found on CSL/NL for this period yet.
+                      </p>
+                    ) : (
+                      <>
+                        <table className="text-sm border rounded overflow-hidden w-full max-w-2xl">
+                          <thead>
+                            <tr className="bg-[#1B3A5C] text-white">
+                              <th className="px-4 py-2 text-left font-semibold">Vendor</th>
+                              <th className="px-4 py-2 text-right font-semibold">CFEM Report</th>
+                              <th className="px-4 py-2 text-right font-semibold">Found in CSL/NL</th>
+                              <th className="px-4 py-2 text-right font-semibold">Difference</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {cfeCrossCheck.map((row, i) => (
+                              <tr key={row.type} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
+                                <td className="px-4 py-2 font-medium">{row.label}</td>
+                                <td className="px-4 py-2 text-right tabular-nums">{fmt(row.cfemTotal, country)}</td>
+                                <td className="px-4 py-2 text-right tabular-nums">{fmt(row.embeddedTotal, country)}</td>
+                                <td className={`px-4 py-2 text-right tabular-nums ${diffClass(row.diff)}`}>{fmtDiff(row.diff, country)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+
+                        {cfeCrossCheck.some(r => r.onlyInCfem.length > 0 || r.onlyInEmbedded.length > 0) && (
+                          <div className="mt-3 space-y-2 max-w-2xl">
+                            {cfeCrossCheck.filter(r => r.onlyInCfem.length > 0 || r.onlyInEmbedded.length > 0).map(row => (
+                              <div key={row.type} className="rounded border border-amber-200 bg-amber-50 p-3 text-xs">
+                                <p className="font-semibold text-amber-800 mb-1">{row.label} — not matched on both sides</p>
+                                {row.onlyInCfem.length > 0 && (
+                                  <p className="text-amber-700">
+                                    Only in CFEM report: {row.onlyInCfem.map(l => `${l.name} (${fmt(l.amount, country)})`).join(', ')}
+                                  </p>
+                                )}
+                                {row.onlyInEmbedded.length > 0 && (
+                                  <p className="text-amber-700">
+                                    Only in CSL/NL statements: {row.onlyInEmbedded.map(l => `${l.name} (${fmt(l.amount, country)})`).join(', ')}
+                                  </p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
                 )}
 
                 {/* Per-employee table — staff only */}

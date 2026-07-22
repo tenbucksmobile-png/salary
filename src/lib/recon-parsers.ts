@@ -577,3 +577,87 @@ export async function parseFtcPayrollXls(
     fileName,
   };
 }
+
+// ── CFEM Deductions Summary (plain-text/CSV export from CFEM's own payroll system) ──
+// CFEM Management runs a separate, confidential payroll from CSL/NL — this file is
+// CFEM's own pre-split-by-vendor deductions report, replacing the need to extract
+// CFEM's employees out of CSL/NL's combined third-party statements (see the
+// "CFE Cross-Reference" comparison in reconciliation/page.tsx, which diffs this
+// against CFEM lines embedded in CSL/NL's own statement uploads for the period).
+//
+// Format: repeated sections, each "LIST OF: <Vendor>  METHOD NO: ALL  (Current period)",
+// then a header row, then one row per employee ("EMP.CODE  NAME  CO.CONTRIB  EMP.AMOUNT
+// TOTAL", optionally suffixed with "NEW  DD/MM/YYYY"), then a dashed divider, a
+// "( N Empls)" section-total row, another divider, and a blank line before the next
+// section. Columns are whitespace-padded, not delimited — parsed by locating the three
+// trailing "X.XX"-shaped numbers on each line (anchoring on number shape rather than
+// whitespace-run boundaries, since employee names occasionally contain accidental
+// double-spaces that would otherwise be mis-tokenized as column breaks).
+
+export interface CfemDeductionLine {
+  empCode: string;
+  name: string;
+  coContrib: number;
+  empAmount: number;
+  total: number;
+}
+
+export interface CfemDeductionSection {
+  vendor: string;
+  lines: CfemDeductionLine[];
+  total: number;
+}
+
+export interface ParsedCfemDeductions {
+  sections: CfemDeductionSection[];
+  fileName: string;
+}
+
+export function parseCfemDeductions(text: string, fileName: string): ParsedCfemDeductions {
+  const numRe = /-?\d*\.\d{2}/g;
+  const sections: CfemDeductionSection[] = [];
+  let current: CfemDeductionSection | null = null;
+
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.startsWith('LIST OF:')) {
+      if (current) sections.push(current);
+      const rest = trimmed.slice('LIST OF:'.length).trim();
+      const vendor = rest.split(/\s{2,}/)[0]?.trim() || 'Unknown';
+      current = { vendor, lines: [], total: 0 };
+      continue;
+    }
+    if (!current) continue;
+
+    // Section-total row: "(    7 Empls)     .00   4398.44   4398.44" (count may be blank)
+    if (trimmed.startsWith('(') && /empl/i.test(trimmed)) {
+      const nums = [...line.matchAll(numRe)];
+      current.total = nums.length
+        ? parseFloat(nums[nums.length - 1][0])
+        : current.lines.reduce((s, l) => s + l.total, 0);
+      continue;
+    }
+
+    // Data row: needs at least CO.CONTRIB, EMP.AMOUNT, TOTAL — header/divider rows have none
+    const nums = [...line.matchAll(numRe)];
+    if (nums.length < 3) continue;
+
+    const [n1, n2, n3] = nums;
+    const codeMatch = line.match(/^\s*(\S+)/);
+    if (!codeMatch) continue;
+    const empCode = codeMatch[1];
+    const name = line.slice(codeMatch[0].length, n1.index).replace(/\s+/g, ' ').trim();
+    current.lines.push({
+      empCode,
+      name,
+      coContrib: parseFloat(n1[0]) || 0,
+      empAmount: parseFloat(n2[0]) || 0,
+      total: parseFloat(n3[0]) || 0,
+    });
+  }
+  if (current) sections.push(current);
+
+  return { sections, fileName };
+}

@@ -169,7 +169,7 @@ export interface EmployeeWithSalary extends Employee {
 }
 
 // Reconciliation types
-export type ReconUploadType = 'payroll' | 'ftc_payroll' | 'twelve_months' | 'afritec' | 'topline' | 'furnmart' | 'cbstores' | 'bodulo' | 'medical';
+export type ReconUploadType = 'payroll' | 'ftc_payroll' | 'twelve_months' | 'afritec' | 'topline' | 'furnmart' | 'cbstores' | 'bodulo' | 'medical' | 'cfem_deductions';
 export type ReconStatus = 'open' | 'submitted' | 'approved';
 
 export interface ReconciliationPeriod {

@@ -457,8 +457,9 @@ Grand Total row uses `SUM(G{first}:G{last})` etc. so it aggregates live hotel va
 | Furnmart Deductions | `furnmart` | `.xlsx` | Multi-SEQ rows per employee |
 | CB Stores Deductions | `cbstores` | `.xls/.xlsx` | Optional; omit if no deductions that month |
 | Bodulo Funeral Scheme | `bodulo` | `.xlsx` | Policy list |
+| CFEM Deductions Summary | `cfem_deductions` | `.csv/.txt` | **CFEM only** — replaces all of the above (including Payroll Spreadsheet) for that hotel; see "CFE Management" below |
 
-Re-uploading any slot replaces it (upsert on `period_id, upload_type`).
+Re-uploading any slot replaces it (upsert on `period_id, upload_type`). `visibleUploadConfigs` filters which slots render per hotel: CFEM sees only `cfem_deductions` + `twelve_months` (`CFEM_UPLOAD_TYPES`); every other hotel sees everything except `cfem_deductions` (`NON_CFEM_UPLOAD_TYPES`).
 
 **Parsers** (`src/lib/recon-parsers.ts`):
 - `parseAfritecXls(buf, fileName, uploadType, hotelCode)` — detects header by keyword; col 5 = Employee Number, col 10 = Regular Instalment. **If the file contains a "CUSTOMER NAME" header row it delegates to `parseCbToplineFormat`** — so this function is the catch-all for afritec, topline, and cbstores. Dispatch in `handleUpload`: `payroll`→`parsePayrollXlsx`, `furnmart`→`parseFurnmart`, `bodulo`→`parseBodulo`, all others→`parseAfritecXls(buf, name, type, hotelCode)`
@@ -485,6 +486,20 @@ All parsers are async and dynamically import `xlsx-js-style` (avoids SSR issues 
 - *Pass 2 (name-based)*: for all `unmatchedLines` from every statement (Afritec numeric codes, Furnmart no-code entries, old-format CB/Topline), try `nameKey(payrollEmployee.name)` lookup. Resolved entries populate the employee table. Truly absent entries (no payroll counterpart) are appended as extra rows (Code = —).
 
 **Upload label**: "Topline Loan Statement" was renamed to "Topline Deductions" in `UPLOAD_CONFIGS`.
+
+### CFE Management (CFEM) — separate confidential payroll
+
+CFEM runs its own confidential payroll — **no Payroll Spreadsheet is ever uploaded for CFEM** (CSL/NL users must not see CFEM salaries), but CFEM's deductions are physically mixed into CSL's and NL's shared third-party vendor statements (Afritec, Topline, Furnmart, CB Stores). CFEM's own HR system can export a pre-split-by-vendor deductions report instead — that single file replaces the need to extract CFEM's slice out of the shared CSL/NL statements.
+
+**Parser**: `parseCfemDeductions(text, fileName)` in `recon-parsers.ts` — parses a plain-text/CSV export with repeated sections (`LIST OF: <Vendor>  METHOD NO: ALL  (Current period)`, a header row, one row per employee, a dashed divider, a `( N Empls)` section-total row). Anchors on the three trailing `X.XX`-shaped numbers per data row (`EMP.CODE`, name, `CO.CONTRIB`, `EMP.AMOUNT`, `TOTAL`) rather than whitespace-run column boundaries, because employee names occasionally contain an accidental double-space that would otherwise get mis-split as a column break. `.00` (no leading digit) required widening the number regex from `\d+\.\d{2}` to `\d*\.\d{2}`.
+
+**Vendor mapping** (`CFEM_VENDOR_TO_TYPE`): CFEM's own vendor labels map onto the existing `furnmart`/`afritec`/`topline`/`cbstores`/`bodulo` upload types so all the existing Deductions Check rendering works unchanged — `"Afri Insurance"` maps to `bodulo` (same kind of deduction as CSL/NL's Bodulo Funeral Scheme, different vendor name for CFEM). `"Taku"` has no current equivalent slot (zero entries so far) and is parsed but intentionally left unmapped/unused until it has real data.
+
+**Rendering**: rather than storing 5 separate `recon_uploads` rows, the one `cfem_deductions` upload is stored as-is and its sections are converted into `ParsedStatement` shapes **at render time** (`cfemStatements`, keyed by vendor type) whenever `isCfem` — `furnmartStmt`/`afritecStmt`/`toplineStmt`/`cbStmt`/`boduloStmt` are derived from `cfemStatements` instead of `getStmt(type)`. Since CFEM never has a `payroll` upload, `hasAnyPayroll` is always false for it — the Deductions Check tab's top-level gate and the `summaryRows` build both explicitly allow `isCfem` through, and every `pay`/`diff` field is forced to `null` (not `0`) for CFEM rows, so the statement amounts display without a fabricated "payroll = 0" discrepancy. Per-employee rows already degrade correctly with no code changes, since `payMap` is naturally empty.
+
+**CFE Cross-Reference** (CFEM tab only, below the main Summary table) — the actual "merge the cross reference" feature: a `useEffect` loads CSL's and NL's own `recon_uploads` (the 5 vendor types) for the *same year/month* being viewed on the CFEM tab (`csnStmtsForCfe` state, keyed `{ CSL, NL }`). For each vendor, lines from both hotels' statements are filtered down to CFE Management employees via `cfeNameMap` (name match, not code — employee codes are only unique within a hotel, and CSL/NL now use the same "BAA001"-style mnemonic codes as CFEM, so cross-hotel code matching would risk false collisions). The result (`cfeCrossCheck`) is a per-vendor table: CFEM's own report total vs the matched total found embedded in CSL/NL's statements, plus a difference — with an amber callout below listing any employee present on one side but not the other (`onlyInCfem` / `onlyInEmbedded`), so gaps are traceable to a name, not just a number. This is a genuine second, independent comparison from the existing "Management (CFE) section" callout on CSL/NL's own Deductions Check tab (which only extracts from CB Stores/Topline's structural `MGMT` sections, not Furnmart/Afritec/Bodulo) — the two aren't reconciled against each other and can legitimately show different subsets.
+
+No new migration was needed for any of this — `recon_uploads.upload_type` is a plain `text` column with no CHECK constraint, so `'cfem_deductions'` just works as a new value alongside the existing types.
 
 **Employees tab** — cross-reference between the uploaded payroll and the DB `employees` table for CSL, NL, and CFE. Always visible (not conditional on which hotel is selected in the main selector). Contains [CSL | NL | CFE] sub-tabs; each loads data independently. Data reloads whenever the tab is opened or year/month/hotels changes.
 
