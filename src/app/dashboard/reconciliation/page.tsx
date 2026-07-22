@@ -984,6 +984,7 @@ export default function ReconciliationPage() {
     diff: number;
     onlyInCfem: ReconLine[];
     onlyInEmbedded: ReconLine[];
+    details: Array<{ name: string; cfemAmount: number | null; embeddedAmount: number | null }>;
   }
   const cfeCrossCheck: CfeCrossCheckRow[] = isCfem ? (Object.keys(CFEM_VENDOR_LABELS) as CfeVendorType[])
     .filter(type => cfemStatements[type] || csnStmtsForCfe.CSL[type] || csnStmtsForCfe.NL[type])
@@ -1006,6 +1007,18 @@ export default function ReconciliationPage() {
       const embeddedByEmp = new Map<string, ReconLine>();
       embeddedLines.forEach(l => { const emp = matchCfeEmployee(l.name); if (emp) embeddedByEmp.set(emp.id, l); });
 
+      // Every CFE employee appearing on either side, for a full side-by-side table —
+      // not just the mismatches (onlyInCfem/onlyInEmbedded below cover those separately).
+      const allEmpIds = new Set([...cfemByEmp.keys(), ...embeddedByEmp.keys()]);
+      const details = [...allEmpIds].map(id => {
+        const cfeEmp = cfeEmployees.find(e => e.id === id);
+        return {
+          name: cfeEmp ? `${cfeEmp.surname}, ${cfeEmp.first_name}` : (cfemByEmp.get(id) ?? embeddedByEmp.get(id))!.name,
+          cfemAmount: cfemByEmp.get(id)?.amount ?? null,
+          embeddedAmount: embeddedByEmp.get(id)?.amount ?? null,
+        };
+      }).sort((a, b) => a.name.localeCompare(b.name));
+
       return {
         type,
         label: CFEM_VENDOR_LABELS[type],
@@ -1014,6 +1027,7 @@ export default function ReconciliationPage() {
         diff: cfemLines.reduce((s, l) => s + l.amount, 0) - embeddedLines.reduce((s, l) => s + l.amount, 0),
         onlyInCfem: [...cfemByEmp.entries()].filter(([id]) => !embeddedByEmp.has(id)).map(([, l]) => l),
         onlyInEmbedded: [...embeddedByEmp.entries()].filter(([id]) => !cfemByEmp.has(id)).map(([, l]) => l),
+        details,
       };
     }) : [];
 
@@ -1345,8 +1359,10 @@ export default function ReconciliationPage() {
               <p className="text-muted-foreground text-sm">Upload the CFEM Deductions Summary first to enable cross-checks.</p>
             ) : (
               <>
-                {/* Unmatched entries — truly absent from payroll (not resolved by code or name) */}
-                {(() => {
+                {/* Unmatched entries — truly absent from payroll (not resolved by code or name).
+                    Only meaningful for CSL/NL, which have real payroll data to match against —
+                    CFEM's own report has no unmatchedLines by construction. */}
+                {!isCfem && (() => {
                   const truly = [
                     { stmt: furnmartStmt, label: 'Furnmart', resolved: resolvedFurnmart },
                     { stmt: afritecStmt,  label: 'Afritec',  resolved: resolvedAfritec },
@@ -1373,8 +1389,10 @@ export default function ReconciliationPage() {
                   );
                 })()}
 
-                {/* Summary cards */}
-                {summaryRows.length > 0 && (
+                {/* Summary cards — CSL/NL only. For CFEM, "Payroll" is meaningless (CFEM never
+                    uploads salaries here) — its comparison lives entirely in the CFE
+                    Cross-Reference section below, against CSL/NL's own statements. */}
+                {!isCfem && summaryRows.length > 0 && (
                   <div>
                     <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                       Summary — Statement vs Payroll
@@ -1420,80 +1438,123 @@ export default function ReconciliationPage() {
                   </div>
                 )}
 
-                {summaryRows.length === 0 && (
+                {!isCfem && summaryRows.length === 0 && (
                   <p className="text-muted-foreground text-sm">
                     Upload at least one third-party statement (Furnmart, Afritec, Bodulo, etc.) to see the cross-check.
                   </p>
                 )}
 
-                {/* CFE cross-reference — CFEM's own report vs CFE lines embedded in CSL/NL's statements */}
+                {/* CFEM's primary cross-reference — its own report (the payroll-equivalent
+                    source of truth for CFEM) vs the CFE-employee lines embedded in CSL's/NL's
+                    own shared vendor statements. This replaces the generic Summary/Employee
+                    Detail tables above (hidden for CFEM) since CFEM never has real "Payroll"
+                    data in this system — this comparison is the real one. */}
                 {isCfem && (
-                  <div>
-                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
-                      Cross-Reference — CFEM Report vs CSL/NL Statements
-                    </h2>
-                    <p className="text-xs text-muted-foreground mb-3">
-                      CFEM&apos;s deductions are mixed into CSL&apos;s and NL&apos;s shared vendor statements. This compares
-                      CFEM&apos;s own report against the CFE-employee lines found in CSL&apos;s and NL&apos;s uploads for
-                      {' '}{MONTH_NAMES[month - 1]} {year}.
-                    </p>
-                    {!csnStmtsForCfe.loaded ? (
-                      <p className="text-sm text-muted-foreground">Loading…</p>
-                    ) : !cfemParsed ? (
-                      <p className="text-sm text-muted-foreground">Upload the CFEM Deductions Summary to see this comparison.</p>
-                    ) : cfeCrossCheck.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">
-                        No matching vendor statements found on CSL/NL for this period yet.
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                        Summary — CFEM Report vs CSL/NL Statements
+                      </h2>
+                      <p className="text-xs text-muted-foreground mb-3">
+                        CFEM&apos;s deductions are mixed into CSL&apos;s and NL&apos;s shared vendor statements. This compares
+                        CFEM&apos;s own report against the CFE-employee lines found in CSL&apos;s and NL&apos;s uploads for
+                        {' '}{MONTH_NAMES[month - 1]} {year}.
                       </p>
-                    ) : (
-                      <>
-                        <table className="text-sm border rounded overflow-hidden w-full max-w-2xl">
+                      {!csnStmtsForCfe.loaded ? (
+                        <p className="text-sm text-muted-foreground">Loading…</p>
+                      ) : !cfemParsed ? (
+                        <p className="text-sm text-muted-foreground">Upload the CFEM Deductions Summary to see this comparison.</p>
+                      ) : cfeCrossCheck.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">
+                          No matching vendor statements found on CSL/NL for this period yet.
+                        </p>
+                      ) : (
+                        <>
+                          <table className="text-sm border rounded overflow-hidden w-full max-w-2xl">
+                            <thead>
+                              <tr className="bg-[#1B3A5C] text-white">
+                                <th className="px-4 py-2 text-left font-semibold">Vendor</th>
+                                <th className="px-4 py-2 text-right font-semibold">CFEM Report</th>
+                                <th className="px-4 py-2 text-right font-semibold">Found in CSL/NL</th>
+                                <th className="px-4 py-2 text-right font-semibold">Difference</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {cfeCrossCheck.map((row, i) => (
+                                <tr key={row.type} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
+                                  <td className="px-4 py-2 font-medium">{row.label}</td>
+                                  <td className="px-4 py-2 text-right tabular-nums">{fmt(row.cfemTotal, country)}</td>
+                                  <td className="px-4 py-2 text-right tabular-nums">{fmt(row.embeddedTotal, country)}</td>
+                                  <td className={`px-4 py-2 text-right tabular-nums ${diffClass(row.diff)}`}>{fmtDiff(row.diff, country)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+
+                          {cfeCrossCheck.some(r => r.onlyInCfem.length > 0 || r.onlyInEmbedded.length > 0) && (
+                            <div className="mt-3 space-y-2 max-w-2xl">
+                              {cfeCrossCheck.filter(r => r.onlyInCfem.length > 0 || r.onlyInEmbedded.length > 0).map(row => (
+                                <div key={row.type} className="rounded border border-amber-200 bg-amber-50 p-3 text-xs">
+                                  <p className="font-semibold text-amber-800 mb-1">{row.label} — not matched on both sides</p>
+                                  {row.onlyInCfem.length > 0 && (
+                                    <p className="text-amber-700">
+                                      Only in CFEM report: {row.onlyInCfem.map(l => `${l.name} (${fmt(l.amount, country)})`).join(', ')}
+                                    </p>
+                                  )}
+                                  {row.onlyInEmbedded.length > 0 && (
+                                    <p className="text-amber-700">
+                                      Only in CSL/NL statements: {row.onlyInEmbedded.map(l => `${l.name} (${fmt(l.amount, country)})`).join(', ')}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    {/* Per-employee detail, one table per vendor — every CFE employee found on
+                        either side, not just the mismatches called out above. */}
+                    {cfeCrossCheck.filter(r => r.details.length > 0).map(row => (
+                      <div key={row.type}>
+                        <h3 className="text-sm font-semibold mb-2">{row.label} — Employee Detail</h3>
+                        <table className="text-sm border rounded w-full max-w-xl">
                           <thead>
-                            <tr className="bg-[#1B3A5C] text-white">
-                              <th className="px-4 py-2 text-left font-semibold">Vendor</th>
-                              <th className="px-4 py-2 text-right font-semibold">CFEM Report</th>
-                              <th className="px-4 py-2 text-right font-semibold">Found in CSL/NL</th>
-                              <th className="px-4 py-2 text-right font-semibold">Difference</th>
+                            <tr className="bg-muted/40">
+                              <th className="px-3 py-2 text-left">Name</th>
+                              <th className="px-3 py-2 text-right">CFEM Report</th>
+                              <th className="px-3 py-2 text-right">CSL/NL Statement</th>
+                              <th className="px-3 py-2 text-right">Diff</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {cfeCrossCheck.map((row, i) => (
-                              <tr key={row.type} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
-                                <td className="px-4 py-2 font-medium">{row.label}</td>
-                                <td className="px-4 py-2 text-right tabular-nums">{fmt(row.cfemTotal, country)}</td>
-                                <td className="px-4 py-2 text-right tabular-nums">{fmt(row.embeddedTotal, country)}</td>
-                                <td className={`px-4 py-2 text-right tabular-nums ${diffClass(row.diff)}`}>{fmtDiff(row.diff, country)}</td>
-                              </tr>
-                            ))}
+                            {row.details.map((d, i) => {
+                              const diff = d.cfemAmount != null && d.embeddedAmount != null ? d.cfemAmount - d.embeddedAmount : null;
+                              return (
+                                <tr key={i} className="border-t">
+                                  <td className="px-3 py-1.5">{d.name}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">
+                                    {d.cfemAmount != null ? fmt(d.cfemAmount, country) : <span className="text-muted-foreground">—</span>}
+                                  </td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">
+                                    {d.embeddedAmount != null ? fmt(d.embeddedAmount, country) : <span className="text-muted-foreground">—</span>}
+                                  </td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${diff != null ? diffClass(diff) : 'text-muted-foreground'}`}>
+                                    {diff != null ? fmtDiff(diff, country) : '—'}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
-
-                        {cfeCrossCheck.some(r => r.onlyInCfem.length > 0 || r.onlyInEmbedded.length > 0) && (
-                          <div className="mt-3 space-y-2 max-w-2xl">
-                            {cfeCrossCheck.filter(r => r.onlyInCfem.length > 0 || r.onlyInEmbedded.length > 0).map(row => (
-                              <div key={row.type} className="rounded border border-amber-200 bg-amber-50 p-3 text-xs">
-                                <p className="font-semibold text-amber-800 mb-1">{row.label} — not matched on both sides</p>
-                                {row.onlyInCfem.length > 0 && (
-                                  <p className="text-amber-700">
-                                    Only in CFEM report: {row.onlyInCfem.map(l => `${l.name} (${fmt(l.amount, country)})`).join(', ')}
-                                  </p>
-                                )}
-                                {row.onlyInEmbedded.length > 0 && (
-                                  <p className="text-amber-700">
-                                    Only in CSL/NL statements: {row.onlyInEmbedded.map(l => `${l.name} (${fmt(l.amount, country)})`).join(', ')}
-                                  </p>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </>
-                    )}
+                      </div>
+                    ))}
                   </div>
                 )}
 
-                {/* Per-employee table — staff only */}
-                {staffEmpRows.length > 0 && summaryRows.length > 0 && (
+                {/* Per-employee table — staff only (CSL/NL — CFEM has its own detail tables above) */}
+                {!isCfem && staffEmpRows.length > 0 && summaryRows.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between mb-3">
                       <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
@@ -1632,8 +1693,8 @@ export default function ReconciliationPage() {
                   </div>
                 )}
 
-                {/* Management section — CFE employees from MGMT sections in statements */}
-                {mgtEmpRows.length > 0 && (
+                {/* Management section — CFE employees from MGMT sections in statements (CSL/NL only) */}
+                {!isCfem && mgtEmpRows.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between mb-3">
                       <div>
