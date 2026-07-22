@@ -208,6 +208,28 @@ export interface ReconQuery {
   resolved_message: string | null;
 }
 
+// Terminations tracking — candidate terminations detected by comparing the DB
+// active roster against a month's uploaded payroll. Never writes back to
+// employees; purely a record/log. See migration 020_recon_terminations.sql.
+export type ReconTerminationStatus = 'flagged' | 'confirmed' | 'reinstated';
+
+export interface ReconTermination {
+  id: string;
+  hotel_id: string;
+  employee_id: string | null;
+  employee_name: string;
+  employee_code: string | null;
+  detected_year: number;
+  detected_month: number;
+  note: string | null;
+  status: ReconTerminationStatus;
+  created_at: string;
+  created_by: string | null;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  resolved_note: string | null;
+}
+
 // Leave Provision: annual (July) leave balance import + daily-rate payout calc.
 // Standalone from salary_records — see leave_accrual (forward monthly estimate)
 // and leave_provision (legacy VIP passthrough), which this is unrelated to.

@@ -149,6 +149,7 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `017_employee_last_seen.sql` | `last_seen_at timestamptz` on `employees` — tracks the last full-roster import that matched/added the employee; powers the "not in last import" red flag on the Employees page |
 | `018_ftc_to_fixed_term.sql` | Updates `employees.grade_label = 'FTC'` rows to `'Fixed Term'` (canonical grade value rename) |
 | `019_leave_provisions.sql` | `hotels.leave_provision_divisor`; new `leave_provisions` table (annual leave balance provisioning — see Leave Provision section) |
+| `020_recon_terminations.sql` | New `recon_terminations` table — Reconciliation's Terminations log (see Reconciliation section) |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -440,7 +441,7 @@ Grand Total row uses `SUM(G{first}:G{last})` etc. so it aggregates live hotel va
 
 `/dashboard/reconciliation` — admin-only monthly payroll cross-check for **CSL, NL, and CFE** only (hotel tabs are filtered to these three short codes).
 
-**Workflow**: Upload tab → Deductions Check tab → **Employees tab** → Prior Month Changes tab → Queries tab. Status moves Open → Submitted → Approved.
+**Workflow**: Upload tab → Deductions Check tab → **Employees tab** → Prior Month Changes tab → Terminations tab → Queries tab. Status moves Open → Submitted → Approved.
 
 **Upload tab**: Period selector (month/year) is the first element. File slots:
 
@@ -491,12 +492,19 @@ State: `cslXRef: HotelXRefData`, `nlXRef: HotelXRefData`, `crossRefSubTab: 'CSL'
 
 **Prior Month Changes tab**: compares current payroll against the previous month. **Data source preference**: queries the previous period's `recon_uploads` (payroll + ftc_payroll types) first — this is the only reliable source for CSL/NL whose employee codes are NULL in the DB. Falls back to `salary_records` only if no recon upload exists for the prior period. Both sources are unified into `PrevEmp = { empCode: string; name: string; basic: number }` before comparison.
 
+**Terminations tab**: month-by-month tracking of employees who fell off a hotel's Payroll Spreadsheet upload, **without ever writing to the `employees` table**. Shares the CSL/NL sub-tab state (`crossRefSubTab`) and the payroll-vs-DB comparison (`buildCrossRef`) with the Employees tab — a "candidate" is any `CrossRefRow` where `dbEmployee` is set and `payBasic == null` (i.e. an active DB employee absent from the selected period's payroll), minus anyone already flagged for that exact hotel/employee/period. Two sections:
+1. **Candidates — {month} {year}** — one row per candidate for the currently selected period, each with a "Flag as Termination" button that inserts a `recon_terminations` row (`status: 'flagged'`) snapshotting the employee's name/code at flag time. This is the *only* write this tab performs, and it only ever targets `recon_terminations` — the employee record itself is untouched, which is what makes it safe to run every month purely from Payroll Spreadsheet uploads (no third-party statements needed).
+2. **Termination Log — {hotel}** — full history across *all* periods for the selected hotel (not scoped to the year/month selector), newest first. Each flagged entry can be resolved via **Confirm Termination** (`status: 'confirmed'`, permanent) or **Reinstate — false alarm** (`status: 'reinstated'`, e.g. a late/missing payroll upload rather than a real leaver), both with an optional note — mirrors the Queries tab's resolve pattern (`TerminationItem` component, modelled on `QueryItem`).
+
+If an employee reappears in a later month's payroll, they simply stop showing up as a candidate — no manual reinstate is needed for that case; Reinstate is only for correcting a mistaken flag.
+
 **Queries tab**: thread-style queries with author name + timestamp; each can be resolved with a response.
 
-**DB tables** (migration 015):
+**DB tables** (migration 015, extended by 020):
 - `reconciliation_periods` — one row per hotel/year/month; `status` open/submitted/approved
 - `recon_uploads` — one row per period per upload type (UNIQUE constraint); `parsed_data` jsonb holds the parsed output
 - `recon_queries` — query thread entries per period
+- `recon_terminations` (migration 020) — one row per hotel/employee/detected-period (`UNIQUE(hotel_id, employee_id, detected_year, detected_month)`); `status` flagged/confirmed/reinstated; `employee_name`/`employee_code` are snapshotted at flag time so the log survives employee edits or deletion
 
 ---
 

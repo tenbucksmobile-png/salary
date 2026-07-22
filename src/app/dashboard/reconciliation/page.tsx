@@ -9,6 +9,7 @@ import type {
   ReconUpload,
   ReconUploadType,
   ReconQuery,
+  ReconTermination,
 } from '@/types/database';
 import {
   parseAfritecXls,
@@ -119,7 +120,7 @@ export default function ReconciliationPage() {
   const [period, setPeriod] = useState<ReconciliationPeriod | null>(null);
   const [uploads, setUploads] = useState<ReconUpload[]>([]);
   const [queries, setQueries] = useState<ReconQuery[]>([]);
-  const [tab, setTab] = useState<'upload' | 'deductions' | 'crossref' | 'changes' | 'queries'>('upload');
+  const [tab, setTab] = useState<'upload' | 'deductions' | 'crossref' | 'changes' | 'terminations' | 'queries'>('upload');
   const [dedFilter, setDedFilter] = useState<'all' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo'>('all');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -147,6 +148,11 @@ export default function ReconciliationPage() {
   const [nlXRef,  setNlXRef]  = useState<HotelXRefData>(emptyXRef);
   const [crossRefSubTab, setCrossRefSubTab] = useState<'CSL' | 'NL'>('CSL');
   const [crossRefFilter, setCrossRefFilter] = useState<'all' | 'mismatch' | 'payonly' | 'dbonly'>('all');
+
+  // Terminations tracking — loaded alongside the Employees cross-reference (same
+  // underlying CSL/NL payroll-vs-DB comparison), independent of the main hotel selector.
+  const [cslTerminations, setCslTerminations] = useState<ReconTermination[]>([]);
+  const [nlTerminations, setNlTerminations] = useState<ReconTermination[]>([]);
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -195,10 +201,11 @@ export default function ReconciliationPage() {
   }, [hotelId, year, month]);
 
   // Load Employees cross-reference for both CSL and NL independently.
-  // Triggered when the Employees tab is opened, or year/month/hotels changes.
+  // Triggered when the Employees or Terminations tab is opened, or year/month/hotels
+  // changes — Terminations reuses this same payroll-vs-DB comparison to find candidates.
   // Payroll lines come from each hotel's own recon upload (not the main hotel selector).
   useEffect(() => {
-    if (tab !== 'crossref' || !hotels.length) return;
+    if ((tab !== 'crossref' && tab !== 'terminations') || !hotels.length) return;
 
     async function loadXRef(shortCode: 'CSL' | 'NL'): Promise<HotelXRefData> {
       const hotel = hotels.find(h => h.short_code === shortCode);
@@ -258,6 +265,63 @@ export default function ReconciliationPage() {
       setNlXRef(nl);
     });
   }, [tab, year, month, hotels]);
+
+  // Load the full Terminations log (all periods, not scoped to year/month) for
+  // CSL and NL whenever the Terminations tab is opened or hotels load.
+  useEffect(() => {
+    if (tab !== 'terminations' || !hotels.length) return;
+
+    async function loadTerminations(shortCode: 'CSL' | 'NL'): Promise<ReconTermination[]> {
+      const h = hotels.find(x => x.short_code === shortCode);
+      if (!h) return [];
+      const { data } = await supabase
+        .from('recon_terminations')
+        .select('*')
+        .eq('hotel_id', h.id)
+        .order('detected_year', { ascending: false })
+        .order('detected_month', { ascending: false });
+      return (data ?? []) as ReconTermination[];
+    }
+
+    Promise.all([loadTerminations('CSL'), loadTerminations('NL')]).then(([csl, nl]) => {
+      setCslTerminations(csl);
+      setNlTerminations(nl);
+    });
+  }, [tab, hotels]);
+
+  async function flagTermination(shortCode: 'CSL' | 'NL', row: { dbEmployee: Employee | null }) {
+    const h = hotels.find(x => x.short_code === shortCode);
+    if (!h || !row.dbEmployee) return;
+    const { data, error } = await supabase
+      .from('recon_terminations')
+      .insert({
+        hotel_id: h.id,
+        employee_id: row.dbEmployee.id,
+        employee_name: `${row.dbEmployee.first_name} ${row.dbEmployee.surname}`.trim(),
+        employee_code: row.dbEmployee.employee_code,
+        detected_year: year,
+        detected_month: month,
+        status: 'flagged',
+        created_by: username,
+      })
+      .select()
+      .single();
+    if (error || !data) return;
+    const setter = shortCode === 'CSL' ? setCslTerminations : setNlTerminations;
+    setter(list => [data as ReconTermination, ...list]);
+  }
+
+  async function resolveTermination(shortCode: 'CSL' | 'NL', id: string, status: 'confirmed' | 'reinstated', note: string) {
+    const { data } = await supabase
+      .from('recon_terminations')
+      .update({ status, resolved_at: new Date().toISOString(), resolved_by: username, resolved_note: note || null })
+      .eq('id', id)
+      .select()
+      .single();
+    if (!data) return;
+    const setter = shortCode === 'CSL' ? setCslTerminations : setNlTerminations;
+    setter(list => list.map(x => x.id === id ? data as ReconTermination : x));
+  }
 
   async function loadPeriod() {
     const { data } = await supabase
@@ -932,6 +996,24 @@ export default function ReconciliationPage() {
     return true;
   });
 
+  // ── Terminations (candidates for the selected period, per hotel) ──────────
+  // A candidate is an active DB employee absent from this period's uploaded
+  // payroll, minus anyone already flagged for this exact hotel/employee/period.
+  function terminationCandidates(xref: HotelXRefData, existing: ReconTermination[]): CrossRefRow[] {
+    const flaggedIds = new Set(
+      existing.filter(t => t.detected_year === year && t.detected_month === month).map(t => t.employee_id)
+    );
+    return buildCrossRef(xref).filter(r => r.dbEmployee && r.payBasic == null && !flaggedIds.has(r.dbEmployee.id));
+  }
+
+  const cslCandidates = terminationCandidates(cslXRef, cslTerminations);
+  const nlCandidates  = terminationCandidates(nlXRef, nlTerminations);
+  const terminationsSubTab = crossRefSubTab; // reuse the same CSL/NL toggle as the Employees tab
+  const activeCandidates    = terminationsSubTab === 'CSL' ? cslCandidates : nlCandidates;
+  const activeTerminations  = terminationsSubTab === 'CSL' ? cslTerminations : nlTerminations;
+  const openTerminationsBadge = cslTerminations.filter(t => t.status === 'flagged').length
+                               + nlTerminations.filter(t => t.status === 'flagged').length;
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   if (loading) return <div className="p-8 text-muted-foreground">Loading…</div>;
@@ -1025,7 +1107,7 @@ export default function ReconciliationPage() {
               </span>
             )}
           </button>
-          {(['changes', 'queries'] as const).map(t => (
+          {(['changes', 'terminations', 'queries'] as const).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -1033,7 +1115,12 @@ export default function ReconciliationPage() {
                 tab === t ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
               }`}
             >
-              {t === 'changes' ? 'Prior Month Changes' : 'Queries'}
+              {t === 'changes' ? 'Prior Month Changes' : t === 'terminations' ? 'Terminations' : 'Queries'}
+              {t === 'terminations' && openTerminationsBadge > 0 && (
+                <span className="ml-1.5 bg-red-100 text-red-700 rounded-full px-1.5 text-xs">
+                  {openTerminationsBadge}
+                </span>
+              )}
               {t === 'queries' && queries.filter(q => !q.resolved_at).length > 0 && (
                 <span className="ml-1.5 bg-red-100 text-red-700 rounded-full px-1.5 text-xs">
                   {queries.filter(q => !q.resolved_at).length}
@@ -1752,6 +1839,105 @@ export default function ReconciliationPage() {
           </div>
         )}
 
+        {/* ═════ TERMINATIONS TAB ═════ */}
+        {tab === 'terminations' && (
+          <div className="space-y-6 max-w-4xl">
+            <p className="text-sm text-muted-foreground">
+              Candidates are DB-active employees missing from a month&apos;s uploaded Payroll Spreadsheet.
+              Flagging or resolving here only writes to this log — it never changes the employee record itself.
+            </p>
+
+            {/* CSL / NL sub-tabs (shared with the Employees tab) */}
+            <div className="flex gap-1 border-b">
+              {(['CSL', 'NL'] as const).map(code => {
+                const cands = code === 'CSL' ? cslCandidates : nlCandidates;
+                return (
+                  <button
+                    key={code}
+                    onClick={() => setCrossRefSubTab(code)}
+                    className={`px-5 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                      terminationsSubTab === code ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {code}
+                    {cands.length > 0 && (
+                      <span className="ml-1.5 bg-blue-100 text-blue-700 rounded-full px-1.5 text-xs">{cands.length}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Candidates for the currently selected period */}
+            <div>
+              <h3 className="text-sm font-semibold mb-2">
+                Candidates — {MONTH_NAMES[month - 1]} {year}
+              </h3>
+              {!(terminationsSubTab === 'CSL' ? cslXRef : nlXRef).loaded ? (
+                <p className="text-sm text-muted-foreground">Loading…</p>
+              ) : activeCandidates.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No active employees are missing from {terminationsSubTab}&apos;s payroll this period.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="text-sm border rounded w-full whitespace-nowrap">
+                    <thead>
+                      <tr className="bg-muted/40 text-left">
+                        <th className="px-3 py-2">Name</th>
+                        <th className="px-3 py-2">Code</th>
+                        <th className="px-3 py-2">Grade</th>
+                        <th className="px-3 py-2">Department</th>
+                        <th className="px-3 py-2 text-right">DB Basic</th>
+                        <th className="px-3 py-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeCandidates.map((row, i) => (
+                        <tr key={`cand-${i}`} className={`border-t ${i % 2 === 0 ? 'bg-white' : 'bg-muted/10'}`}>
+                          <td className="px-3 py-1.5 font-medium">{row.name}</td>
+                          <td className="px-3 py-1.5 text-muted-foreground text-xs">{row.dbEmployee?.employee_code ?? '—'}</td>
+                          <td className="px-3 py-1.5 text-muted-foreground text-xs">{row.dbEmployee?.grade_label ?? '—'}</td>
+                          <td className="px-3 py-1.5 text-muted-foreground text-xs">{row.dbEmployee?.department_code ?? '—'}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {row.dbBasic != null ? fmt(row.dbBasic, country) : <span className="text-muted-foreground">—</span>}
+                          </td>
+                          <td className="px-3 py-1.5 text-right">
+                            <button
+                              onClick={() => flagTermination(terminationsSubTab, row)}
+                              className="px-2.5 py-1 rounded text-xs font-medium bg-red-600 text-white hover:bg-red-700"
+                            >
+                              Flag as Termination
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Historical log across all periods */}
+            <div>
+              <h3 className="text-sm font-semibold mb-2">Termination Log — {terminationsSubTab}</h3>
+              {activeTerminations.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No terminations recorded yet for {terminationsSubTab}.</p>
+              ) : (
+                <div className="space-y-3">
+                  {activeTerminations.map(t => (
+                    <TerminationItem
+                      key={t.id}
+                      termination={t}
+                      onResolve={(status, note) => resolveTermination(terminationsSubTab, t.id, status, note)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* ═════ QUERIES TAB ═════ */}
         {tab === 'queries' && (
           <div className="max-w-2xl space-y-4">
@@ -1842,6 +2028,86 @@ function QueryItem({ query, onResolve }: { query: ReconQuery; onResolve: (msg: s
           >
             Mark Resolved
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Termination log item sub-component ────────────────────────────────────────
+
+const TERM_STATUS_LABELS: Record<string, string> = {
+  flagged: 'Flagged', confirmed: 'Confirmed', reinstated: 'Reinstated',
+};
+const TERM_STATUS_COLORS: Record<string, string> = {
+  flagged: 'bg-red-100 text-red-700', confirmed: 'bg-orange-100 text-orange-800', reinstated: 'bg-green-100 text-green-800',
+};
+
+function TerminationItem({ termination, onResolve }: {
+  termination: ReconTermination;
+  onResolve: (status: 'confirmed' | 'reinstated', note: string) => void;
+}) {
+  const [note, setNote] = useState('');
+  const [showResolve, setShowResolve] = useState(false);
+
+  return (
+    <div className={`border rounded p-4 ${termination.status === 'reinstated' ? 'bg-green-50 border-green-200' : termination.status === 'confirmed' ? 'bg-orange-50 border-orange-200' : 'bg-white'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1">
+          <p className="text-sm font-medium">
+            {termination.employee_name}
+            {termination.employee_code && <span className="ml-1.5 text-xs font-mono text-muted-foreground">({termination.employee_code})</span>}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Missing from {MONTH_NAMES[termination.detected_month - 1]} {termination.detected_year} payroll
+            {termination.created_by ? ` · flagged by ${termination.created_by}` : ''}
+          </p>
+        </div>
+        <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded font-medium ${TERM_STATUS_COLORS[termination.status]}`}>
+          {TERM_STATUS_LABELS[termination.status]}
+        </span>
+      </div>
+
+      {termination.status !== 'flagged' && termination.resolved_note && (
+        <div className="mt-2 pl-3 border-l-2 border-muted">
+          <p className="text-sm">{termination.resolved_note}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {termination.resolved_by} · {termination.resolved_at && new Date(termination.resolved_at).toLocaleDateString('en-ZA', { day: '2-digit', month: 'short', year: 'numeric' })}
+          </p>
+        </div>
+      )}
+
+      {termination.status === 'flagged' && (
+        <div className="mt-2">
+          {!showResolve ? (
+            <button onClick={() => setShowResolve(true)} className="text-xs text-blue-600 hover:underline">
+              Confirm / Reinstate
+            </button>
+          ) : (
+            <div className="mt-1 space-y-2">
+              <textarea
+                value={note}
+                onChange={e => setNote(e.target.value)}
+                rows={2}
+                placeholder="Note (e.g. last day worked, or reason for reinstating)…"
+                className="w-full border rounded px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { onResolve('confirmed', note); setShowResolve(false); }}
+                  className="px-3 py-1 bg-orange-700 text-white rounded text-sm hover:bg-orange-800"
+                >
+                  Confirm Termination
+                </button>
+                <button
+                  onClick={() => { onResolve('reinstated', note); setShowResolve(false); }}
+                  className="px-3 py-1 bg-green-700 text-white rounded text-sm hover:bg-green-800"
+                >
+                  Reinstate (false alarm)
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
