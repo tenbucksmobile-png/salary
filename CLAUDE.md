@@ -459,7 +459,7 @@ Grand Total row uses `SUM(G{first}:G{last})` etc. so it aggregates live hotel va
 | Bodulo Funeral Scheme | `bodulo` | `.xlsx` | Policy list |
 | CFEM Deductions Summary | `cfem_deductions` | `.csv/.txt` | **CFEM only** — replaces all of the above (including Payroll Spreadsheet) for that hotel; see "CFE Management" below |
 
-Re-uploading any slot replaces it (upsert on `period_id, upload_type`). `visibleUploadConfigs` filters which slots render per hotel: CFEM sees only `cfem_deductions` + `twelve_months` (`CFEM_UPLOAD_TYPES`); every other hotel sees everything except `cfem_deductions` (`NON_CFEM_UPLOAD_TYPES`).
+Re-uploading any slot replaces it (upsert on `period_id, upload_type`). `visibleUploadConfigs` filters which slots render per hotel: CFEM sees only `cfem_deductions` (`CFEM_UPLOAD_TYPES`) — no other slot, since Payroll Spreadsheet and 12 Months Payroll Report are both salary documents CFEM must never upload here. Every other hotel sees everything except `cfem_deductions` (`NON_CFEM_UPLOAD_TYPES`).
 
 **Parsers** (`src/lib/recon-parsers.ts`):
 - `parseAfritecXls(buf, fileName, uploadType, hotelCode)` — detects header by keyword; col 5 = Employee Number, col 10 = Regular Instalment. **If the file contains a "CUSTOMER NAME" header row it delegates to `parseCbToplineFormat`** — so this function is the catch-all for afritec, topline, and cbstores. Dispatch in `handleUpload`: `payroll`→`parsePayrollXlsx`, `furnmart`→`parseFurnmart`, `bodulo`→`parseBodulo`, all others→`parseAfritecXls(buf, name, type, hotelCode)`

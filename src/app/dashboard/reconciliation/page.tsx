@@ -83,9 +83,10 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
   },
 ];
 
-// CFEM has its own confidential payroll and never uploads a Payroll Spreadsheet here —
-// its single combined deductions report replaces all 5 individual vendor upload slots.
-const CFEM_UPLOAD_TYPES: ReconUploadType[] = ['cfem_deductions', 'twelve_months'];
+// CFEM has its own confidential payroll and never uploads any salary data here —
+// its single combined deductions report is the only upload slot shown ("12 Months
+// Payroll Report" is also a salary document, so it's excluded too, not just Payroll Spreadsheet).
+const CFEM_UPLOAD_TYPES: ReconUploadType[] = ['cfem_deductions'];
 const NON_CFEM_UPLOAD_TYPES: ReconUploadType[] = UPLOAD_CONFIGS
   .map(c => c.type)
   .filter(t => t !== 'cfem_deductions');
