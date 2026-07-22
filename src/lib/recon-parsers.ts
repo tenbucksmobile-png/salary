@@ -345,9 +345,13 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
   return { uploadType: 'bodulo', lines, unmatchedLines, total, fileName };
 }
 
-// ── NataLodge payroll spreadsheet .xlsx ───────────────────────────────────────
-// Row 0-1: title. Header row detected by col[0]="Code". Employee rows: col[0] non-empty.
-// Department subtotal rows: col[0] empty. Final total: col[1]="Total".
+// ── NataLodge / CSL payroll spreadsheet .xlsx ─────────────────────────────────
+// Row 0-1: title. Header row detected by col[0]="Code" and "employee" appearing
+// anywhere in that row (the employee name column varies by hotel format — e.g.
+// NataLodge uses col[1], CSL's "New Employee" export uses col[2] with a
+// secondary short-code column at col[1]). Department subtotal rows: col[0]
+// empty with no totals in the numeric columns. Final total: col[0] empty with
+// non-zero numeric totals (label text varies — not always literally "Total").
 
 export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Promise<ParsedPayroll> {
   const XLSX = await getXLSX();
@@ -358,7 +362,7 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
   // Find header row
   const headerIdx = rows.findIndex(r =>
     String(r[0] || '').trim().toLowerCase() === 'code' &&
-    String(r[1] || '').toLowerCase().includes('employee'),
+    r.some((c: any) => String(c || '').toLowerCase().includes('employee')),
   );
   if (headerIdx < 0) throw new Error('Could not find header row in payroll spreadsheet (expected "Code" in column A)');
 
@@ -372,6 +376,8 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
     });
   }
 
+  const colNameFound   = col(/employee.*name|^name$/);
+  const colName         = colNameFound >= 0 ? colNameFound : 1;
   const colBasic       = col('5000');
   const colIncome      = col('income total');
   const colFurnmart    = col('furnmart');
@@ -380,7 +386,7 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
   const colPension     = col(/pension.?ee|4010/);
   const colPaye        = col(/paye|8001/);
   const colMedAid      = col(/med.*aid|8090/);
-  const colAfritec     = col(/afritec/);
+  const colAfritec     = col(/afritec|cbh/);
   const colTopline     = col(/topline/);
   const colStaffLoans  = col(/staff.?loan|8150/);
   const colDedTotal    = col('deduction total');
@@ -401,9 +407,14 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i];
     const code = String(row[0] || '').trim();
-    const name = String(row[1] || '').trim();
+    const name = String(row[colName] || '').trim();
 
-    if (!code && name.toLowerCase() === 'total') {
+    // Blank-code row: either a department subtotal header (no numeric totals)
+    // or the sheet's final totals row (numeric totals present, label text varies).
+    if (!code) {
+      const isTotalsRow = n(row, colIncome) > 0 || n(row, colDedTotal) > 0 || n(row, colNett) > 0;
+      if (!isTotalsRow) continue; // department header or blank row
+
       const toplineLoans = n(row, colTopline);
       const afritecLoans = colAfritec >= 0 ? n(row, colAfritec)
         : afritecFromStaff ? n(row, colStaffLoans)
@@ -427,8 +438,6 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
       };
       continue;
     }
-
-    if (!code) continue; // Department header or blank row
 
     const toplineLoans = n(row, colTopline);
     const afritecLoans = colAfritec >= 0 ? n(row, colAfritec)

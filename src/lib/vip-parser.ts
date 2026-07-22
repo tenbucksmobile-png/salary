@@ -420,6 +420,55 @@ export function parseLeaveBalanceFile(text: string): { employees: LeaveBalanceEn
   return { employees, errors };
 }
 
+// ─── Employee Code Update (annual/ad-hoc re-code) ────────────────────────────
+// A narrow, dedicated file — name + a new employee code, nothing else. Used to
+// assign/replace employee_code for hotels like CSL/NL whose codes were cleared
+// (migration 014). Must NOT match gross/salary/id/leave so it can't collide
+// with the other tabular detectors earlier in the detection chain.
+
+export function isEmpCodeUpdateFile(firstLine: string): boolean {
+  const l = normalizeHeaderCell(firstLine);
+  const hasSurname = l.includes('surname');
+  const hasEmpCode = l.includes('empcode') || l.includes('emp code');
+  const hasSalary  = l.includes('gross') || l.includes('salary') || l.includes('earnings');
+  const hasId      = l.includes('omang') || l.includes('id number') || l.includes('national id') || l.includes('identity');
+  const hasLeave   = l.includes('leave');
+  const hasMedical = l.includes('medical');
+  return hasSurname && hasEmpCode && !hasSalary && !hasId && !hasLeave && !hasMedical;
+}
+
+export interface EmpCodeUpdateEntry {
+  surname: string;
+  firstName: string;
+  newEmployeeCode: string;
+}
+
+export function parseEmpCodeUpdateFile(text: string): { employees: EmpCodeUpdateEntry[]; errors: string[] } {
+  const lines = text.split('\n').map(l => l.trimEnd()).filter(Boolean);
+  const delim = detectDelimiter(lines[0] ?? '');
+  const header = splitCSVLine(lines[0], delim).map(normalizeHeaderCell);
+
+  const idx = {
+    surname:   header.findIndex(h => h === 'surname' || h === 'surnmae' || h === 'last name' || h === 'lastname'),
+    firstName: header.findIndex(h => h === 'name' || h === 'first name' || h === 'firstname'),
+    empCode:   header.findIndex(h => h === 'empcode' || h === 'emp code' || h === 'employee code' || h === 'new emp code' || h === 'new employee code'),
+  };
+
+  const employees: EmpCodeUpdateEntry[] = [];
+  const errors: string[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i], delim).map(c => c.trim().replace(/^"|"$/g, ''));
+    if (cols.every(c => !c)) continue;
+    const get = (k: keyof typeof idx) => idx[k] >= 0 ? cols[idx[k]] ?? '' : '';
+    const surname = get('surname');
+    const newEmployeeCode = get('empCode');
+    if (!surname || !newEmployeeCode) continue;
+    employees.push({ surname, firstName: get('firstName'), newEmployeeCode });
+  }
+  return { employees, errors };
+}
+
 // ─── VIP Report 710 parser ────────────────────────────────────────────────────
 
 export function parseVIPReport(text: string): ParseResult {

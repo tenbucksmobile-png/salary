@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile, isLeaveBalanceFile, parseLeaveBalanceFile, parseCslPayrollSchedule, type PayrollSchedulePeriod } from '@/lib/vip-parser';
+import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile, isLeaveBalanceFile, parseLeaveBalanceFile, isEmpCodeUpdateFile, parseEmpCodeUpdateFile, parseCslPayrollSchedule, type PayrollSchedulePeriod } from '@/lib/vip-parser';
 import { isEmployeeCsvExport, parseEmployeeCsvExport, type RoundtripRow } from '@/lib/employee-csv';
 import { Hotel } from '@/types/database';
 import { fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
@@ -10,7 +10,7 @@ import { isBotswana, LEAVE_PROVISION_CAP_DAYS } from '@/lib/payroll-calc';
 import { Upload, CheckCircle, FileText, ChevronRight } from 'lucide-react';
 
 type Step = 'select' | 'preview' | 'done';
-type ImportType = 'vip' | 'employee' | 'medical' | 'roundtrip' | 'payroll-schedule' | 'leave';
+type ImportType = 'vip' | 'employee' | 'medical' | 'roundtrip' | 'payroll-schedule' | 'leave' | 'empcode';
 
 interface ImportRow {
   importType: ImportType;
@@ -68,6 +68,14 @@ interface LeaveRow {
   provisionValue: number;
 }
 
+interface EmpCodeRow {
+  surname: string;
+  firstName: string;
+  employeeId: string | null;
+  currentCode: string | null;
+  newCode: string;
+}
+
 const GRADE_MAP: Record<string, string> = {
   'frontline':   'Frontline',
   'front line':  'Frontline',
@@ -106,6 +114,7 @@ export default function ImportPage() {
   const [rows, setRows]         = useState<ImportRow[]>([]);
   const [medicalRows, setMedicalRows] = useState<MedicalRow[]>([]);
   const [leaveRows, setLeaveRows]     = useState<LeaveRow[]>([]);
+  const [empCodeRows, setEmpCodeRows] = useState<EmpCodeRow[]>([]);
   const [errors, setErrors]     = useState<string[]>([]);
   const [importType, setImportType] = useState<ImportType>('vip');
   const [periodMonth, setPeriodMonth] = useState(new Date().getMonth() + 1);
@@ -171,8 +180,9 @@ export default function ImportPage() {
     const isMedical    = isMedicalAidFile(firstLine);
     const isRoundtrip  = !isMedical && isEmployeeCsvExport(firstLine);
     const isLeave      = !isMedical && !isRoundtrip && isLeaveBalanceFile(firstLine);
-    const isEmployee   = !isMedical && !isRoundtrip && !isLeave && isTabularEmployeeFile(firstLine);
-    setImportType(isMedical ? 'medical' : isRoundtrip ? 'roundtrip' : isLeave ? 'leave' : isEmployee ? 'employee' : 'vip');
+    const isEmpCode    = !isMedical && !isRoundtrip && !isLeave && isEmpCodeUpdateFile(firstLine);
+    const isEmployee   = !isMedical && !isRoundtrip && !isLeave && !isEmpCode && isTabularEmployeeFile(firstLine);
+    setImportType(isMedical ? 'medical' : isRoundtrip ? 'roundtrip' : isLeave ? 'leave' : isEmpCode ? 'empcode' : isEmployee ? 'employee' : 'vip');
 
     if (isRoundtrip) {
       // ── Employee CSV round-trip re-import ─────────────────────────────────
@@ -313,6 +323,36 @@ export default function ImportPage() {
       });
 
       setLeaveRows(lRows);
+      setErrors([]);
+      setLoading(false);
+      setStep('preview');
+      return;
+    } else if (isEmpCode) {
+      // ── Employee Code Update — matches by name, patches ONLY employee_code ─
+      const { employees: emps } = parseEmpCodeUpdateFile(text);
+
+      const { data: existing } = await sb
+        .from('employees')
+        .select('id, surname, first_name, employee_code')
+        .eq('hotel_id', hotelId);
+
+      const nameMap = new Map(
+        (existing ?? []).map((e: any) => [`${String(e.surname ?? '').trim().toLowerCase()}|${String(e.first_name ?? '').trim().toLowerCase()}`, e])
+      );
+
+      const ecRows: EmpCodeRow[] = emps.map(emp => {
+        const key = `${emp.surname.trim().toLowerCase()}|${emp.firstName.trim().toLowerCase()}`;
+        const match = nameMap.get(key);
+        return {
+          surname: emp.surname,
+          firstName: emp.firstName,
+          employeeId: match?.id ?? null,
+          currentCode: match?.employee_code ?? null,
+          newCode: emp.newEmployeeCode,
+        };
+      });
+
+      setEmpCodeRows(ecRows);
       setErrors([]);
       setLoading(false);
       setStep('preview');
@@ -476,6 +516,42 @@ export default function ImportPage() {
       }
 
       setResult({ added: 0, updated: matchedRows.length });
+      setStep('done');
+    } catch (err) {
+      setErrors([`Import failed: ${err instanceof Error ? err.message : String(err)}`]);
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function confirmEmpCodeUpdate() {
+    setImporting(true);
+    const sb2 = createClient();
+    // Only rows matched to an existing employee AND whose code actually changes
+    // are written — this touches employee_code only, never any other column.
+    const matched = empCodeRows.filter(r => r.employeeId && r.newCode && r.newCode !== r.currentCode);
+
+    try {
+      await sb2.from('payroll_imports').insert({
+        hotel_id: hotelId,
+        filename: 'Employee_Code_Update',
+        period_month: new Date().getMonth() + 1,
+        period_year: new Date().getFullYear(),
+        employees_added: 0,
+        employees_updated: matched.length,
+        employees_flagged: empCodeRows.length - matched.length,
+        status: 'confirmed',
+      });
+
+      await Promise.all(
+        matched.map(r =>
+          sb2.from('employees')
+            .update({ employee_code: r.newCode, updated_at: new Date().toISOString() })
+            .eq('id', r.employeeId!)
+        )
+      );
+
+      setResult({ added: 0, updated: matched.length });
       setStep('done');
     } catch (err) {
       setErrors([`Import failed: ${err instanceof Error ? err.message : String(err)}`]);
@@ -850,6 +926,7 @@ export default function ImportPage() {
     setRows([]);
     setMedicalRows([]);
     setLeaveRows([]);
+    setEmpCodeRows([]);
     setRoundtripRows([]);
     setPayrollPeriods([]);
     setSelectedPeriodIdx(0);
@@ -1082,6 +1159,76 @@ export default function ImportPage() {
         </div>
       )}
 
+      {step === 'preview' && importType === 'empcode' && (
+        <div className="space-y-4">
+          <div className="flex gap-3 flex-wrap items-center">
+            <span className="rounded-full px-3 py-1 text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+              Employee Code Update
+            </span>
+            <span className="rounded-lg bg-blue-50 border border-blue-200 px-3 py-1.5 text-sm text-blue-700">
+              <strong>{empCodeRows.filter(r => r.employeeId && r.newCode !== r.currentCode).length}</strong> to update
+            </span>
+            {empCodeRows.some(r => r.employeeId && r.newCode === r.currentCode) && (
+              <span className="rounded-lg bg-muted px-3 py-1.5 text-sm text-muted-foreground">
+                <strong>{empCodeRows.filter(r => r.employeeId && r.newCode === r.currentCode).length}</strong> unchanged
+              </span>
+            )}
+            {empCodeRows.some(r => !r.employeeId) && (
+              <span className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-1.5 text-sm text-amber-700">
+                <strong>{empCodeRows.filter(r => !r.employeeId).length}</strong> not found
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            This only updates the Employee Code field — no other employee data is changed.
+          </p>
+
+          <div className="bg-white rounded-xl border overflow-x-auto">
+            <table className="w-full text-sm whitespace-nowrap">
+              <thead>
+                <tr className="border-b bg-muted/40">
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">Name</th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">Status</th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">Current Code</th>
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">New Code</th>
+                </tr>
+              </thead>
+              <tbody>
+                {empCodeRows.map((r, i) => (
+                  <tr key={i} className="border-b last:border-0 hover:bg-muted/10">
+                    <td className="px-4 py-2.5 font-medium">{r.surname}, {r.firstName}</td>
+                    <td className="px-4 py-2.5">
+                      {!r.employeeId
+                        ? <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-red-50 text-red-700">Not found</span>
+                        : r.newCode === r.currentCode
+                        ? <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-muted text-muted-foreground">Unchanged</span>
+                        : <span className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-blue-50 text-blue-700">Matched</span>
+                      }
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{r.currentCode || '—'}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs">{r.newCode}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={confirmEmpCodeUpdate}
+              disabled={importing || empCodeRows.filter(r => r.employeeId && r.newCode !== r.currentCode).length === 0}
+              className="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-5 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              <FileText className="h-4 w-4" />
+              {importing ? 'Importing…' : `Update Employee Codes (${empCodeRows.filter(r => r.employeeId && r.newCode !== r.currentCode).length})`}
+            </button>
+            <button onClick={reset} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Step 2: Preview — Round-trip CSV */}
       {step === 'preview' && importType === 'roundtrip' && (
         <div className="space-y-4">
@@ -1282,7 +1429,7 @@ export default function ImportPage() {
       })()}
 
       {/* Step 2: Preview — Employee / VIP */}
-      {step === 'preview' && importType !== 'medical' && importType !== 'roundtrip' && importType !== 'payroll-schedule' && (
+      {step === 'preview' && importType !== 'medical' && importType !== 'roundtrip' && importType !== 'payroll-schedule' && importType !== 'leave' && importType !== 'empcode' && (
         <div className="space-y-4">
           <div className="flex gap-3 flex-wrap items-center">
             <span className={`rounded-full px-3 py-1 text-xs font-medium ${importType === 'employee' ? 'bg-purple-50 text-purple-700 border border-purple-200' : 'bg-sky-50 text-sky-700 border border-sky-200'}`}>
