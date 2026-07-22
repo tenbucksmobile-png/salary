@@ -50,14 +50,20 @@ function normalizeCode(code: string): string {
 // surname/first_name fields — left in, these break every single match for that file.
 const NAME_TITLES = new Set(['MR', 'MRS', 'MISS', 'MS', 'MSTR', 'DR', 'PROF', 'ADV', 'REV', 'HON', 'MX']);
 
-// Sorts the words in a name so "BEAUTY LISEHU" and "LISEHU BEAUTY" produce the same key.
-// Used for name-based matching where the statement may store names as First Last or Last First.
-export function nameKey(raw: string): string {
+// Splits a raw name into uppercase word tokens, stripping punctuation and salutations.
+// Shared building block for nameKey() (exact full-name matching) and any looser,
+// token-overlap matching (e.g. CFE Management identification — see reconciliation page).
+export function nameTokens(raw: string): string[] {
   return (raw || '').toUpperCase()
     .replace(/[^A-Z\s]/g, '').trim()
     .split(/\s+/).filter(Boolean)
-    .filter(w => !NAME_TITLES.has(w))
-    .sort().join('|');
+    .filter(w => !NAME_TITLES.has(w));
+}
+
+// Sorts the words in a name so "BEAUTY LISEHU" and "LISEHU BEAUTY" produce the same key.
+// Used for name-based matching where the statement may store names as First Last or Last First.
+export function nameKey(raw: string): string {
+  return nameTokens(raw).sort().join('|');
 }
 
 async function getXLSX() {

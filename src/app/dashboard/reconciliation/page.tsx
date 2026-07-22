@@ -18,6 +18,7 @@ import {
   parseFtcPayrollXls,
   parseCfemDeductions,
   nameKey,
+  nameTokens,
   type PayrollLine,
 } from '@/lib/recon-parsers';
 import type { ParsedStatement, ParsedPayroll, ReconLine, ParsedCfemDeductions } from '@/lib/recon-parsers';
@@ -916,9 +917,27 @@ export default function ReconciliationPage() {
     bodulo:   mgtEmpRows.reduce((s, r) => s + (r.bodulo_stmt   ?? 0), 0),
   };
 
-  // CFE employee name map for management cross-reference (surname+first name → Employee)
-  const cfeNameMap = new Map<string, Employee>();
-  cfeEmployees.forEach(e => cfeNameMap.set(nameKey(`${e.surname} ${e.first_name}`), e));
+  // CFE employee token index for management cross-reference — matches on a SINGLE shared
+  // name token (surname OR first name, min 3 letters), not the full name as an exact set.
+  // CFE Management's own deductions report often uses initials for first names ("MR B.A.
+  // BAAKILE") while the statement it's being cross-checked against uses the full name
+  // ("BABOLOKI BAAKILE") — an exact nameKey() match would never link these, even though
+  // the surname alone makes it unambiguous. Short tokens are excluded to avoid a stray
+  // initial ("O", "BT") spuriously matching an unrelated employee.
+  const CFE_TOKEN_MIN_LEN = 3;
+  const cfeTokenIndex = new Map<string, Employee>();
+  cfeEmployees.forEach(e => {
+    const tokens = new Set([...nameTokens(e.surname), ...nameTokens(e.first_name)]);
+    tokens.forEach(t => { if (t.length >= CFE_TOKEN_MIN_LEN && !cfeTokenIndex.has(t)) cfeTokenIndex.set(t, e); });
+  });
+  function matchCfeEmployee(name: string): Employee | undefined {
+    for (const t of nameTokens(name)) {
+      if (t.length < CFE_TOKEN_MIN_LEN) continue;
+      const match = cfeTokenIndex.get(t);
+      if (match) return match;
+    }
+    return undefined;
+  }
 
   // Map vendor label → management amount so we can split summary rows
   const VENDOR_MGT: Record<string, number> = {
@@ -975,19 +994,26 @@ export default function ReconciliationPage() {
         const stmt = csnStmtsForCfe[code][type];
         if (!stmt) return;
         [...stmt.lines, ...stmt.unmatchedLines].forEach(l => {
-          if (cfeNameMap.has(nameKey(l.name))) embeddedLines.push(l);
+          if (matchCfeEmployee(l.name)) embeddedLines.push(l);
         });
       });
-      const cfemKeys = new Set(cfemLines.map(l => nameKey(l.name)));
-      const embeddedKeys = new Set(embeddedLines.map(l => nameKey(l.name)));
+      // Resolve each line to the CFE employee it represents (via the same token-overlap
+      // match), so "MR B.A. BAAKILE" (CFEM's own report, initials) and "BABOLOKI BAAKILE"
+      // (CSL's statement, full name) are recognised as the same person by identity —
+      // comparing raw name strings here would wrongly list him as unmatched on both sides.
+      const cfemByEmp = new Map<string, ReconLine>();
+      cfemLines.forEach(l => { const emp = matchCfeEmployee(l.name); if (emp) cfemByEmp.set(emp.id, l); });
+      const embeddedByEmp = new Map<string, ReconLine>();
+      embeddedLines.forEach(l => { const emp = matchCfeEmployee(l.name); if (emp) embeddedByEmp.set(emp.id, l); });
+
       return {
         type,
         label: CFEM_VENDOR_LABELS[type],
         cfemTotal: cfemLines.reduce((s, l) => s + l.amount, 0),
         embeddedTotal: embeddedLines.reduce((s, l) => s + l.amount, 0),
         diff: cfemLines.reduce((s, l) => s + l.amount, 0) - embeddedLines.reduce((s, l) => s + l.amount, 0),
-        onlyInCfem: cfemLines.filter(l => !embeddedKeys.has(nameKey(l.name))),
-        onlyInEmbedded: embeddedLines.filter(l => !cfemKeys.has(nameKey(l.name))),
+        onlyInCfem: [...cfemByEmp.entries()].filter(([id]) => !embeddedByEmp.has(id)).map(([, l]) => l),
+        onlyInEmbedded: [...embeddedByEmp.entries()].filter(([id]) => !cfemByEmp.has(id)).map(([, l]) => l),
       };
     }) : [];
 
@@ -1618,7 +1644,7 @@ export default function ReconciliationPage() {
                           On CFE Management payroll — statement amounts shown. Reconcile via the CFE tab.
                           {cfeEmployees.length > 0 && (
                             <span className="ml-2 text-teal-700">
-                              {mgtEmpRows.filter(r => cfeNameMap.has(nameKey(r.name))).length}/{mgtEmpRows.length} matched in CFE records
+                              {mgtEmpRows.filter(r => matchCfeEmployee(r.name)).length}/{mgtEmpRows.length} matched in CFE records
                             </span>
                           )}
                         </p>
@@ -1666,7 +1692,7 @@ export default function ReconciliationPage() {
                             if (dedFilter === 'bodulo')   return (row.bodulo_stmt   ?? 0) > 0;
                             return true;
                           })).map((row, i) => {
-                            const cfeMatch = cfeNameMap.get(nameKey(row.name));
+                            const cfeMatch = matchCfeEmployee(row.name);
                             return (
                               <tr key={`mgt-${row.name}-${i}`} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
                                 <td className="px-3 py-1.5 font-mono text-xs">
