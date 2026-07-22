@@ -149,10 +149,14 @@ export default function ReconciliationPage() {
   const [crossRefSubTab, setCrossRefSubTab] = useState<'CSL' | 'NL'>('CSL');
   const [crossRefFilter, setCrossRefFilter] = useState<'all' | 'mismatch' | 'payonly' | 'dbonly'>('all');
 
-  // Terminations tracking — loaded alongside the Employees cross-reference (same
-  // underlying CSL/NL payroll-vs-DB comparison), independent of the main hotel selector.
+  // Terminations tracking — compares each hotel's own payroll upload month-to-month
+  // (never against the DB employee list), independent of the main hotel selector.
   const [cslTerminations, setCslTerminations] = useState<ReconTermination[]>([]);
   const [nlTerminations, setNlTerminations] = useState<ReconTermination[]>([]);
+  type TermPayrollState = { current: PayrollLine[]; previous: PayrollLine[]; loaded: boolean };
+  const emptyTermPayroll: TermPayrollState = { current: [], previous: [], loaded: false };
+  const [cslTermPayroll, setCslTermPayroll] = useState<TermPayrollState>(emptyTermPayroll);
+  const [nlTermPayroll, setNlTermPayroll]   = useState<TermPayrollState>(emptyTermPayroll);
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -200,12 +204,43 @@ export default function ReconciliationPage() {
     loadPrevRecords();
   }, [hotelId, year, month]);
 
+  // Load payroll lines uploaded for a given hotel/period's recon upload (payroll +
+  // ftc_payroll merged, deduplicated by nameKey). Shared by the Employees cross-reference
+  // (current period only) and the Terminations tab (current period AND previous period,
+  // compared against each other — never against the DB employee list).
+  async function loadPeriodPayrollLines(hotelId: string, y: number, m: number): Promise<PayrollLine[]> {
+    const { data: periodRow } = await supabase
+      .from('reconciliation_periods')
+      .select('id')
+      .eq('hotel_id', hotelId)
+      .eq('period_year', y)
+      .eq('period_month', m)
+      .maybeSingle();
+    if (!periodRow) return [];
+
+    const [{ data: payUp }, { data: ftcUp }] = await Promise.all([
+      supabase.from('recon_uploads').select('parsed_data').eq('period_id', periodRow.id).eq('upload_type', 'payroll').maybeSingle(),
+      supabase.from('recon_uploads').select('parsed_data').eq('period_id', periodRow.id).eq('upload_type', 'ftc_payroll').maybeSingle(),
+    ]);
+    const merged: PayrollLine[] = [
+      ...((payUp?.parsed_data as any)?.lines ?? []),
+      ...((ftcUp?.parsed_data as any)?.lines ?? []),
+    ];
+    // Deduplicate by nameKey — employee may appear in both permanent and FTC uploads
+    const seen = new Set<string>();
+    return merged.filter(l => {
+      const k = nameKey(l.name);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+
   // Load Employees cross-reference for both CSL and NL independently.
-  // Triggered when the Employees or Terminations tab is opened, or year/month/hotels
-  // changes — Terminations reuses this same payroll-vs-DB comparison to find candidates.
+  // Triggered when the Employees tab is opened, or year/month/hotels changes.
   // Payroll lines come from each hotel's own recon upload (not the main hotel selector).
   useEffect(() => {
-    if ((tab !== 'crossref' && tab !== 'terminations') || !hotels.length) return;
+    if (tab !== 'crossref' || !hotels.length) return;
 
     async function loadXRef(shortCode: 'CSL' | 'NL'): Promise<HotelXRefData> {
       const hotel = hotels.find(h => h.short_code === shortCode);
@@ -226,35 +261,7 @@ export default function ReconciliationPage() {
         salaryRecords = (recs ?? []) as HotelXRefData['salaryRecords'];
       }
 
-      // Load payroll lines from this hotel's recon upload for year/month
-      const { data: periodRow } = await supabase
-        .from('reconciliation_periods')
-        .select('id')
-        .eq('hotel_id', hotel.id)
-        .eq('period_year', year)
-        .eq('period_month', month)
-        .maybeSingle();
-
-      let payrollLines: PayrollLine[] = [];
-      if (periodRow) {
-        const [{ data: payUp }, { data: ftcUp }] = await Promise.all([
-          supabase.from('recon_uploads').select('parsed_data').eq('period_id', periodRow.id).eq('upload_type', 'payroll').maybeSingle(),
-          supabase.from('recon_uploads').select('parsed_data').eq('period_id', periodRow.id).eq('upload_type', 'ftc_payroll').maybeSingle(),
-        ]);
-        const merged: PayrollLine[] = [
-          ...((payUp?.parsed_data as any)?.lines ?? []),
-          ...((ftcUp?.parsed_data as any)?.lines ?? []),
-        ];
-        // Deduplicate by nameKey — employee may appear in both permanent and FTC uploads
-        const seen = new Set<string>();
-        payrollLines = merged.filter(l => {
-          const k = nameKey(l.name);
-          if (seen.has(k)) return false;
-          seen.add(k);
-          return true;
-        });
-      }
-
+      const payrollLines = await loadPeriodPayrollLines(hotel.id, year, month);
       return { employees, salaryRecords, payrollLines, loaded: true };
     }
 
@@ -263,6 +270,34 @@ export default function ReconciliationPage() {
     Promise.all([loadXRef('CSL'), loadXRef('NL')]).then(([csl, nl]) => {
       setCslXRef(csl);
       setNlXRef(nl);
+    });
+  }, [tab, year, month, hotels]);
+
+  // Terminations: compare the current period's payroll upload against the PREVIOUS
+  // period's payroll upload only — never against the DB employee list, which stays
+  // static regardless of how many payroll-only months are uploaded and would just
+  // re-flag the same people every month. Triggered when the Terminations tab opens
+  // or year/month/hotels changes.
+  useEffect(() => {
+    if (tab !== 'terminations' || !hotels.length) return;
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevYear  = month === 1 ? year - 1 : year;
+
+    async function load(shortCode: 'CSL' | 'NL'): Promise<TermPayrollState> {
+      const hotel = hotels.find(h => h.short_code === shortCode);
+      if (!hotel) return { ...emptyTermPayroll, loaded: true };
+      const [current, previous] = await Promise.all([
+        loadPeriodPayrollLines(hotel.id, year, month),
+        loadPeriodPayrollLines(hotel.id, prevYear, prevMonth),
+      ]);
+      return { current, previous, loaded: true };
+    }
+
+    setCslTermPayroll(p => ({ ...p, loaded: false }));
+    setNlTermPayroll(p => ({ ...p, loaded: false }));
+    Promise.all([load('CSL'), load('NL')]).then(([csl, nl]) => {
+      setCslTermPayroll(csl);
+      setNlTermPayroll(nl);
     });
   }, [tab, year, month, hotels]);
 
@@ -289,16 +324,27 @@ export default function ReconciliationPage() {
     });
   }, [tab, hotels]);
 
-  async function flagTermination(shortCode: 'CSL' | 'NL', row: { dbEmployee: Employee | null }) {
+  async function flagTermination(shortCode: 'CSL' | 'NL', line: { empCode: string; name: string }) {
     const h = hotels.find(x => x.short_code === shortCode);
-    if (!h || !row.dbEmployee) return;
+    if (!h) return;
+    // employee_id is always null now (no DB employee comparison), so the table's
+    // UNIQUE(hotel_id, employee_id, ...) constraint can't catch duplicates — guard here instead.
+    const { data: dupe } = await supabase
+      .from('recon_terminations')
+      .select('id')
+      .eq('hotel_id', h.id)
+      .eq('employee_code', line.empCode || null)
+      .eq('detected_year', year)
+      .eq('detected_month', month)
+      .maybeSingle();
+    if (dupe) return;
     const { data, error } = await supabase
       .from('recon_terminations')
       .insert({
         hotel_id: h.id,
-        employee_id: row.dbEmployee.id,
-        employee_name: `${row.dbEmployee.first_name} ${row.dbEmployee.surname}`.trim(),
-        employee_code: row.dbEmployee.employee_code,
+        employee_id: null, // no DB employee comparison — this is a payroll-to-payroll diff only
+        employee_name: line.name,
+        employee_code: line.empCode || null,
         detected_year: year,
         detected_month: month,
         status: 'flagged',
@@ -996,20 +1042,34 @@ export default function ReconciliationPage() {
     return true;
   });
 
-  // ── Terminations (candidates for the selected period, per hotel) ──────────
-  // A candidate is an active DB employee absent from this period's uploaded
-  // payroll, minus anyone already flagged for this exact hotel/employee/period.
-  function terminationCandidates(xref: HotelXRefData, existing: ReconTermination[]): CrossRefRow[] {
-    const flaggedIds = new Set(
-      existing.filter(t => t.detected_year === year && t.detected_month === month).map(t => t.employee_id)
-    );
-    return buildCrossRef(xref).filter(r => r.dbEmployee && r.payBasic == null && !flaggedIds.has(r.dbEmployee.id));
+  // ── Terminations (month-to-month payroll comparison, per hotel) ───────────
+  // A candidate is anyone present in the PREVIOUS period's payroll but absent from
+  // the CURRENT period's payroll — never compared against the DB employee list, so
+  // re-uploading payroll-only months doesn't keep re-flagging the same static roster.
+  type TermCandidate = { empCode: string; name: string };
+
+  function termKey(l: PayrollLine): string {
+    return l.empCode ? l.empCode.toUpperCase() : nameKey(l.name);
   }
 
-  const cslCandidates = terminationCandidates(cslXRef, cslTerminations);
-  const nlCandidates  = terminationCandidates(nlXRef, nlTerminations);
+  function terminationCandidates(state: TermPayrollState, existing: ReconTermination[]): TermCandidate[] {
+    const curKeys = new Set(state.current.map(termKey));
+    const flaggedKeys = new Set(
+      existing
+        .filter(t => t.detected_year === year && t.detected_month === month)
+        .map(t => (t.employee_code ? t.employee_code.toUpperCase() : t.employee_name))
+    );
+    return state.previous
+      .filter(l => !curKeys.has(termKey(l)))
+      .filter(l => !flaggedKeys.has(l.empCode ? l.empCode.toUpperCase() : l.name))
+      .map(l => ({ empCode: l.empCode, name: l.name }));
+  }
+
+  const cslCandidates = terminationCandidates(cslTermPayroll, cslTerminations);
+  const nlCandidates  = terminationCandidates(nlTermPayroll, nlTerminations);
   const terminationsSubTab = crossRefSubTab; // reuse the same CSL/NL toggle as the Employees tab
   const activeCandidates    = terminationsSubTab === 'CSL' ? cslCandidates : nlCandidates;
+  const activeTermPayroll   = terminationsSubTab === 'CSL' ? cslTermPayroll : nlTermPayroll;
   const activeTerminations  = terminationsSubTab === 'CSL' ? cslTerminations : nlTerminations;
   const openTerminationsBadge = cslTerminations.filter(t => t.status === 'flagged').length
                                + nlTerminations.filter(t => t.status === 'flagged').length;
@@ -1843,9 +1903,10 @@ export default function ReconciliationPage() {
         {tab === 'terminations' && (
           <div className="space-y-6 max-w-4xl">
             <p className="text-sm text-muted-foreground">
-              The current employee list is used only as a backend comparison against each month&apos;s uploaded
-              Payroll Spreadsheet — it is never displayed here. The list below is the outcome: names not found
-              in that month&apos;s payroll. Flagging only writes to this log — it never changes the employee record itself.
+              Compares this period&apos;s uploaded Payroll Spreadsheet against the <strong>previous period&apos;s</strong> upload
+              only — never against the DB employee list, so re-uploading payroll-only months doesn&apos;t keep re-flagging
+              the same people. The list below is the outcome: names in last period&apos;s payroll that are missing this period.
+              Flagging only writes to this log — it never changes any employee record.
             </p>
 
             {/* CSL / NL sub-tabs (shared with the Employees tab) */}
@@ -1874,8 +1935,12 @@ export default function ReconciliationPage() {
               <h3 className="text-sm font-semibold mb-2">
                 {MONTH_NAMES[month - 1]} {year} — Terminations
               </h3>
-              {!(terminationsSubTab === 'CSL' ? cslXRef : nlXRef).loaded ? (
+              {!activeTermPayroll.loaded ? (
                 <p className="text-sm text-muted-foreground">Loading…</p>
+              ) : activeTermPayroll.previous.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No payroll uploaded for {terminationsSubTab}&apos;s previous period — nothing to compare against yet.
+                </p>
               ) : activeCandidates.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   No names missing from {terminationsSubTab}&apos;s payroll this period.
