@@ -321,10 +321,12 @@ export default function ReconciliationPage() {
     });
   }, [tab, year, month, hotels]);
 
-  // Load any previously-submitted approvals for the currently selected hotel/period,
-  // so ticks survive navigating away and back.
+  // Load any previously-submitted approvals for the currently selected hotel/period, so
+  // ticks survive navigating away and back. Not gated to the Employees tab — the Commit
+  // button lives in the header and needs an accurate pending count regardless of which
+  // sub-tab is open.
   useEffect(() => {
-    if (tab !== 'crossref' || !hotelId) return;
+    if (!hotelId) return;
     const code = hotels.find(h => h.id === hotelId)?.short_code;
     if (code !== 'CSL' && code !== 'NL') return;
 
@@ -1369,6 +1371,18 @@ export default function ReconciliationPage() {
             >
               Consolidation
             </button>
+            {/* Commit — admin-only, applies only to CSL/NL (the Employees tab's scope).
+                Lives here rather than inside the Employees tab content so it's always
+                reachable regardless of which sub-tab is open. */}
+            {userRole === 'admin' && (hotel?.short_code === 'CSL' || hotel?.short_code === 'NL') && (
+              <button
+                onClick={() => setShowCommitConfirm(true)}
+                disabled={pendingCommitApprovals.length === 0 || committingApprovals}
+                className="ml-1 px-3 py-1 rounded text-sm font-medium bg-red-700 text-white hover:bg-red-800 disabled:opacity-50"
+              >
+                Commit to HR List ({pendingCommitApprovals.length})
+              </button>
+            )}
           </div>
 
           {/* Status + workflow — right side */}
@@ -1406,6 +1420,52 @@ export default function ReconciliationPage() {
           </div>
         </div>
       </div>
+
+      {/* Commit confirmation popup — lives at the top level (not nested in the Employees
+          tab) since the Commit button that opens it is now in the header and reachable
+          from any sub-tab. Secondary confirm/cancel before anything is written, per
+          instruction — shows exactly what will change, including the surname/first-name
+          split for new appointments (inherently a guess from a single payroll name
+          column) so there's a last visual check before commit. */}
+      {showCommitConfirm && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-auto p-6">
+            <h3 className="text-base font-semibold mb-1">Commit to HR List?</h3>
+            <p className="text-sm text-muted-foreground mb-4">
+              This writes directly to the employees table for {employeesActiveHotel} — new appointments are
+              added, terminations are marked, basic salary changes are applied. This cannot be undone from here.
+            </p>
+            <div className="border rounded divide-y mb-4">
+              {pendingCommitApprovals.map(a => (
+                <div key={a.id} className="px-3 py-2 text-sm">
+                  {a.category === 'new_appointment' && (() => {
+                    const { surname, firstName } = splitNameForNewEmployee(a.employee_name);
+                    return <>Add employee: <strong>{firstName} {surname}</strong> (code {a.employee_code || '—'}, basic {fmt(a.detail?.basic ?? 0, country)})</>;
+                  })()}
+                  {a.category === 'termination' && <>Mark terminated: <strong>{a.employee_name}</strong></>}
+                  {a.category === 'basic_mismatch' && <>Update basic salary: <strong>{a.employee_name}</strong> → {fmt(a.detail?.currBasic ?? 0, country)}</>}
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowCommitConfirm(false)}
+                disabled={committingApprovals}
+                className="px-4 py-2 rounded text-sm font-medium border hover:bg-muted disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={commitEmployeeApprovals}
+                disabled={committingApprovals}
+                className="px-4 py-2 rounded text-sm font-medium bg-red-700 text-white hover:bg-red-800 disabled:opacity-50"
+              >
+                {committingApprovals ? 'Committing…' : 'Commit'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Tab nav — hidden while viewing Consolidation, which isn't hotel-scoped ── */}
       {tab !== 'consolidation' && (
@@ -2148,8 +2208,8 @@ export default function ReconciliationPage() {
                 </div>
 
                 {/* Consolidated submit — persists the current tick state. Purely a staging
-                    record; the admin-only Commit step below is what actually writes to
-                    employees/salary_records. */}
+                    record; the admin-only Commit button (top of page, next to the hotel
+                    pills) is what actually writes to employees/salary_records. */}
                 {employeesTabBadgeCount > 0 && (
                   <div className="flex flex-wrap items-center gap-3 pt-2 border-t">
                     <button
@@ -2167,18 +2227,6 @@ export default function ReconciliationPage() {
                         {' '}by {employeeApprovals.find(a => a.submitted_at)?.submitted_by ?? 'unknown'}
                       </span>
                     )}
-
-                    {/* Commit — admin-only. Writes approved rows straight into employees/
-                        salary_records for CSL/NL, no re-flagging afterward. */}
-                    {userRole === 'admin' && (
-                      <button
-                        onClick={() => setShowCommitConfirm(true)}
-                        disabled={pendingCommitApprovals.length === 0 || committingApprovals}
-                        className="px-4 py-2 bg-red-700 text-white rounded text-sm font-medium hover:bg-red-800 disabled:opacity-50"
-                      >
-                        Commit to HR List ({pendingCommitApprovals.length} pending)
-                      </button>
-                    )}
                     {employeeApprovals.some(a => a.committed_at) && (
                       <span className="text-xs text-green-700">
                         Last committed {new Date(
@@ -2190,49 +2238,6 @@ export default function ReconciliationPage() {
                   </div>
                 )}
 
-                {/* Commit confirmation popup — secondary confirm/cancel before anything is
-                    written, per instruction. Shows exactly what will change, including the
-                    surname/first-name split for new appointments (inherently a guess from a
-                    single payroll name column) so there's a last visual check before commit. */}
-                {showCommitConfirm && (
-                  <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-auto p-6">
-                      <h3 className="text-base font-semibold mb-1">Commit to HR List?</h3>
-                      <p className="text-sm text-muted-foreground mb-4">
-                        This writes directly to the employees table for {employeesActiveHotel} — new appointments are
-                        added, terminations are marked, basic salary changes are applied. This cannot be undone from here.
-                      </p>
-                      <div className="border rounded divide-y mb-4">
-                        {pendingCommitApprovals.map(a => (
-                          <div key={a.id} className="px-3 py-2 text-sm">
-                            {a.category === 'new_appointment' && (() => {
-                              const { surname, firstName } = splitNameForNewEmployee(a.employee_name);
-                              return <>Add employee: <strong>{firstName} {surname}</strong> (code {a.employee_code || '—'}, basic {fmt(a.detail?.basic ?? 0, country)})</>;
-                            })()}
-                            {a.category === 'termination' && <>Mark terminated: <strong>{a.employee_name}</strong></>}
-                            {a.category === 'basic_mismatch' && <>Update basic salary: <strong>{a.employee_name}</strong> → {fmt(a.detail?.currBasic ?? 0, country)}</>}
-                          </div>
-                        ))}
-                      </div>
-                      <div className="flex gap-2 justify-end">
-                        <button
-                          onClick={() => setShowCommitConfirm(false)}
-                          disabled={committingApprovals}
-                          className="px-4 py-2 rounded text-sm font-medium border hover:bg-muted disabled:opacity-50"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={commitEmployeeApprovals}
-                          disabled={committingApprovals}
-                          className="px-4 py-2 rounded text-sm font-medium bg-red-700 text-white hover:bg-red-800 disabled:opacity-50"
-                        >
-                          {committingApprovals ? 'Committing…' : 'Commit'}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
               </>
             )}
           </div>
