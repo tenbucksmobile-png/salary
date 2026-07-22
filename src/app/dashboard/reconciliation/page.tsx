@@ -329,11 +329,12 @@ export default function ReconciliationPage() {
     if (!h) return;
     // employee_id is always null now (no DB employee comparison), so the table's
     // UNIQUE(hotel_id, employee_id, ...) constraint can't catch duplicates — guard here instead.
+    // Matched by name, not code — payroll code formats can change between periods (see termKey).
     const { data: dupe } = await supabase
       .from('recon_terminations')
       .select('id')
       .eq('hotel_id', h.id)
-      .eq('employee_code', line.empCode || null)
+      .eq('employee_name', line.name)
       .eq('detected_year', year)
       .eq('detected_month', month)
       .maybeSingle();
@@ -1048,8 +1049,12 @@ export default function ReconciliationPage() {
   // re-uploading payroll-only months doesn't keep re-flagging the same static roster.
   type TermCandidate = { empCode: string; name: string };
 
+  // Match by name, not employee code — a hotel's payroll provider can change code
+  // formats between periods (observed for NL: "NL0020"-style in one month, "BAB001"
+  // mnemonic-style the next), which would otherwise make every employee look like a
+  // termination even though nothing actually changed.
   function termKey(l: PayrollLine): string {
-    return l.empCode ? l.empCode.toUpperCase() : nameKey(l.name);
+    return nameKey(l.name);
   }
 
   function terminationCandidates(state: TermPayrollState, existing: ReconTermination[]): TermCandidate[] {
@@ -1057,11 +1062,11 @@ export default function ReconciliationPage() {
     const flaggedKeys = new Set(
       existing
         .filter(t => t.detected_year === year && t.detected_month === month)
-        .map(t => (t.employee_code ? t.employee_code.toUpperCase() : t.employee_name))
+        .map(t => nameKey(t.employee_name))
     );
     return state.previous
       .filter(l => !curKeys.has(termKey(l)))
-      .filter(l => !flaggedKeys.has(l.empCode ? l.empCode.toUpperCase() : l.name))
+      .filter(l => !flaggedKeys.has(nameKey(l.name)))
       .map(l => ({ empCode: l.empCode, name: l.name }));
   }
 
