@@ -347,8 +347,16 @@ export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise
 }
 
 // ── Bodulo funeral scheme .xlsx policy list ───────────────────────────────────
-// Header at row 0.
-// Col 4 = Custom Policy Number (employee code), Col 9 = Premium Due
+// Column positions vary — the original policy-list export (Custom Policy Number as
+// empCode, Premium Due amount, a bottom "TOTAL TO PAY" summary block) has been seen
+// alongside much simpler flat exports uploaded to this same slot for other
+// funeral/life-insurance-style products (e.g. an Afritec-branded life insurance list
+// with just Employee Number/Name/Surname/Premium Due columns and no summary block at
+// all) — columns are detected from the header row by keyword, with the original
+// hardcoded positions ([4] Custom Policy Number, [9] Premium Due) kept only as a
+// fallback when no header row can be located at all. Unlike the legacy layout (which
+// has no name column — empCode is repeated into `name` for display only), a detected
+// Name/Surname column is used for the real employee name when present.
 
 export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<ParsedStatement> {
   const XLSX = await getXLSX();
@@ -356,32 +364,53 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-  // Detect header row
+  const codeColPattern = /custom|policy.?id|employee.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|staff\.?\s*no\.?|payroll\.?\s*no\.?|^\s*code\s*$/i;
   const headerIdx = rows.findIndex(r =>
-    String(r[4] || '').toLowerCase().includes('custom') ||
-    String(r[0] || '').toLowerCase() === 'policyid',
+    r.some((c: any) => codeColPattern.test(String(c || '').trim())),
   );
   const dataStart = headerIdx >= 0 ? headerIdx + 1 : 1;
+  const hRow = rows[headerIdx >= 0 ? headerIdx : 0] || [];
+
+  function col(pattern: RegExp): number {
+    return hRow.findIndex((c: any) => pattern.test(String(c || '').trim()));
+  }
+  const colCodeFound = col(codeColPattern);
+  const colAmtFound = col(/premium\s*due|^amount$|^deduction$/i);
+  const colSur = col(/surname/i);
+  const colFirstNamed = col(/first.?name|forename/i);
+  const colBareName = col(/^(?:full\s*)?name$/i);
+  const colCombinedName = col(/^employee\s*name$|^customer\s*name$/i);
+  // Same bare-"Name"-vs-"Surname" ambiguity handling as parseAfritecXls — see there.
+  const colFullName = colCombinedName >= 0 ? colCombinedName : (colSur < 0 ? colBareName : -1);
+  const colFirst = colFirstNamed >= 0 ? colFirstNamed : (colSur >= 0 ? colBareName : -1);
+
+  const colCode = colCodeFound >= 0 ? colCodeFound : 4;
+  const colAmt = colAmtFound >= 0 ? colAmtFound : -1;
 
   const lines: ReconLine[] = [];
   const unmatchedLines: ReconLine[] = [];
 
   for (let i = dataStart; i < rows.length; i++) {
     const row = rows[i];
-    // Stop when we hit the summary block (no PolicyId, has label text)
-    if (!row[0] && String(row[5] || '').length > 0) continue;
-    if (!row[0]) continue;
+    // Stop when we hit the legacy layout's summary block (no code, has label text) —
+    // harmless no-op for the simpler layout, which has no such block.
+    if (!row[colCode] && String(row[5] || '').length > 0) continue;
+    if (!row[colCode]) continue;
 
-    const rawCode = String(row[4] || '').trim();
-    const amount = Number(row[9]) || Number(row[3]) || 0;
+    const rawCode = String(row[colCode] || '').trim();
+    const amount = colAmt >= 0 ? Number(row[colAmt]) || 0 : (Number(row[9]) || Number(row[3]) || 0);
     if (!rawCode || amount <= 0) continue;
 
-    const line: ReconLine = { empCode: normalizeCode(rawCode), name: rawCode, amount };
-    // Unmatched = codes with spaces or non-standard format that won't match payroll
+    const name = colFullName >= 0
+      ? String(row[colFullName] || '').trim()
+      : (colFirst >= 0 || colSur >= 0)
+        ? `${String(row[colFirst] ?? '')} ${String(row[colSur] ?? '')}`.trim()
+        : rawCode; // legacy policy list has no name column — repeat the code for display
+    const line: ReconLine = { empCode: normalizeCode(rawCode), name, amount };
     lines.push(line);
   }
 
-  // "TOTAL TO PAY" is in col[6] of the summary block at the bottom
+  // "TOTAL TO PAY" is in col[6] of the legacy layout's summary block at the bottom
   let total = 0;
   for (let i = rows.length - 1; i >= 0; i--) {
     if (String(rows[i][5] || '').toLowerCase().includes('total to pay')) {
