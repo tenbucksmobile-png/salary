@@ -265,14 +265,16 @@ export async function parseAfritecXls(
 
 // ── Furnmart .xlsx purchase deductions ─────────────────────────────────────
 // Column positions vary across hotel/month exports (a richer multi-SEQ format with
-// Contract/Balance/SEQ/TOTAL columns has been seen alongside a much simpler flat
-// EMP NO / Name / Surname / Deduction export with one row per employee and no TOTAL
-// column at all) — columns are detected from the header row by keyword rather than
-// hardcoded positions, with the original multi-SEQ layout's fixed indices (1,2,3,10,11)
-// kept as a fallback only for the rare case the header row itself can't be located.
+// Contract/Balance/SEQ/TOTAL columns has been seen alongside much simpler flat exports
+// with one row per employee and no TOTAL column at all — either EMP NO/Name/Surname/
+// Deduction, or a bare Code/SURNAME/NAME/Amount variant) — columns are detected from
+// the header row by keyword rather than hardcoded positions, with the original
+// multi-SEQ layout's fixed indices (1,2,3,10,11) kept as a fallback only for the rare
+// case the header row itself can't be located.
 // When a TOTAL column exists, it's only populated on the LAST contract row per
-// employee (multi-SEQ accumulation); when there's no TOTAL column, DEDUCTION is the
-// final per-employee amount directly (one row per employee, nothing to accumulate).
+// employee (multi-SEQ accumulation); when there's no TOTAL column, DEDUCTION (or
+// Amount) is the final per-employee amount directly (one row per employee, nothing
+// to accumulate).
 
 export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise<ParsedStatement> {
   const XLSX = await getXLSX();
@@ -280,8 +282,9 @@ export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
+  const empColPattern = /emp\.?\s*no\.?|^\s*code\s*$/i;
   const headerIdx = rows.findIndex(r =>
-    r.some((c: any) => /emp\.?\s*no\.?/i.test(String(c || '').trim())),
+    r.some((c: any) => empColPattern.test(String(c || '').trim())),
   );
   const dataStart = headerIdx >= 0 ? headerIdx + 1 : 8;
   const hRow = rows[headerIdx >= 0 ? headerIdx : 0] || [];
@@ -289,10 +292,10 @@ export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise
   function col(pattern: RegExp): number {
     return hRow.findIndex((c: any) => pattern.test(String(c || '').trim()));
   }
-  const colEmpFound = col(/emp\.?\s*no\.?/i);
+  const colEmpFound = col(empColPattern);
   const colNameFound = col(/^name$/i);
   const colSurnameFound = col(/surname/i);
-  const colDeductionFound = col(/deduction/i);
+  const colDeductionFound = col(/deduction|^amount$/i);
   const colTotal = col(/^total$/i); // -1 when this format has no separate TOTAL column
 
   const colEmp = colEmpFound >= 0 ? colEmpFound : 1;
