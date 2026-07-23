@@ -108,6 +108,14 @@ const CFEM_VENDOR_TO_TYPE: Record<string, 'furnmart' | 'afritec' | 'topline' | '
   'CB Stores': 'cbstores',
   'Afri Insurance': 'bodulo',
 };
+// Case-insensitive index of the map above — CFEM's export casing for a "LIST OF: <Vendor>"
+// label isn't guaranteed to match these labels exactly (e.g. "FURNMART" vs "Furnmart"), and
+// an exact-key miss here silently drops that vendor's section rather than erroring.
+const CFEM_VENDOR_TO_TYPE_UPPER: Record<string, 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo'> =
+  Object.fromEntries(Object.entries(CFEM_VENDOR_TO_TYPE).map(([k, v]) => [k.toUpperCase(), v]));
+function lookupCfemVendorType(vendor: string) {
+  return CFEM_VENDOR_TO_TYPE_UPPER[vendor.trim().toUpperCase()];
+}
 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -415,7 +423,7 @@ export default function ReconciliationPage() {
         const cfem = byType.get('cfem_deductions') as ParsedCfemDeductions | undefined;
         const totals: SystemTotals = { ...emptySystemTotals, basic_salary: null };
         cfem?.sections.forEach(sec => {
-          const t = CFEM_VENDOR_TO_TYPE[sec.vendor];
+          const t = lookupCfemVendorType(sec.vendor);
           if (t) totals[t] = sec.total;
         });
         // Pension isn't part of the combined CFEM Deductions Summary — it's its own upload.
@@ -661,7 +669,7 @@ export default function ReconciliationPage() {
   const cfemStatements: Partial<Record<'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo', ParsedStatement>> = {};
   if (cfemParsed) {
     for (const section of cfemParsed.sections) {
-      const vendorType = CFEM_VENDOR_TO_TYPE[section.vendor];
+      const vendorType = lookupCfemVendorType(section.vendor);
       if (!vendorType) continue; // e.g. "Taku" — no equivalent slot yet
       cfemStatements[vendorType] = {
         uploadType: vendorType,

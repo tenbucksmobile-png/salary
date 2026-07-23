@@ -80,12 +80,18 @@ async function getXLSX() {
 function sectionMatchesHotel(label: string, hotelCode: string): boolean {
   if (!hotelCode) return true;
   const l = label.toUpperCase().replace(/\s+/g, ' ');
+  // Uppercase defensively — callers pass hotels.short_code, which is DB-stored casing
+  // and not guaranteed uppercase everywhere it's read from.
+  const code = hotelCode.toUpperCase().trim();
   // Always include management sections — they appear on CSL/NL statements but belong
   // to CFE Management payroll; isMgt() separates them downstream
   if (/mgmt|management/i.test(l)) return true;
-  if (hotelCode === 'CSL') return l.startsWith('CSL');
-  if (hotelCode === 'NL')  return l.startsWith('NSL') || l.startsWith('NL ');
-  if (hotelCode === 'CFE') return l.startsWith('CFE');
+  if (code === 'CSL') return l.startsWith('CSL');
+  if (code === 'NL')  return l.startsWith('NSL') || l.startsWith('NL ');
+  // CFE Management's hotels.short_code is "CFEM", not "CFE" — match both in case a
+  // section label itself is ever prefixed with the shorter "CFE" (as CB/Topline's own
+  // CFE-labelled sections are), while still accepting the real short_code as input.
+  if (code === 'CFEM' || code === 'CFE') return l.startsWith('CFE');
   return true;
 }
 
@@ -653,7 +659,9 @@ export function parseCfemDeductions(text: string, fileName: string): ParsedCfemD
     const [n1, n2, n3] = nums;
     const codeMatch = line.match(/^\s*(\S+)/);
     if (!codeMatch) continue;
-    const empCode = codeMatch[1];
+    // Normalised the same way as every other parser's empCode (trim + uppercase) so
+    // downstream case-insensitive code lookups (e.g. cfeCodeIndex) don't need to guess.
+    const empCode = normalizeCode(codeMatch[1]);
     const name = line.slice(codeMatch[0].length, n1.index).replace(/\s+/g, ' ').trim();
     current.lines.push({
       empCode,
