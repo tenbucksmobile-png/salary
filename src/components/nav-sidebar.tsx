@@ -2,31 +2,59 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Users, Upload, TrendingUp, Settings, Shield, BarChart2, ClipboardCheck, CalendarClock } from 'lucide-react';
+import {
+  LayoutDashboard, Users, Upload, TrendingUp, Settings, Shield, BarChart2,
+  ClipboardCheck, CalendarClock, ShieldCheck, Gift, HandCoins,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { DEFAULT_SUB_TABS, type TabKey } from '@/lib/auth';
 
-const ADMIN_NAV = [
-  { label: 'Dashboard',        href: '/dashboard',               icon: LayoutDashboard },
-  { label: 'Employees',        href: '/dashboard/employees',     icon: Users },
-  { label: 'Leave Provision',  href: '/dashboard/leave-provision', icon: CalendarClock },
-  { label: 'Import HR List',   href: '/dashboard/import',        icon: Upload },
-  { label: 'Salary Review',    href: '/dashboard/salary-review', icon: TrendingUp },
-  { label: 'Reports',          href: '/dashboard/reports',       icon: BarChart2 },
-  { label: 'Reconciliation',   href: '/dashboard/reconciliation', icon: ClipboardCheck },
-  { label: 'Methods',          href: '/dashboard/methods',       icon: Settings },
-  { label: 'Access',           href: '/dashboard/access',        icon: Shield },
-];
+interface NavItem {
+  label: string;
+  href: string;
+  icon: typeof Users;
+  key: TabKey | 'salaryReview' | 'access' | 'wca' | 'bonus' | 'severance';
+  adminOnly?: boolean;
+}
 
-// Configurable per sub user — key must match CONFIGURABLE_TABS in src/lib/auth.ts
-const SUB_NAV: { key: TabKey; label: string; href: string; icon: typeof Users }[] = [
-  { key: 'dashboard',      label: 'Dashboard',      href: '/dashboard',               icon: LayoutDashboard },
-  { key: 'employees',      label: 'Employees',      href: '/dashboard/employees',     icon: Users },
-  { key: 'leaveProvision', label: 'Leave Provision', href: '/dashboard/leave-provision', icon: CalendarClock },
-  { key: 'import',         label: 'Import HR List',  href: '/dashboard/import',        icon: Upload },
-  { key: 'reconciliation', label: 'Reconciliation',  href: '/dashboard/reconciliation', icon: ClipboardCheck },
-  { key: 'reports',        label: 'Reports',        href: '/dashboard/reports',       icon: BarChart2 },
-  { key: 'methods',        label: 'Methods',        href: '/dashboard/methods',       icon: Settings },
+interface NavGroup {
+  heading: string;
+  items: NavItem[];
+}
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    heading: 'HR LIST',
+    items: [
+      { label: 'Dashboard',      href: '/dashboard',               icon: LayoutDashboard, key: 'dashboard' },
+      { label: 'Employees',      href: '/dashboard/employees',     icon: Users,           key: 'employees' },
+      { label: 'Reconciliation', href: '/dashboard/reconciliation', icon: ClipboardCheck, key: 'reconciliation' },
+    ],
+  },
+  {
+    heading: 'BUDGET',
+    items: [
+      { label: 'Salary Review', href: '/dashboard/salary-review', icon: TrendingUp, key: 'salaryReview', adminOnly: true },
+    ],
+  },
+  {
+    heading: 'PROVISIONS',
+    items: [
+      { label: 'Leave',      href: '/dashboard/leave-provision', icon: CalendarClock, key: 'leaveProvision' },
+      { label: 'WCA',        href: '/dashboard/provisions/wca',        icon: ShieldCheck, key: 'wca' },
+      { label: 'Bonus',      href: '/dashboard/provisions/bonus',      icon: Gift,         key: 'bonus' },
+      { label: 'Severance',  href: '/dashboard/provisions/severance',  icon: HandCoins,    key: 'severance' },
+    ],
+  },
+  {
+    heading: 'FUNCTION',
+    items: [
+      { label: 'Methods',        href: '/dashboard/methods', icon: Settings,   key: 'methods' },
+      { label: 'Reports',        href: '/dashboard/reports', icon: BarChart2,  key: 'reports' },
+      { label: 'Access',         href: '/dashboard/access',  icon: Shield,     key: 'access', adminOnly: true },
+      { label: 'Import HR List', href: '/dashboard/import',  icon: Upload,     key: 'import' },
+    ],
+  },
 ];
 
 interface NavSidebarProps {
@@ -38,7 +66,15 @@ interface NavSidebarProps {
 export function NavSidebar({ role, username, allowedTabs }: NavSidebarProps) {
   const pathname = usePathname();
   const tabs = allowedTabs ?? DEFAULT_SUB_TABS;
-  const nav = role === 'admin' ? ADMIN_NAV : SUB_NAV.filter(item => tabs.includes(item.key));
+
+  const groups = NAV_GROUPS.map(group => ({
+    heading: group.heading,
+    items: group.items.filter(item => {
+      if (role === 'admin') return true;
+      if (item.adminOnly) return false;
+      return tabs.includes(item.key as TabKey);
+    }),
+  })).filter(group => group.items.length > 0);
 
   return (
     <aside className="w-60 shrink-0 border-r bg-white flex flex-col min-h-screen">
@@ -50,25 +86,34 @@ export function NavSidebar({ role, username, allowedTabs }: NavSidebarProps) {
         <p className="text-lg font-bold text-foreground leading-tight">Salary Manager</p>
       </div>
 
-      <nav className="flex-1 px-3 py-4 space-y-0.5">
-        {nav.map(({ label, href, icon: Icon }) => {
-          const active = pathname === href || (href !== '/dashboard' && pathname.startsWith(href));
-          return (
-            <Link
-              key={href}
-              href={href}
-              className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                active
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-              )}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              <span>{label}</span>
-            </Link>
-          );
-        })}
+      <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
+        {groups.map(group => (
+          <div key={group.heading}>
+            <p className="px-2 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {group.heading}
+            </p>
+            <div className="rounded-lg border border-border bg-muted/30 p-1 shadow-sm">
+              {group.items.map(({ label, href, icon: Icon }) => {
+                const active = pathname === href || (href !== '/dashboard' && pathname.startsWith(href));
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    className={cn(
+                      'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                      active
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-white hover:text-foreground',
+                    )}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span>{label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
 
       <div className="px-6 py-4 border-t space-y-1">
