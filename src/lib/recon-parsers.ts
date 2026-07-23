@@ -178,20 +178,18 @@ export async function parseAfritecXls(
   const unmatchedLines: ReconLine[] = [];
   let stmtTotal = 0;
 
-  // Find header row — matches Afritec/Topline ("Employee Number/No") and
-  // CB Stores-style files ("Emp No", "Staff No", "Payroll No")
+  // Find header row — matches Afritec/Topline ("Employee Number/No"), CB Stores-style
+  // files ("Emp No", "Staff No", "Payroll No"), and simpler exports that just use a bare
+  // "Code" column (e.g. a plain Code/Name/Amount statement with no title rows above it).
+  const empColPattern = /employee.?n(?:umber|o\.?)|emp\.?\s*no\.?|staff\.?\s*no\.?|payroll\.?\s*no\.?|^\s*code\s*$/i;
   const headerIdx = rows.findIndex(r =>
-    r.some((c: any) =>
-      /employee.?n(?:umber|o\.?)|emp\.?\s*no\.?|staff\.?\s*no\.?|payroll\.?\s*no\.?/i.test(String(c || '')),
-    ),
+    r.some((c: any) => empColPattern.test(String(c || ''))),
   );
   const dataStart = headerIdx >= 0 ? headerIdx + 1 : 3;
 
   // Detect column indices from header
   const hRow = rows[headerIdx >= 0 ? headerIdx : 2] || [];
-  const colEmp = hRow.findIndex((c: any) =>
-    /employee.?n(?:umber|o\.?)|emp\.?\s*no\.?|staff\.?\s*no\.?|payroll\.?\s*no\.?/i.test(String(c || '')),
-  );
+  const colEmp = hRow.findIndex((c: any) => empColPattern.test(String(c || '')));
   // Afritec/Topline: "Regular Instalment"; CB Stores: "Amount", "Deduction", "Monthly Amount" etc.
   const colAmt = hRow.findIndex((c: any) =>
     /regular.?instal|instalment|^amount$|^deduction$|^monthly\s+(?:amount|inst)|amount\s+due|^due$/i.test(String(c || '')),
