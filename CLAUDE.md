@@ -463,9 +463,12 @@ Grand Total row uses `SUM(G{first}:G{last})` etc. so it aggregates live hotel va
 | Furnmart Deductions | `furnmart` | `.xlsx` | Multi-SEQ rows per employee |
 | CB Stores Deductions | `cbstores` | `.xls/.xlsx` | Optional; omit if no deductions that month |
 | Bodulo Funeral Scheme | `bodulo` | `.xlsx` | Policy list |
-| CFEM Deductions Summary | `cfem_deductions` | `.csv/.txt` | **CFEM only** — replaces all of the above (including Payroll Spreadsheet) for that hotel; see "CFE Management" below |
+| Pension Contributions | `pension` | `.xls/.xlsx` | Monthly pension/provident fund statement; **uploaded per hotel, including CFEM** — unlike the other 5 vendors, pension is never mixed into CSL's/NL's shared statements, so it isn't part of the CFEM Deductions Summary or the CFE Cross-Reference below |
+| CFEM Deductions Summary | `cfem_deductions` | `.csv/.txt` | **CFEM only** — replaces the 5 shared-vendor slots above (Afritec/Topline/Furnmart/CB Stores/Bodulo) and Payroll Spreadsheet for that hotel; see "CFE Management" below |
 
-Re-uploading any slot replaces it (upsert on `period_id, upload_type`). `visibleUploadConfigs` filters which slots render per hotel: CFEM sees only `cfem_deductions` (`CFEM_UPLOAD_TYPES`) — no other slot, since Payroll Spreadsheet is a salary document CFEM must never upload here. Every other hotel sees everything except `cfem_deductions` (`NON_CFEM_UPLOAD_TYPES`).
+Re-uploading any slot replaces it (upsert on `period_id, upload_type`). `visibleUploadConfigs` filters which slots render per hotel: CFEM sees `cfem_deductions` + `pension` (`CFEM_UPLOAD_TYPES`) — no other slot, since Payroll Spreadsheet is a salary document CFEM must never upload here. Every other hotel sees everything except `cfem_deductions` (`NON_CFEM_UPLOAD_TYPES`).
+
+Pension falls through to the generic `parseAfritecXls` catch-all in `handleUpload` like any other new vendor (see "Parsers" below) and is cross-checked against payroll's `pensionEe` column (already parsed by `parsePayrollXlsx`, detected via `/pension.?ee|4010/`) exactly like Furnmart/Bodulo — code-based matching only, no `matchByName` handling (unlike CB Stores/Topline).
 
 **Parsers** (`src/lib/recon-parsers.ts`):
 - `parseAfritecXls(buf, fileName, uploadType, hotelCode)` — detects header by keyword; col 5 = Employee Number, col 10 = Regular Instalment. **If the file contains a "CUSTOMER NAME" header row it delegates to `parseCbToplineFormat`** — so this function is the catch-all for afritec, topline, and cbstores. Dispatch in `handleUpload`: `payroll`→`parsePayrollXlsx`, `furnmart`→`parseFurnmart`, `bodulo`→`parseBodulo`, all others→`parseAfritecXls(buf, name, type, hotelCode)`
@@ -484,7 +487,7 @@ All parsers are async and dynamically import `xlsx-js-style` (avoids SSR issues 
 **Deductions Check tab**: requires payroll upload. Page loads on CSL by default. Shows:
 1. **Orange callout** (top) — statement entries that could not be matched to any payroll employee by code or name. Entries resolved by the second-pass name match are excluded from this callout.
 2. **Summary table** — statement total vs payroll total + difference per vendor.
-3. **Employee Detail table** — colour-coded vendor filter tabs (All / Furnmart / Afritec / Topline / CB Stores / Bodulo). Each tab filters both columns AND rows — clicking Furnmart shows only employees with a Furnmart deduction. Only employees with at least one non-zero deduction are shown.
+3. **Employee Detail table** — colour-coded vendor filter tabs (All / Furnmart / Afritec / Topline / CB Stores / Bodulo / Pension). Each tab filters both columns AND rows — clicking Furnmart shows only employees with a Furnmart deduction. Only employees with at least one non-zero deduction are shown.
 4. **Management (CFE) section** (below staff table) — employees from MGMT-labelled sections of CB Stores / Topline statements, shown separately (no payroll comparison; these are CFE Management employees on a separate payroll).
 
 **Employee matching in the Deductions Check tab** uses a two-pass strategy:
@@ -557,8 +560,8 @@ Spans **all three hotels** (CSL, NL, CFEM) for one month at once, independent of
 
 **Entry point lives in the header, next to the hotel pills** (not in the per-hotel tab row below) — it isn't scoped to any one hotel, so it doesn't belong alongside Upload/Deductions Check/Employees. Clicking it sets `tab = 'consolidation'`, which hides the entire per-hotel tab row (Upload/Deductions Check/Employees) since none of them apply while viewing it; clicking any hotel pill while on Consolidation switches back to that hotel's Upload tab.
 
-Six line items (`LINE_ITEMS`): Basic Salary, Furnmart, Afritec, Topline, CB Stores, Bodulo/Afri Insurance. For each (hotel, line item) pair, three columns:
-- **System** — auto-computed from whatever's already parsed for that period: CSL/NL's Basic Salary sums `payroll` + `ftc_payroll` line `.basic`; CSL/NL's vendor totals read each statement upload's `.total`; CFEM's vendor totals come from `cfem_deductions`' per-section totals via `CFEM_VENDOR_TO_TYPE`. **CFEM's Basic Salary has no automatic source at all** (CFEM's payroll is never uploaded here, by design) — that one cell is the sole exception, and becomes an editable manual entry instead (`consolidationIsManualSystem()` returns true only for `CFEM` + `basic_salary`).
+**Table orientation**: rows are the three hotels (CSL, NL, CFEM), each spanning 3 sub-rows (System / Bank Upload / Balance Differential, via `rowSpan`); columns are the 7 line items (`LINE_ITEMS`): Basic Salary, Furnmart, Afritec, Topline, CB Stores, Bodulo/Afri Insurance, Pension — plus a Total column. A matching Total row group at the bottom sums across all 3 hotels per line item. The Excel export (`handleExportConsolidation`) mirrors this exact layout (one row per hotel per sub-row, one column per line item).
+- **System** — auto-computed from whatever's already parsed for that period: CSL/NL's Basic Salary sums `payroll` + `ftc_payroll` line `.basic`; CSL/NL's vendor totals (including Pension) read each statement upload's `.total`; CFEM's vendor totals come from `cfem_deductions`' per-section totals via `CFEM_VENDOR_TO_TYPE`, **except Pension**, which CFEM uploads directly (its own `pension` upload slot, not part of the combined `cfem_deductions` report) and is read via `get('pension')` the same way as CSL/NL. **CFEM's Basic Salary has no automatic source at all** (CFEM's payroll is never uploaded here, by design) — that one cell is the sole exception across all hotels/line items, and becomes an editable manual entry instead (`consolidationIsManualSystem()` returns true only for `CFEM` + `basic_salary`).
 - **Bank** — always a manual entry, reflecting what was actually paid to the bank for that line item.
 - **Diff** — System − Bank; should be zero once the release is confirmed.
 

@@ -75,6 +75,11 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
     payrollKey: 'bodulo',
   },
   {
+    type: 'pension', label: 'Pension Contributions', required: false,
+    accept: '.xls,.xlsx', desc: 'Monthly pension/provident fund contribution statement (.xls) — uploaded per hotel, including CFEM',
+    payrollKey: 'pensionEe',
+  },
+  {
     type: 'cfem_deductions', label: 'CFEM Deductions Summary', required: true,
     accept: '.csv,.txt', desc: 'Combined per-vendor deductions report exported from the CFEM payroll system',
     payrollKey: null,
@@ -84,7 +89,10 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
 // CFEM has its own confidential payroll and never uploads any salary data here —
 // its single combined deductions report is the only upload slot shown ("12 Months
 // Payroll Report" is also a salary document, so it's excluded too, not just Payroll Spreadsheet).
-const CFEM_UPLOAD_TYPES: ReconUploadType[] = ['cfem_deductions'];
+// Pension Contributions is the one exception: unlike the other 5 vendors (which arrive mixed
+// into CSL's/NL's shared statements for CFE), pension is administered directly per hotel, so
+// CFEM gets its own upload slot for it too, alongside the combined deductions report.
+const CFEM_UPLOAD_TYPES: ReconUploadType[] = ['cfem_deductions', 'pension'];
 const NON_CFEM_UPLOAD_TYPES: ReconUploadType[] = UPLOAD_CONFIGS
   .map(c => c.type)
   .filter(t => t !== 'cfem_deductions');
@@ -144,7 +152,7 @@ export default function ReconciliationPage() {
   const [period, setPeriod] = useState<ReconciliationPeriod | null>(null);
   const [uploads, setUploads] = useState<ReconUpload[]>([]);
   const [tab, setTab] = useState<'upload' | 'deductions' | 'crossref' | 'consolidation'>('upload');
-  const [dedFilter, setDedFilter] = useState<'all' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo'>('all');
+  const [dedFilter, setDedFilter] = useState<'all' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo' | 'pension'>('all');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null);
@@ -195,16 +203,16 @@ export default function ReconciliationPage() {
   // three hotels for the selected month regardless of the main hotel selector.
   type ConsolidationHotel = 'CSL' | 'NL' | 'CFEM';
   const CONSOLIDATION_HOTELS: ConsolidationHotel[] = ['CSL', 'NL', 'CFEM'];
-  type LineItem = 'basic_salary' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo';
-  const LINE_ITEMS: LineItem[] = ['basic_salary', 'furnmart', 'afritec', 'topline', 'cbstores', 'bodulo'];
+  type LineItem = 'basic_salary' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo' | 'pension';
+  const LINE_ITEMS: LineItem[] = ['basic_salary', 'furnmart', 'afritec', 'topline', 'cbstores', 'bodulo', 'pension'];
   const LINE_ITEM_LABELS: Record<LineItem, string> = {
     basic_salary: 'Basic Salary', furnmart: 'Furnmart', afritec: 'Afritec',
-    topline: 'Topline', cbstores: 'CB Stores', bodulo: 'Bodulo / Afri Insurance',
+    topline: 'Topline', cbstores: 'CB Stores', bodulo: 'Bodulo / Afri Insurance', pension: 'Pension',
   };
   // null = no automatic source in this app for that line item (only CFEM's Basic Salary,
   // since CFEM payroll is never uploaded here) — falls back to a manual system_amount entry.
   type SystemTotals = Record<LineItem, number | null>;
-  const emptySystemTotals: SystemTotals = { basic_salary: 0, furnmart: 0, afritec: 0, topline: 0, cbstores: 0, bodulo: 0 };
+  const emptySystemTotals: SystemTotals = { basic_salary: 0, furnmart: 0, afritec: 0, topline: 0, cbstores: 0, bodulo: 0, pension: 0 };
   const [consolidationSystem, setConsolidationSystem] = useState<Record<ConsolidationHotel, SystemTotals> & { loaded: boolean }>({
     CSL: emptySystemTotals, NL: emptySystemTotals, CFEM: emptySystemTotals, loaded: false,
   });
@@ -401,6 +409,8 @@ export default function ReconciliationPage() {
         .eq('period_id', periodRow.id);
       const byType = new Map((ups ?? []).map((u: any) => [u.upload_type, u.parsed_data]));
 
+      const get = (t: string) => (byType.get(t) as ParsedStatement | undefined)?.total ?? 0;
+
       if (shortCode === 'CFEM') {
         const cfem = byType.get('cfem_deductions') as ParsedCfemDeductions | undefined;
         const totals: SystemTotals = { ...emptySystemTotals, basic_salary: null };
@@ -408,6 +418,8 @@ export default function ReconciliationPage() {
           const t = CFEM_VENDOR_TO_TYPE[sec.vendor];
           if (t) totals[t] = sec.total;
         });
+        // Pension isn't part of the combined CFEM Deductions Summary — it's its own upload.
+        totals.pension = get('pension');
         return totals;
       }
 
@@ -415,11 +427,10 @@ export default function ReconciliationPage() {
       const ftc = byType.get('ftc_payroll') as ParsedPayroll | undefined;
       const basicSalary = (payroll?.lines.reduce((s, l) => s + l.basic, 0) ?? 0)
                          + (ftc?.lines.reduce((s, l) => s + l.basic, 0) ?? 0);
-      const get = (t: string) => (byType.get(t) as ParsedStatement | undefined)?.total ?? 0;
       return {
         basic_salary: basicSalary,
         furnmart: get('furnmart'), afritec: get('afritec'), topline: get('topline'),
-        cbstores: get('cbstores'), bodulo: get('bodulo'),
+        cbstores: get('cbstores'), bodulo: get('bodulo'), pension: get('pension'),
       };
     }
 
@@ -632,6 +643,7 @@ export default function ReconciliationPage() {
     furnmart:     (payroll?.totals.furnmart     ?? 0) + (ftcPayroll?.totals.furnmart     ?? 0),
     cbStores:     (payroll?.totals.cbStores     ?? 0) + (ftcPayroll?.totals.cbStores     ?? 0),
     bodulo:       (payroll?.totals.bodulo       ?? 0) + (ftcPayroll?.totals.bodulo       ?? 0),
+    pensionEe:    (payroll?.totals.pensionEe    ?? 0) + (ftcPayroll?.totals.pensionEe    ?? 0),
     staffLoans:   (payroll?.totals.staffLoans   ?? 0) + (ftcPayroll?.totals.staffLoans   ?? 0),
     afritecLoans: (payroll?.totals.afritecLoans ?? 0) + (ftcPayroll?.totals.afritecLoans ?? 0),
     toplineLoans: (payroll?.totals.toplineLoans ?? 0) + (ftcPayroll?.totals.toplineLoans ?? 0),
@@ -666,6 +678,9 @@ export default function ReconciliationPage() {
   const toplineStmt  = isCfem ? cfemStatements.topline  : getStmt('topline');
   const cbStmt       = isCfem ? cfemStatements.cbstores : getStmt('cbstores');
   const boduloStmt   = isCfem ? cfemStatements.bodulo   : getStmt('bodulo');
+  // Pension is uploaded directly for every hotel including CFEM (unlike the 5 vendors
+  // above, it's never mixed into CSL's/NL's shared statements), so no CFEM ternary needed.
+  const pensionStmt  = getStmt('pension');
 
   // Determine if payroll has separate columns per lender (vs one combined staffLoans)
   const payrollHasSeparateLoanCols = mergedTotals.afritecLoans > 0 || mergedTotals.toplineLoans > 0;
@@ -736,6 +751,13 @@ export default function ReconciliationPage() {
       pay: isCfem ? null : mergedTotals.bodulo,
       diff: isCfem ? null : boduloStmt.total - mergedTotals.bodulo,
     });
+
+    if (pensionStmt) summaryRows.push({
+      label: 'Pension',
+      stmt: pensionStmt.total,
+      pay: isCfem ? null : mergedTotals.pensionEe,
+      diff: isCfem ? null : pensionStmt.total - mergedTotals.pensionEe,
+    });
   }
 
   // Per-employee cross-check: union of all employee codes
@@ -748,6 +770,7 @@ export default function ReconciliationPage() {
     topline_stmt: number | null;  topline_pay: number | null;
     cb_stmt: number | null;       cb_pay: number | null;
     bodulo_stmt: number | null;   bodulo_pay: number | null;
+    pension_stmt: number | null;  pension_pay: number | null;
   }
 
   function buildEmpMap<T extends ReconLine>(lines?: T[]): Map<string, T> {
@@ -767,6 +790,7 @@ export default function ReconciliationPage() {
   const toplineMap = buildEmpMap(toplineStmt?.lines);
   const cbMap      = buildEmpMap(cbStmt?.lines);
   const boduloMap  = buildEmpMap(boduloStmt?.lines);
+  const pensionMap = buildEmpMap(pensionStmt?.lines);
 
   // Code-based allCodes excludes name-matched statements (their keys aren't hotel emp codes)
   const allCodes = new Set<string>([
@@ -776,6 +800,7 @@ export default function ReconciliationPage() {
     ...(!toplineStmt?.matchByName ? (toplineStmt?.lines ?? []).map(l => l.empCode) : []),
     ...(!cbStmt?.matchByName      ? (cbStmt?.lines      ?? []).map(l => l.empCode) : []),
     ...(boduloStmt?.lines ?? []).map(l => l.empCode),
+    ...(pensionStmt?.lines ?? []).map(l => l.empCode),
   ]);
 
   // Track which name-matched statement lines were consumed during code-based pass
@@ -839,6 +864,8 @@ export default function ReconciliationPage() {
         cb_pay: cbStmt && pay ? pay.cbStores : null,
         bodulo_stmt: boduloStmt ? (boduloMap.get(code)?.amount ?? null) : null,
         bodulo_pay: boduloStmt && pay ? pay.bodulo : null,
+        pension_stmt: pensionStmt ? (pensionMap.get(code)?.amount ?? null) : null,
+        pension_pay: pensionStmt && pay ? pay.pensionEe : null,
       };
     });
 
@@ -854,6 +881,7 @@ export default function ReconciliationPage() {
           topline_stmt: null,  topline_pay: null,
           cb_stmt: line.amount, cb_pay: null,
           bodulo_stmt: null,   bodulo_pay: null,
+          pension_stmt: null,  pension_pay: null,
         });
       }
     }
@@ -868,6 +896,7 @@ export default function ReconciliationPage() {
           topline_stmt: line.amount, topline_pay: null,
           cb_stmt: null,       cb_pay: null,
           bodulo_stmt: null,   bodulo_pay: null,
+          pension_stmt: null,  pension_pay: null,
         });
       }
     }
@@ -887,6 +916,7 @@ export default function ReconciliationPage() {
   const resolvedCb        = new Set<string>();
   const resolvedTopline   = new Set<string>();
   const resolvedBodulo    = new Set<string>();
+  const resolvedPension   = new Set<string>();
 
   function tryResolveByName(
     lines: ReconLine[],
@@ -911,6 +941,8 @@ export default function ReconciliationPage() {
     (r, l) => { if (r.topline_stmt == null) { r.topline_stmt = l.amount; if (!r.section) r.section = l.section; } });
   if (boduloStmt) tryResolveByName(boduloStmt.unmatchedLines, resolvedBodulo,
     (r, l) => { if (r.bodulo_stmt == null) r.bodulo_stmt = l.amount; });
+  if (pensionStmt) tryResolveByName(pensionStmt.unmatchedLines, resolvedPension,
+    (r, l) => { if (r.pension_stmt == null) r.pension_stmt = l.amount; });
 
   // Add entries that are truly absent from payroll (no match by code or name)
   function addNoPayrollRow(
@@ -928,6 +960,7 @@ export default function ReconciliationPage() {
         topline_stmt: null,  topline_pay: null,
         cb_stmt: null,       cb_pay: null,
         bodulo_stmt: null,   bodulo_pay: null,
+        pension_stmt: null,  pension_pay: null,
         ...patch(line),
       });
     }
@@ -938,6 +971,7 @@ export default function ReconciliationPage() {
   addNoPayrollRow(cbStmt?.unmatchedLines ?? [], resolvedCb, l => ({ cb_stmt: l.amount }));
   addNoPayrollRow(toplineStmt?.unmatchedLines ?? [], resolvedTopline, l => ({ topline_stmt: l.amount }));
   addNoPayrollRow(boduloStmt?.unmatchedLines ?? [], resolvedBodulo, l => ({ bodulo_stmt: l.amount }));
+  addNoPayrollRow(pensionStmt?.unmatchedLines ?? [], resolvedPension, l => ({ pension_stmt: l.amount }));
 
   // Separate management employees (from MGMT sections) into their own bucket
   const isMgt = (r: EmpRow) => /mgmt|management/i.test(r.section ?? '');
@@ -948,7 +982,8 @@ export default function ReconciliationPage() {
     (afritecStmt  != null && ((r.afritec_stmt  ?? 0) > 0 || (r.afritec_pay  ?? 0) > 0)) ||
     (toplineStmt  != null && ((r.topline_stmt  ?? 0) > 0 || (r.topline_pay  ?? 0) > 0)) ||
     (cbStmt       != null && ((r.cb_stmt       ?? 0) > 0 || (r.cb_pay       ?? 0) > 0)) ||
-    (boduloStmt   != null && ((r.bodulo_stmt   ?? 0) > 0 || (r.bodulo_pay   ?? 0) > 0));
+    (boduloStmt   != null && ((r.bodulo_stmt   ?? 0) > 0 || (r.bodulo_pay   ?? 0) > 0)) ||
+    (pensionStmt  != null && ((r.pension_stmt  ?? 0) > 0 || (r.pension_pay  ?? 0) > 0));
 
   const staffEmpRows = empRows.filter(r => !isMgt(r) && hasAnyDeduction(r));
   const mgtEmpRows   = empRows.filter(r => isMgt(r)  && hasAnyDeduction(r));
@@ -960,6 +995,7 @@ export default function ReconciliationPage() {
     topline:  mgtEmpRows.reduce((s, r) => s + (r.topline_stmt  ?? 0), 0),
     cb:       mgtEmpRows.reduce((s, r) => s + (r.cb_stmt       ?? 0), 0),
     bodulo:   mgtEmpRows.reduce((s, r) => s + (r.bodulo_stmt   ?? 0), 0),
+    pension:  mgtEmpRows.reduce((s, r) => s + (r.pension_stmt  ?? 0), 0),
   };
 
   // Code index for CFEM's own report lines — used only as a FALLBACK when name resolution
@@ -1006,6 +1042,7 @@ export default function ReconciliationPage() {
     'Topline':        mgtVendorTotals.topline,
     'Bodulo Funeral': mgtVendorTotals.bodulo,
     'Total Loans':    mgtVendorTotals.afritec + mgtVendorTotals.topline,
+    'Pension':        mgtVendorTotals.pension,
   };
 
   // Expand each vendor summary row: when management amounts exist, split into
@@ -1623,6 +1660,7 @@ export default function ReconciliationPage() {
                     { stmt: toplineStmt,  label: 'Topline',  resolved: resolvedTopline },
                     { stmt: cbStmt,       label: 'CB Stores',resolved: resolvedCb },
                     { stmt: boduloStmt,   label: 'Bodulo',   resolved: resolvedBodulo },
+                    { stmt: pensionStmt,  label: 'Pension',  resolved: resolvedPension },
                   ].flatMap(({ stmt, label, resolved }) =>
                     (stmt?.unmatchedLines ?? [])
                       .filter(l => !resolved.has(nameKey(l.name)) && !empRowByNameKey.has(nameKey(l.name)))
@@ -1822,6 +1860,7 @@ export default function ReconciliationPage() {
                           toplineStmt  ? { key: 'topline',  label: 'Topline',   active: 'bg-purple-600 text-white',     inactive: 'bg-purple-50 text-purple-700 hover:bg-purple-100' }  : null,
                           cbStmt       ? { key: 'cbstores', label: 'CB Stores', active: 'bg-emerald-600 text-white',    inactive: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' } : null,
                           boduloStmt   ? { key: 'bodulo',   label: 'Bodulo',    active: 'bg-rose-600 text-white',       inactive: 'bg-rose-50 text-rose-700 hover:bg-rose-100' }    : null,
+                          pensionStmt  ? { key: 'pension',  label: 'Pension',   active: 'bg-cyan-600 text-white',       inactive: 'bg-cyan-50 text-cyan-700 hover:bg-cyan-100' }    : null,
                         ]).filter(Boolean).map((f: any) => (
                           <button
                             key={f.key}
@@ -1866,6 +1905,11 @@ export default function ReconciliationPage() {
                               <th className="px-3 py-2 text-right">Bodulo Pay</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
+                            {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
+                              <th className="px-3 py-2 text-right">Pension Stmt</th>
+                              <th className="px-3 py-2 text-right">Pension Pay</th>
+                              <th className="px-3 py-2 text-right">±</th>
+                            </>}
                           </tr>
                         </thead>
                         <tbody>
@@ -1875,6 +1919,7 @@ export default function ReconciliationPage() {
                             if (dedFilter === 'topline')  return (row.topline_stmt  ?? 0) > 0 || (row.topline_pay  ?? 0) > 0;
                             if (dedFilter === 'cbstores') return (row.cb_stmt       ?? 0) > 0 || (row.cb_pay       ?? 0) > 0;
                             if (dedFilter === 'bodulo')   return (row.bodulo_stmt   ?? 0) > 0 || (row.bodulo_pay   ?? 0) > 0;
+                            if (dedFilter === 'pension')  return (row.pension_stmt  ?? 0) > 0 || (row.pension_pay  ?? 0) > 0;
                             return true;
                           })).map((row, i) => {
                             const furnDiff    = row.furnmart_stmt != null && row.furnmart_pay != null
@@ -1887,12 +1932,15 @@ export default function ReconciliationPage() {
                               ? row.cb_stmt - row.cb_pay : null;
                             const bodDiff     = row.bodulo_stmt != null && row.bodulo_pay != null
                               ? row.bodulo_stmt - row.bodulo_pay : null;
+                            const pensionDiff = row.pension_stmt != null && row.pension_pay != null
+                              ? row.pension_stmt - row.pension_pay : null;
                             const hasDiscrep =
                               (furnDiff    != null && Math.abs(furnDiff)    > 0.01) ||
                               (afritecDiff != null && Math.abs(afritecDiff) > 0.01) ||
                               (toplineDiff != null && Math.abs(toplineDiff) > 0.01) ||
                               (cbDiff      != null && Math.abs(cbDiff)      > 0.01) ||
-                              (bodDiff     != null && Math.abs(bodDiff)     > 0.01);
+                              (bodDiff     != null && Math.abs(bodDiff)     > 0.01) ||
+                              (pensionDiff != null && Math.abs(pensionDiff) > 0.01);
                             return (
                               <tr key={`${row.empCode || 'x'}-${row.name}-${i}`} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${hasDiscrep ? 'ring-1 ring-inset ring-orange-200' : ''}`}>
                                 <td className="px-3 py-1.5 font-mono text-xs">
@@ -1935,6 +1983,13 @@ export default function ReconciliationPage() {
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${bodDiff != null ? diffClass(bodDiff) : ''}`}>
                                     {bodDiff != null ? fmtDiff(bodDiff, country) : '—'}
+                                  </td>
+                                </>}
+                                {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.pension_stmt, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.pension_pay, country)}</td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${pensionDiff != null ? diffClass(pensionDiff) : ''}`}>
+                                    {pensionDiff != null ? fmtDiff(pensionDiff, country) : '—'}
                                   </td>
                                 </>}
                               </tr>
@@ -1996,6 +2051,11 @@ export default function ReconciliationPage() {
                               <th className="px-3 py-2 text-right">Payroll</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
+                            {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
+                              <th className="px-3 py-2 text-right">Pension Stmt</th>
+                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">±</th>
+                            </>}
                           </tr>
                         </thead>
                         <tbody>
@@ -2005,6 +2065,7 @@ export default function ReconciliationPage() {
                             if (dedFilter === 'topline')  return (row.topline_stmt  ?? 0) > 0;
                             if (dedFilter === 'cbstores') return (row.cb_stmt       ?? 0) > 0;
                             if (dedFilter === 'bodulo')   return (row.bodulo_stmt   ?? 0) > 0;
+                            if (dedFilter === 'pension')  return (row.pension_stmt  ?? 0) > 0;
                             return true;
                           })).map((row, i) => {
                             const cfeMatch = matchCfeEmployee(row.name);
@@ -2044,6 +2105,11 @@ export default function ReconciliationPage() {
                                 </>}
                                 {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_stmt, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                </>}
+                                {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.pension_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
                                 </>}
