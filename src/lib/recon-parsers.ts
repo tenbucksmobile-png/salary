@@ -179,9 +179,10 @@ export async function parseAfritecXls(
   let stmtTotal = 0;
 
   // Find header row — matches Afritec/Topline ("Employee Number/No"), CB Stores-style
-  // files ("Emp No", "Staff No", "Payroll No"), and simpler exports that just use a bare
-  // "Code" column (e.g. a plain Code/Name/Amount statement with no title rows above it).
-  const empColPattern = /employee.?n(?:umber|o\.?)|emp\.?\s*no\.?|staff\.?\s*no\.?|payroll\.?\s*no\.?|^\s*code\s*$/i;
+  // files ("Emp No", "Staff No", "Payroll No", "Employee #"), and simpler exports that
+  // just use a bare "Code" column (e.g. a plain Code/Name/Amount statement with no
+  // title rows above it).
+  const empColPattern = /employee.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|staff\.?\s*no\.?|payroll\.?\s*no\.?|^\s*code\s*$/i;
   const headerIdx = rows.findIndex(r =>
     r.some((c: any) => empColPattern.test(String(c || ''))),
   );
@@ -190,14 +191,22 @@ export async function parseAfritecXls(
   // Detect column indices from header
   const hRow = rows[headerIdx >= 0 ? headerIdx : 2] || [];
   const colEmp = hRow.findIndex((c: any) => empColPattern.test(String(c || '')));
-  // Afritec/Topline: "Regular Instalment"; CB Stores: "Amount", "Deduction", "Monthly Amount" etc.
+  // Afritec/Topline: "Regular Instalment"; CB Stores: "Amount", "Deduction", "Monthly Amount"
+  // etc.; some life/insurance-style statements use "Premium Due" instead.
   const colAmt = hRow.findIndex((c: any) =>
-    /regular.?instal|instalment|^amount$|^deduction$|^monthly\s+(?:amount|inst)|amount\s+due|^due$/i.test(String(c || '')),
+    /regular.?instal|instalment|^amount$|^deduction$|^monthly\s+(?:amount|inst)|amount\s+due|premium\s+due|^due$/i.test(String(c || '')),
   );
   const colSur = hRow.findIndex((c: any) => /surname/i.test(String(c || '')));
-  const colFirst = hRow.findIndex((c: any) => /first.?name|forename/i.test(String(c || '')));
-  // CB Stores may use a single "Name" or "Employee Name" column instead of surname + first name
-  const colFullName = hRow.findIndex((c: any) => /^(?:full\s*)?name$|^employee\s*name$/i.test(String(c || '')));
+  const colFirstNamed = hRow.findIndex((c: any) => /first.?name|forename/i.test(String(c || '')));
+  const colBareName = hRow.findIndex((c: any) => /^(?:full\s*)?name$/i.test(String(c || '').trim()));
+  const colCombinedName = hRow.findIndex((c: any) => /^employee\s*name$|^customer\s*name$/i.test(String(c || '').trim()));
+  // A bare "Name" header is ambiguous: on CB Stores-style exports it's the ONLY name
+  // column (a combined full name), but some statements (e.g. an Afritec life/insurance
+  // list) pair a bare "Name" column with a separate "Surname" column, where "Name" means
+  // first name only — treating it as a full name there would silently drop the surname.
+  // "Employee Name"/"Customer Name" are unambiguous combined-name headers either way.
+  const colFullName = colCombinedName >= 0 ? colCombinedName : (colSur < 0 ? colBareName : -1);
+  const colFirst = colFirstNamed >= 0 ? colFirstNamed : (colSur >= 0 ? colBareName : -1);
 
   const eCol = colEmp >= 0 ? colEmp : 5;
   // If amount col not found and file has fewer than 10 cols, scan for last numeric column
@@ -247,11 +256,16 @@ export async function parseAfritecXls(
   return { uploadType, lines, unmatchedLines, total: stmtTotal, fileName };
 }
 
-// ── Furnmart .xlsx multi-SEQ purchase deductions ──────────────────────────────
-// Header at the row containing "EMP NO".
-// Cols: [1]=EMP NO, [2]=Name, [3]=Surname, [6]=SEQ, [10]=DEDUCTION, [11]=TOTAL
-// TOTAL (col 11) is only populated on the LAST contract row per employee.
-// For single-contract employees col[11] = col[10].
+// ── Furnmart .xlsx purchase deductions ─────────────────────────────────────
+// Column positions vary across hotel/month exports (a richer multi-SEQ format with
+// Contract/Balance/SEQ/TOTAL columns has been seen alongside a much simpler flat
+// EMP NO / Name / Surname / Deduction export with one row per employee and no TOTAL
+// column at all) — columns are detected from the header row by keyword rather than
+// hardcoded positions, with the original multi-SEQ layout's fixed indices (1,2,3,10,11)
+// kept as a fallback only for the rare case the header row itself can't be located.
+// When a TOTAL column exists, it's only populated on the LAST contract row per
+// employee (multi-SEQ accumulation); when there's no TOTAL column, DEDUCTION is the
+// final per-employee amount directly (one row per employee, nothing to accumulate).
 
 export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise<ParsedStatement> {
   const XLSX = await getXLSX();
@@ -260,23 +274,38 @@ export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
   const headerIdx = rows.findIndex(r =>
-    String(r[1] || '').toLowerCase().includes('emp no') ||
-    String(r[0] || '').toLowerCase().includes('identity'),
+    r.some((c: any) => /emp\.?\s*no\.?/i.test(String(c || '').trim())),
   );
   const dataStart = headerIdx >= 0 ? headerIdx + 1 : 8;
+  const hRow = rows[headerIdx >= 0 ? headerIdx : 0] || [];
 
-  // For each employee: find the row where col[11] (TOTAL) > 0
+  function col(pattern: RegExp): number {
+    return hRow.findIndex((c: any) => pattern.test(String(c || '').trim()));
+  }
+  const colEmpFound = col(/emp\.?\s*no\.?/i);
+  const colNameFound = col(/^name$/i);
+  const colSurnameFound = col(/surname/i);
+  const colDeductionFound = col(/deduction/i);
+  const colTotal = col(/^total$/i); // -1 when this format has no separate TOTAL column
+
+  const colEmp = colEmpFound >= 0 ? colEmpFound : 1;
+  const colName = colNameFound >= 0 ? colNameFound : 2;
+  const colSurname = colSurnameFound >= 0 ? colSurnameFound : 3;
+  const colDeduction = colDeductionFound >= 0 ? colDeductionFound : 10;
+
+  // For each employee: find the row where the TOTAL column (if any) > 0
   const empTotal = new Map<string, { name: string; total: number }>();
   const noCodeTotal = new Map<string, { name: string; total: number }>();
 
   for (let i = dataStart; i < rows.length; i++) {
     const row = rows[i];
-    const rawCode = String(row[1] || '').trim();
+    const rawCode = String(row[colEmp] || '').trim();
     if (String(row[0] || '').toLowerCase().includes('total')) continue;
 
-    const name = `${String(row[2] || '')} ${String(row[3] || '')}`.trim();
-    const total = Number(row[11]) || 0;
-    const deduction = Number(row[10]) || 0;
+    const name = `${String(row[colName] ?? '')} ${String(row[colSurname] ?? '')}`.trim();
+    const deduction = Number(row[colDeduction]) || 0;
+    // No TOTAL column at all → DEDUCTION is already the final per-row amount
+    const total = colTotal >= 0 ? Number(row[colTotal]) || 0 : deduction;
 
     if (!rawCode) {
       // Employee with no code in Furnmart system
@@ -287,7 +316,8 @@ export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise
     }
 
     if (total > 0) {
-      // This is the summary row for this employee (has accumulated TOTAL)
+      // This is the summary row for this employee (has accumulated TOTAL, or —
+      // when there's no TOTAL column — is simply that employee's only row)
       empTotal.set(rawCode, { name, total });
     } else if (!empTotal.has(rawCode) && deduction > 0) {
       // Intermediate row — store as fallback if we never see a TOTAL row
@@ -307,9 +337,11 @@ export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise
     amount: d.total,
   }));
 
-  // Statement total from TOTALS row (col 11)
+  // Statement total from TOTALS row, read from the same TOTAL column (or DEDUCTION
+  // when this format has no TOTAL column) used for the per-employee amounts above
   const totalsRow = rows.find(r => String(r[0] || '').toLowerCase().includes('total'));
-  const total = totalsRow ? Number(totalsRow[11]) || 0 : [...lines, ...unmatchedLines].reduce((s, l) => s + l.amount, 0);
+  const totalsCol = colTotal >= 0 ? colTotal : colDeduction;
+  const total = totalsRow ? Number(totalsRow[totalsCol]) || 0 : [...lines, ...unmatchedLines].reduce((s, l) => s + l.amount, 0);
 
   return { uploadType: 'furnmart', lines, unmatchedLines, total, fileName };
 }
