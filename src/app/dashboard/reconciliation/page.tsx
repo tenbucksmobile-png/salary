@@ -1294,40 +1294,34 @@ export default function ReconciliationPage() {
   }
 
   async function handleExportConsolidation() {
-    const rows: Array<Array<string | number | null>> = LINE_ITEMS.map(li => {
-      const row: Array<string | number | null> = [LINE_ITEM_LABELS[li]];
-      let totalSys = 0, totalBank = 0;
-      for (const h of CONSOLIDATION_HOTELS) {
-        const sys = consolidationSystemValue(h, li);
-        const bank = consolidationBankValue(h, li);
-        row.push(sys, bank, sys - bank);
-        totalSys += sys; totalBank += bank;
-      }
-      row.push(totalSys, totalBank, totalSys - totalBank);
-      return row;
-    });
-    const totalsRow: Array<string | number | null> = ['Total'];
-    let grandSys = 0, grandBank = 0;
+    const rows: Array<Array<string | number | null>> = [];
     for (const h of CONSOLIDATION_HOTELS) {
-      const sys = LINE_ITEMS.reduce((s, li) => s + consolidationSystemValue(h, li), 0);
-      const bank = LINE_ITEMS.reduce((s, li) => s + consolidationBankValue(h, li), 0);
-      totalsRow.push(sys, bank, sys - bank);
-      grandSys += sys; grandBank += bank;
+      const sysByLi = LINE_ITEMS.map(li => consolidationSystemValue(h, li));
+      const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
+      const totalSys = sysByLi.reduce((a, b) => a + b, 0);
+      const totalBank = bankByLi.reduce((a, b) => a + b, 0);
+      rows.push([h, 'System', ...sysByLi, totalSys]);
+      rows.push(['', 'Bank Upload', ...bankByLi, totalBank]);
+      rows.push(['', 'Balance Differential', ...sysByLi.map((sys, i) => sys - bankByLi[i]), totalSys - totalBank]);
     }
-    totalsRow.push(grandSys, grandBank, grandSys - grandBank);
+    const grandSysByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationSystemValue(h, li), 0));
+    const grandBankByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationBankValue(h, li), 0));
+    const grandSys = grandSysByLi.reduce((a, b) => a + b, 0);
+    const grandBank = grandBankByLi.reduce((a, b) => a + b, 0);
+    rows.push(['Total', 'System', ...grandSysByLi, grandSys]);
+    rows.push(['', 'Bank Upload', ...grandBankByLi, grandBank]);
+    rows.push(['', 'Balance Differential', ...grandSysByLi.map((sys, i) => sys - grandBankByLi[i]), grandSys - grandBank]);
 
     const headers = [
-      'Line Item',
-      'CSL System', 'CSL Bank', 'CSL Diff',
-      'NL System', 'NL Bank', 'NL Diff',
-      'CFEM System', 'CFEM Bank', 'CFEM Diff',
-      'Total System', 'Total Bank', 'Total Diff',
+      'Hotel', '',
+      ...LINE_ITEMS.map(li => LINE_ITEM_LABELS[li]),
+      'Total',
     ];
     const sheet: ReportSheet = {
       name: 'Consolidation',
       headers,
-      rows: [...rows, totalsRow],
-      isTotalsRow: [...rows.map(() => false), true],
+      rows,
+      isTotalsRow: rows.map(r => r[0] === 'Total'),
     };
     await exportReport('Consolidation', `Consolidation_${MONTH_NAMES[month - 1]}_${year}.xlsx`, [sheet]);
   }
@@ -2283,92 +2277,117 @@ export default function ReconciliationPage() {
                 <table className="text-sm border rounded w-full whitespace-nowrap">
                   <thead>
                     <tr className="bg-[#1B3A5C] text-white">
-                      <th className="px-3 py-2 text-left">Line Item</th>
-                      {CONSOLIDATION_HOTELS.map(h => (
-                        <Fragment key={h}>
-                          <th className="px-2 py-2 text-right border-l border-white/20">{h} System</th>
-                          <th className="px-2 py-2 text-right">{h} Bank</th>
-                          <th className="px-2 py-2 text-right">{h} Diff</th>
-                        </Fragment>
+                      <th className="px-3 py-2 text-left">Hotel</th>
+                      <th className="px-3 py-2 text-left border-l border-white/20"></th>
+                      {LINE_ITEMS.map(li => (
+                        <th key={li} className="px-2 py-2 text-right border-l border-white/20">{LINE_ITEM_LABELS[li]}</th>
                       ))}
-                      <th className="px-2 py-2 text-right border-l border-white/20">Total System</th>
-                      <th className="px-2 py-2 text-right">Total Bank</th>
-                      <th className="px-2 py-2 text-right">Total Diff</th>
+                      <th className="px-2 py-2 text-right border-l border-white/20">Total</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {LINE_ITEMS.map((li, i) => {
-                      let totalSys = 0, totalBank = 0;
-                      const hotelCells = CONSOLIDATION_HOTELS.map(h => {
-                        const sys = consolidationSystemValue(h, li);
-                        const bank = consolidationBankValue(h, li);
-                        const diff = sys - bank;
-                        totalSys += sys; totalBank += bank;
-                        const manual = consolidationIsManualSystem(h, li);
-                        return (
-                          <Fragment key={h}>
-                            <td className="px-2 py-1.5 text-right border-t border-l">
-                              {manual ? (
+                    {CONSOLIDATION_HOTELS.map((h, hi) => {
+                      const rowBg = hi % 2 === 0 ? 'bg-white' : 'bg-muted/10';
+                      let hotelTotalSys = 0, hotelTotalBank = 0;
+                      const sysByLi = LINE_ITEMS.map(li => consolidationSystemValue(h, li));
+                      const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
+                      sysByLi.forEach(v => { hotelTotalSys += v; });
+                      bankByLi.forEach(v => { hotelTotalBank += v; });
+                      return (
+                        <Fragment key={h}>
+                          <tr className={rowBg}>
+                            <td rowSpan={3} className="px-3 py-1.5 font-semibold border-t align-top">{h}</td>
+                            <td className="px-3 py-1.5 text-muted-foreground border-t">System</td>
+                            {LINE_ITEMS.map((li, i) => {
+                              const sys = sysByLi[i];
+                              const manual = consolidationIsManualSystem(h, li);
+                              return (
+                                <td key={li} className="px-2 py-1.5 text-right border-t border-l">
+                                  {manual ? (
+                                    <input
+                                      type="number"
+                                      defaultValue={sys || ''}
+                                      onBlur={e => saveConsolidationEntry(h, li, 'system_amount', e.target.value === '' ? null : Number(e.target.value))}
+                                      className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
+                                    />
+                                  ) : (
+                                    <span className="tabular-nums">{fmt(sys, country)}</span>
+                                  )}
+                                </td>
+                              );
+                            })}
+                            <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmt(hotelTotalSys, country)}</td>
+                          </tr>
+                          <tr className={rowBg}>
+                            <td className="px-3 py-1.5 text-muted-foreground border-t">Bank Upload</td>
+                            {LINE_ITEMS.map((li, i) => (
+                              <td key={li} className="px-2 py-1.5 text-right border-t border-l">
                                 <input
                                   type="number"
-                                  defaultValue={sys || ''}
-                                  onBlur={e => saveConsolidationEntry(h, li, 'system_amount', e.target.value === '' ? null : Number(e.target.value))}
+                                  defaultValue={bankByLi[i] || ''}
+                                  onBlur={e => saveConsolidationEntry(h, li, 'bank_amount', e.target.value === '' ? null : Number(e.target.value))}
                                   className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
                                 />
-                              ) : (
-                                <span className="tabular-nums">{fmt(sys, country)}</span>
-                              )}
+                              </td>
+                            ))}
+                            <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmt(hotelTotalBank, country)}</td>
+                          </tr>
+                          <tr className={rowBg}>
+                            <td className="px-3 py-1.5 text-muted-foreground border-t">Balance Differential</td>
+                            {LINE_ITEMS.map((li, i) => {
+                              const diff = sysByLi[i] - bankByLi[i];
+                              return (
+                                <td key={li} className={`px-2 py-1.5 text-right border-t border-l tabular-nums ${diffClass(diff)}`}>
+                                  {fmtDiff(diff, country)}
+                                </td>
+                              );
+                            })}
+                            <td className={`px-2 py-1.5 text-right border-t border-l tabular-nums font-medium ${diffClass(hotelTotalSys - hotelTotalBank)}`}>
+                              {fmtDiff(hotelTotalSys - hotelTotalBank, country)}
                             </td>
-                            <td className="px-2 py-1.5 text-right border-t">
-                              <input
-                                type="number"
-                                defaultValue={bank || ''}
-                                onBlur={e => saveConsolidationEntry(h, li, 'bank_amount', e.target.value === '' ? null : Number(e.target.value))}
-                                className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
-                              />
-                            </td>
-                            <td className={`px-2 py-1.5 text-right border-t tabular-nums ${diffClass(diff)}`}>
-                              {fmtDiff(diff, country)}
-                            </td>
-                          </Fragment>
-                        );
-                      });
-                      return (
-                        <tr key={li} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/10'}>
-                          <td className="px-3 py-1.5 font-medium border-t">{LINE_ITEM_LABELS[li]}</td>
-                          {hotelCells}
-                          <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmt(totalSys, country)}</td>
-                          <td className="px-2 py-1.5 text-right border-t tabular-nums font-medium">{fmt(totalBank, country)}</td>
-                          <td className={`px-2 py-1.5 text-right border-t tabular-nums font-medium ${diffClass(totalSys - totalBank)}`}>
-                            {fmtDiff(totalSys - totalBank, country)}
-                          </td>
-                        </tr>
+                          </tr>
+                        </Fragment>
                       );
                     })}
                   </tbody>
                   <tfoot>
                     {(() => {
-                      let grandSys = 0, grandBank = 0;
-                      const cells = CONSOLIDATION_HOTELS.map(h => {
-                        const sys = LINE_ITEMS.reduce((s, li) => s + consolidationSystemValue(h, li), 0);
-                        const bank = LINE_ITEMS.reduce((s, li) => s + consolidationBankValue(h, li), 0);
-                        grandSys += sys; grandBank += bank;
-                        return (
-                          <Fragment key={h}>
-                            <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(sys, country)}</td>
-                            <td className="px-2 py-2 text-right border-t tabular-nums">{fmt(bank, country)}</td>
-                            <td className={`px-2 py-2 text-right border-t tabular-nums ${diffClass(sys - bank)}`}>{fmtDiff(sys - bank, country)}</td>
-                          </Fragment>
-                        );
-                      });
+                      const sysByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationSystemValue(h, li), 0));
+                      const bankByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationBankValue(h, li), 0));
+                      const grandSys = sysByLi.reduce((a, b) => a + b, 0);
+                      const grandBank = bankByLi.reduce((a, b) => a + b, 0);
                       return (
-                        <tr className="bg-muted/40 font-semibold">
-                          <td className="px-3 py-2 border-t">Total</td>
-                          {cells}
-                          <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(grandSys, country)}</td>
-                          <td className="px-2 py-2 text-right border-t tabular-nums">{fmt(grandBank, country)}</td>
-                          <td className={`px-2 py-2 text-right border-t tabular-nums ${diffClass(grandSys - grandBank)}`}>{fmtDiff(grandSys - grandBank, country)}</td>
-                        </tr>
+                        <>
+                          <tr className="bg-muted/40 font-semibold">
+                            <td rowSpan={3} className="px-3 py-2 border-t align-top">Total</td>
+                            <td className="px-3 py-2 border-t">System</td>
+                            {sysByLi.map((sys, i) => (
+                              <td key={LINE_ITEMS[i]} className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(sys, country)}</td>
+                            ))}
+                            <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(grandSys, country)}</td>
+                          </tr>
+                          <tr className="bg-muted/40 font-semibold">
+                            <td className="px-3 py-2 border-t">Bank Upload</td>
+                            {bankByLi.map((bank, i) => (
+                              <td key={LINE_ITEMS[i]} className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(bank, country)}</td>
+                            ))}
+                            <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(grandBank, country)}</td>
+                          </tr>
+                          <tr className="bg-muted/40 font-semibold">
+                            <td className="px-3 py-2 border-t">Balance Differential</td>
+                            {sysByLi.map((sys, i) => {
+                              const diff = sys - bankByLi[i];
+                              return (
+                                <td key={LINE_ITEMS[i]} className={`px-2 py-2 text-right border-t border-l tabular-nums ${diffClass(diff)}`}>
+                                  {fmtDiff(diff, country)}
+                                </td>
+                              );
+                            })}
+                            <td className={`px-2 py-2 text-right border-t border-l tabular-nums ${diffClass(grandSys - grandBank)}`}>
+                              {fmtDiff(grandSys - grandBank, country)}
+                            </td>
+                          </tr>
+                        </>
                       );
                     })()}
                   </tfoot>
