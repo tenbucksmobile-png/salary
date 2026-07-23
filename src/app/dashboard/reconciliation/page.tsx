@@ -1190,11 +1190,22 @@ export default function ReconciliationPage() {
   const employeesTabBadge = employeesComparisonByHotel[employeesActiveHotel];
   const employeesTabBadgeCount = employeesTabBadge.basicMismatches.length + employeesTabBadge.newAppointments.length + employeesTabBadge.terminations.length;
 
-  const tickedApprovalCount = [
+  const visibleApprovalKeys = [
     ...activeEmployeesComparison.basicMismatches.map(r => approvalKey('basic_mismatch', r.name)),
     ...activeEmployeesComparison.newAppointments.map(r => approvalKey('new_appointment', r.name)),
     ...activeEmployeesComparison.terminations.map(r => approvalKey('termination', r.name)),
-  ].filter(k => approvalTicks[k]).length;
+  ];
+  const tickedApprovalCount = visibleApprovalKeys.filter(k => approvalTicks[k]).length;
+
+  // Last-submitted state per row, keyed the same way as approvalTicks — drives both the
+  // per-name "Confirmed" badge and whether the Submit button reads "Submitted" (in sync
+  // with what's persisted) vs. "Submit (X of Y ticked)" (local ticks have diverged since
+  // the last submit, e.g. a new tick or untick that hasn't been saved yet).
+  const approvalByKey = new Map(employeeApprovals.map(a => [approvalKey(a.category, a.employee_name), a]));
+  const isSubmittedInSync = visibleApprovalKeys.length > 0 && visibleApprovalKeys.every(k => {
+    const persisted = approvalByKey.get(k);
+    return !!persisted?.submitted_at && !!persisted.approved === !!approvalTicks[k];
+  });
 
   // Writes the CURRENT tick state for every row currently visible on the Employees tab to
   // recon_employee_approvals (upsert — ticked rows become approved:true, unticked rows
@@ -2196,7 +2207,12 @@ export default function ReconciliationPage() {
                                   onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
                                 />
                               </td>
-                              <td className="px-3 py-1.5">{r.name}</td>
+                              <td className="px-3 py-1.5">
+                                {r.name}
+                                {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
+                                  <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
+                                )}
+                              </td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.prevBasic, country)}</td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.currBasic, country)}</td>
                               <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.diff > 0 ? 'text-green-700' : 'text-red-600'}`}>
@@ -2238,7 +2254,12 @@ export default function ReconciliationPage() {
                                   onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
                                 />
                               </td>
-                              <td className="px-3 py-1.5">{r.name}</td>
+                              <td className="px-3 py-1.5">
+                                {r.name}
+                                {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
+                                  <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
+                                )}
+                              </td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
                             </tr>
                           );
@@ -2276,7 +2297,12 @@ export default function ReconciliationPage() {
                                   onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
                                 />
                               </td>
-                              <td className="px-3 py-1.5">{r.name}</td>
+                              <td className="px-3 py-1.5">
+                                {r.name}
+                                {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
+                                  <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
+                                )}
+                              </td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
                             </tr>
                           );
@@ -2296,7 +2322,7 @@ export default function ReconciliationPage() {
                       disabled={submittingApprovals}
                       className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-medium hover:opacity-90 disabled:opacity-50"
                     >
-                      {submittingApprovals ? 'Submitting…' : `Submit (${tickedApprovalCount} of ${employeesTabBadgeCount} ticked)`}
+                      {submittingApprovals ? 'Submitting…' : isSubmittedInSync ? 'Submitted' : `Submit (${tickedApprovalCount} of ${employeesTabBadgeCount} ticked)`}
                     </button>
                     {employeeApprovals.some(a => a.submitted_at) && (
                       <span className="text-xs text-muted-foreground">
