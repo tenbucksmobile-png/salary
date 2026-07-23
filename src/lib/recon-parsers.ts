@@ -15,6 +15,13 @@ export interface ParsedStatement {
   total: number;
   fileName: string;
   matchByName?: boolean; // CB Stores / Topline: empCode is a name-sort key, match against payroll by name
+  // Pension only: the combined EE+ER contribution total — what actually gets paid to
+  // the fund administrator each month. `total` (and every `lines[].amount`) stays the
+  // EE-only figure so the Deductions Check statement-vs-payroll comparison keeps
+  // comparing like against like (payroll only ever reports the EE deduction); the
+  // Consolidation tab's Pension "System" figure reads bankTotal instead, falling back
+  // to `total` when a statement has no EE/ER split at all.
+  bankTotal?: number;
 }
 
 export interface PayrollLine {
@@ -421,6 +428,78 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
   if (!total) total = lines.reduce((s, l) => s + l.amount, 0);
 
   return { uploadType: 'bodulo', lines, unmatchedLines, total, fileName };
+}
+
+// ── Pension/Provident Fund contribution schedule .xlsx ─────────────────────────
+// Multi-sheet, one sheet per month (e.g. "April 26" … "July 26"), plus reference
+// tabs ("Detailed field discriptions", "Schedule") that aren't monthly data —
+// picks the sheet matching the target period via pickFtcSheet (same month/year
+// matching the FTC payroll parser uses; defined further below, hoisted).
+// Header row (detected by keyword, not a fixed row index): EMPLOYEE NO, FIRST
+// NAMES, SURNAME, MEMBER CONTRIBUTION AMOUNT (the employee/EE side — what
+// payroll's own pensionEe column represents), EMPLOYER CONTRIBUTION AMOUNT (ER),
+// TOTAL CONTRIBUTION AMOUNT (EE+ER, falls back to EE+ER computed locally if this
+// column is absent). `lines[].amount` and `total` are EE-only — see the
+// `bankTotal` comment on ParsedStatement for why the two are kept separate.
+
+export async function parsePensionSchedule(
+  buf: ArrayBuffer,
+  fileName: string,
+  targetMonth = 0,
+  targetYear = 0,
+): Promise<ParsedStatement> {
+  const XLSX = await getXLSX();
+  const wb = XLSX.read(buf, { type: 'array' });
+  const sheetName = pickFtcSheet(wb.SheetNames, targetMonth, targetYear);
+  const ws = wb.Sheets[sheetName];
+  const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+  const codeColPattern = /employee.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|^\s*code\s*$/i;
+  const headerIdx = rows.findIndex(r =>
+    r.some((c: any) => codeColPattern.test(String(c || '').trim())),
+  );
+  const dataStart = headerIdx >= 0 ? headerIdx + 1 : 1;
+  const hRow = rows[headerIdx >= 0 ? headerIdx : 0] || [];
+
+  function col(pattern: RegExp): number {
+    return hRow.findIndex((c: any) => pattern.test(String(c || '').trim()));
+  }
+  const colCode = col(codeColPattern);
+  const colFirst = col(/first.?name|forename/i);
+  const colSur = col(/surname/i);
+  const colMember = col(/member\s*contribution\s*amount|employee\s*contribution\s*amount/i);
+  const colEmployer = col(/employer\s*contribution\s*amount/i);
+  const colTotalContrib = col(/total\s*contribution/i);
+
+  const lines: ReconLine[] = [];
+  const unmatchedLines: ReconLine[] = [];
+  let eeSum = 0;
+  let bankSum = 0;
+
+  for (let i = dataStart; i < rows.length; i++) {
+    const row = rows[i];
+    const rawCode = String(row[colCode] || '').trim();
+    if (!rawCode) continue;
+
+    const ee = colMember >= 0 ? Number(row[colMember]) || 0 : 0;
+    const er = colEmployer >= 0 ? Number(row[colEmployer]) || 0 : 0;
+    const combined = colTotalContrib >= 0 ? Number(row[colTotalContrib]) || 0 : ee + er;
+    if (ee <= 0 && combined <= 0) continue;
+
+    const name = `${String(row[colFirst] ?? '')} ${String(row[colSur] ?? '')}`.trim();
+    lines.push({ empCode: normalizeCode(rawCode), name, amount: ee });
+    eeSum += ee;
+    bankSum += combined;
+  }
+
+  return {
+    uploadType: 'pension',
+    lines,
+    unmatchedLines,
+    total: eeSum,
+    bankTotal: bankSum,
+    fileName,
+  };
 }
 
 // ── NataLodge / CSL payroll spreadsheet .xlsx ─────────────────────────────────

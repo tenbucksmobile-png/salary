@@ -19,6 +19,7 @@ import {
   parsePayrollXlsx,
   parseFtcPayrollXls,
   parseCfemDeductions,
+  parsePensionSchedule,
   nameKey,
   nameTokens,
   type PayrollLine,
@@ -418,6 +419,15 @@ export default function ReconciliationPage() {
       const byType = new Map((ups ?? []).map((u: any) => [u.upload_type, u.parsed_data]));
 
       const get = (t: string) => (byType.get(t) as ParsedStatement | undefined)?.total ?? 0;
+      // Pension's Consolidation figure is the combined EE+ER contribution — what
+      // actually gets paid to the fund administrator — not the EE-only `total` used
+      // everywhere else (Deductions Check compares EE-only against payroll's own
+      // EE-only pensionEe column). Falls back to `total` for a statement with no
+      // EE/ER split at all.
+      const getPensionBank = () => {
+        const stmt = byType.get('pension') as ParsedStatement | undefined;
+        return stmt?.bankTotal ?? stmt?.total ?? 0;
+      };
 
       if (shortCode === 'CFEM') {
         const cfem = byType.get('cfem_deductions') as ParsedCfemDeductions | undefined;
@@ -427,7 +437,7 @@ export default function ReconciliationPage() {
           if (t) totals[t] = sec.total;
         });
         // Pension isn't part of the combined CFEM Deductions Summary — it's its own upload.
-        totals.pension = get('pension');
+        totals.pension = getPensionBank();
         return totals;
       }
 
@@ -438,7 +448,7 @@ export default function ReconciliationPage() {
       return {
         basic_salary: basicSalary,
         furnmart: get('furnmart'), afritec: get('afritec'), topline: get('topline'),
-        cbstores: get('cbstores'), bodulo: get('bodulo'), pension: get('pension'),
+        cbstores: get('cbstores'), bodulo: get('bodulo'), pension: getPensionBank(),
       };
     }
 
@@ -559,6 +569,7 @@ export default function ReconciliationPage() {
       else if (type === 'ftc_payroll') parsed = await parseFtcPayrollXls(buf, file.name, month, year);
       else if (type === 'furnmart') parsed = await parseFurnmart(buf, file.name);
       else if (type === 'bodulo')   parsed = await parseBodulo(buf, file.name);
+      else if (type === 'pension')  parsed = await parsePensionSchedule(buf, file.name, month, year);
       else                          parsed = await parseAfritecXls(buf, file.name, type, hotelCode);
 
       const pid = await ensurePeriod();
