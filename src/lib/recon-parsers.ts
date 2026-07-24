@@ -659,9 +659,9 @@ function pickFtcSheet(sheetNames: string[], month: number, year: number): string
 function findFtcHeader(
   rows: any[][],
   startRow: number,
-): { found: boolean; nameCol: number; totalCol: number; rowIdx: number } {
+): { found: boolean; nameCol: number; totalCol: number; basicCol: number; rowIdx: number } {
   for (let i = startRow; i < Math.min(startRow + 15, rows.length); i++) {
-    let nameCol = -1, totalCol = -1;
+    let nameCol = -1, totalCol = -1, basicCol = -1;
     rows[i].forEach((cell: any, j: number) => {
       const s = String(cell ?? '').trim().toLowerCase();
       if (/^(full\s+)?name$/.test(s)) nameCol = j;
@@ -669,10 +669,16 @@ function findFtcHeader(
       // "TOTAL PAY"/"GROSS SALARY" — without it findFtcHeader never locates the header
       // row at all (found stays false) and the file parses to zero rows silently.
       if (/total.+pay|gross.+salary|^nett\s*pay\b/.test(s)) totalCol = j;
+      // A distinct "Basic Salary" column, when present, is genuine basic pay — the total/
+      // nett-pay column is NOT basic (a real CSL_FTC.xlsx export has both side by side:
+      // "Basic Salary" and "NETT PAY" as separate columns). Without this, .basic silently
+      // took on Net Pay's value, which then fed the Employees tab's Basic Salary Mismatch
+      // comparison and any other consumer expecting genuine basic salary.
+      if (/^basic(\s+salary)?$/.test(s)) basicCol = j;
     });
-    if (nameCol >= 0 && totalCol >= 0) return { found: true, nameCol, totalCol, rowIdx: i };
+    if (nameCol >= 0 && totalCol >= 0) return { found: true, nameCol, totalCol, basicCol, rowIdx: i };
   }
-  return { found: false, nameCol: 0, totalCol: -1, rowIdx: startRow };
+  return { found: false, nameCol: 0, totalCol: -1, basicCol: -1, rowIdx: startRow };
 }
 
 export async function parseFtcPayrollXls(
@@ -689,11 +695,12 @@ export async function parseFtcPayrollXls(
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
   // Locate first header row to determine column positions for the whole sheet
-  const { found, nameCol, totalCol, rowIdx: headerIdx } = findFtcHeader(rows, 0);
+  const { found, nameCol, totalCol, basicCol, rowIdx: headerIdx } = findFtcHeader(rows, 0);
   if (!found) return { lines: [], totals: {}, fileName };
 
   const lines: PayrollLine[] = [];
   let grandTotal = 0;
+  let grandBasic = 0;
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i];
@@ -704,19 +711,22 @@ export async function parseFtcPayrollXls(
     const total = Number(row[totalCol]) || 0;
     // Second header rows (when two blocks share a sheet) have a non-numeric total
     if (total <= 0) continue;
+    // Falls back to total (unchanged prior behaviour) for FTC formats with no distinct
+    // Basic Salary column — the original bespoke multi-sheet format this parser targets.
+    const basic = basicCol >= 0 ? Number(row[basicCol]) || 0 : total;
 
     const key = nameKey(rawName);
     const existing = lines.find(l => l.empCode === key);
     if (existing) {
       // Same employee appearing in a second block on the same sheet — sum totals
-      existing.basic += total;
+      existing.basic += basic;
       existing.incomeTotal += total;
       existing.nettPay += total;
     } else {
       lines.push({
         empCode: key, // nameKey-format; display as "—" in the UI
         name: rawName,
-        basic: total,
+        basic,
         incomeTotal: total,
         furnmart: 0, cbStores: 0, bodulo: 0,
         pensionEe: 0, paye: 0, medAidEe: 0,
@@ -726,11 +736,12 @@ export async function parseFtcPayrollXls(
       });
     }
     grandTotal += total;
+    grandBasic += basic;
   }
 
   return {
     lines,
-    totals: { basic: grandTotal, incomeTotal: grandTotal, nettPay: grandTotal },
+    totals: { basic: grandBasic, incomeTotal: grandTotal, nettPay: grandTotal },
     fileName,
   };
 }
