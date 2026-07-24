@@ -779,6 +779,33 @@ export default function ReconciliationPage() {
     });
   }
 
+  // Sanity check: each statement's own declared `total` (the figure the Summary table
+  // above ticks against payroll) should equal the sum of its own parsed `lines` +
+  // `unmatchedLines` (what the Employee Detail table below actually attributes to
+  // people). Several parsers (parseFurnmart, parseBodulo, ...) prefer a totals-row read
+  // straight from the file over the sum of what they managed to parse into rows — if the
+  // file's totals row doesn't match what the parser actually captured (a mis-detected
+  // column, a filtered/skipped row, a stale summary cell), the Summary tick can show
+  // "equal" against payroll while the per-employee breakdown underneath silently doesn't
+  // add up to that same total. Surfaced as a warning rather than trusted blindly.
+  type StmtCheck = { label: string; declared: number; fromLines: number; gap: number };
+  const totalMismatches: StmtCheck[] = [];
+  if (!isCfem) {
+    [
+      { stmt: furnmartStmt, label: 'Furnmart' },
+      { stmt: afritecStmt, label: 'Afritec' },
+      { stmt: toplineStmt, label: 'Topline' },
+      { stmt: cbStmt, label: 'CB Stores' },
+      { stmt: boduloStmt, label: 'Bodulo' },
+      { stmt: pensionStmt, label: 'Pension' },
+    ].forEach(({ stmt, label }) => {
+      if (!stmt) return;
+      const fromLines = [...stmt.lines, ...stmt.unmatchedLines].reduce((s, l) => s + l.amount, 0);
+      const gap = stmt.total - fromLines;
+      if (Math.abs(gap) > 0.5) totalMismatches.push({ label, declared: stmt.total, fromLines, gap });
+    });
+  }
+
   // Per-employee cross-check: union of all employee codes
   interface EmpRow {
     empCode: string;
@@ -992,8 +1019,26 @@ export default function ReconciliationPage() {
   addNoPayrollRow(boduloStmt?.unmatchedLines ?? [], resolvedBodulo, l => ({ bodulo_stmt: l.amount }));
   addNoPayrollRow(pensionStmt?.unmatchedLines ?? [], resolvedPension, l => ({ pension_stmt: l.amount }));
 
-  // Separate management employees (from MGMT sections) into their own bucket
-  const isMgt = (r: EmpRow) => /mgmt|management/i.test(r.section ?? '');
+  // Separate management employees (from MGMT sections) into their own bucket.
+  // `.section` only exists on CB Stores/Topline lines (parseCbToplineFormat splits the file
+  // into "TO: <label>" sections structurally) — Furnmart, Afritec, Bodulo, and Pension have
+  // no such marker at all, so a CFE Management employee whose deduction is embedded in one of
+  // those files (e.g. Baboloki Baakile appearing in CSL's Bodulo/Furnmart statement) was never
+  // being pulled out: it stayed lumped into "staff", counted in that vendor's statement total
+  // but never in CSL/NL's own payroll total (they're not CSL/NL employees), silently distorting
+  // the Statement-vs-Payroll diff for that vendor without ever showing up in the Management
+  // (CFE) section. Fall back to a name match against the CFE roster for rows with no
+  // structural section AND no CSL/NL payroll figure at all on any vendor (a real CSL/NL staff
+  // member always has at least one payroll-side figure) — the payroll-figure guard keeps this
+  // from ever reclassifying an actual CSL/NL employee whose name happens to collide with a CFE
+  // one (see the surname+initial hardening note on matchCfeEmployee above for why that
+  // collision risk is real, not hypothetical).
+  const isMgt = (r: EmpRow) => {
+    if (/mgmt|management/i.test(r.section ?? '')) return true;
+    const hasAnyPayrollFigure = r.furnmart_pay != null || r.afritec_pay != null || r.topline_pay != null
+      || r.cb_pay != null || r.bodulo_pay != null || r.pension_pay != null;
+    return !hasAnyPayrollFigure && !!matchCfeEmployee(r.name);
+  };
 
   // Only show rows that have at least one non-zero deduction value for an uploaded statement
   const hasAnyDeduction = (r: EmpRow) =>
@@ -1351,13 +1396,18 @@ export default function ReconciliationPage() {
   function consolidationIsManualSystem(hotelCode: ConsolidationHotel, lineItem: LineItem): boolean {
     return consolidationSystem[hotelCode][lineItem] == null;
   }
+  // Rounded to whole currency units — matches fmt()/fmtCurrency(), which never shows
+  // cents anywhere in this app. Diffs must be computed on the same rounded values shown
+  // on screen, otherwise a manually-entered Bank figure that matches the displayed
+  // (rounded) System figure exactly can still show a phantom ±1 "Balance Differential"
+  // purely from the auto-computed System total's sub-unit cents remainder.
   function consolidationSystemValue(hotelCode: ConsolidationHotel, lineItem: LineItem): number {
     const auto = consolidationSystem[hotelCode][lineItem];
-    if (auto != null) return auto;
-    return getConsolidationEntry(hotelCode, lineItem)?.system_amount ?? 0;
+    if (auto != null) return Math.round(auto);
+    return Math.round(getConsolidationEntry(hotelCode, lineItem)?.system_amount ?? 0);
   }
   function consolidationBankValue(hotelCode: ConsolidationHotel, lineItem: LineItem): number {
-    return getConsolidationEntry(hotelCode, lineItem)?.bank_amount ?? 0;
+    return Math.round(getConsolidationEntry(hotelCode, lineItem)?.bank_amount ?? 0);
   }
 
   async function handleExportConsolidation() {
@@ -1710,6 +1760,24 @@ export default function ReconciliationPage() {
                     </div>
                   );
                 })()}
+
+                {/* Statement total vs sum-of-lines mismatch — a file's declared total can
+                    tie out to payroll (tick shown below) while its own per-employee rows
+                    don't add up to that same total, meaning the Employee Detail table is
+                    missing or misattributing a row somewhere in that vendor's file. */}
+                {!isCfem && totalMismatches.length > 0 && (
+                  <div className="rounded border border-red-200 bg-red-50 p-4">
+                    <p className="text-xs font-semibold text-red-800 mb-2">
+                      Statement total doesn't match its own employee lines — check this file for a missed/misparsed row
+                    </p>
+                    {totalMismatches.map((m, i) => (
+                      <div key={i} className="text-xs text-red-700">
+                        {m.label}: file total {fmt(m.declared, country)} vs sum of employee lines {fmt(m.fromLines, country)}
+                        {' '}(gap {fmtDiff(m.gap, country)})
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {/* Summary cards — CSL/NL only. For CFEM, "Payroll" is meaningless (CFEM never
                     uploads salaries here) — its comparison lives entirely in the CFE
