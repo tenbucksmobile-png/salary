@@ -847,6 +847,16 @@ export default function ReconciliationPage() {
   const payMap = new Map((payroll?.lines ?? []).map(l => [l.empCode, l]));
   (ftcPayroll?.lines ?? []).forEach(l => { if (!payMap.has(l.empCode)) payMap.set(l.empCode, l); });
 
+  // FTC employees have no real employee code — parseFtcPayrollXls keys them by nameKey
+  // since none exists in the source file. But another vendor file can still assign the
+  // same FTC employee a real, vendor-generated code (confirmed on a real July 2026 CSL
+  // file: Joyce Rungwe, an FTC employee, keyed "RUN001" in Furnmart while her FTC/payroll
+  // record is keyed by her nameKey) — payMap.get(code) alone can never find her in that
+  // case, since "RUN001" and nameKey("Joyce Rungwe") are different strings. ftcByName is
+  // the same map keyed the same way (ftc lines' empCode already IS their nameKey), used as
+  // a fallback below once a vendor map has resolved a real name for an unmatched code.
+  const ftcByName = new Map((ftcPayroll?.lines ?? []).map(l => [l.empCode, l]));
+
   const furnMap    = buildEmpMap(furnmartStmt?.lines);
   const afritecMap = buildEmpMap(afritecStmt?.lines);
   // CB Stores / Topline may use matchByName — their empCode is a nameKey, not a hotel code.
@@ -875,7 +885,13 @@ export default function ReconciliationPage() {
     .filter(c => c)
     .sort()
     .map(code => {
-      const pay = payMap.get(code);
+      // Direct code lookup first; if that misses, try the name a vendor map already has
+      // for this code against ftcByName (see the ftcByName comment above for why this is
+      // needed — an FTC employee's own record is nameKey-keyed, not code-keyed).
+      const statementName = furnMap.get(code)?.name ?? afritecMap.get(code)?.name
+        ?? boduloMap.get(code)?.name ?? cbMap.get(code)?.name ?? toplineMap.get(code)?.name
+        ?? pensionMap.get(code)?.name;
+      const pay = payMap.get(code) ?? (statementName ? ftcByName.get(nameKey(statementName)) : undefined);
       // Per-employee loan payroll amounts — null when payroll has no separate column
       // and both lenders are present (can't split combined staffLoans per employee)
       const afritecPay = pay == null ? null
