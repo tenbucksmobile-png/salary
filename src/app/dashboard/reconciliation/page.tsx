@@ -904,15 +904,24 @@ export default function ReconciliationPage() {
 
       return {
         empCode: code,
-        // pensionMap included so a CFE Management employee whose ONLY code-based entry
-        // this month is Pension (e.g. no Furnmart/Bodulo line) still gets their real name
-        // instead of falling back to their raw code — a code like "BAA001" can never match
-        // matchCfeEmployee()'s name-token check below, which silently misclassified them
-        // as regular staff instead of Management.
+        // cbMap/toplineMap/pensionMap included so a CFE Management employee whose ONLY
+        // code-based entry this month is CB Stores/Topline/Pension (e.g. no Furnmart/Bodulo
+        // line) still gets their real name instead of falling back to their raw code — a
+        // code like "MAS001" can never match matchCfeEmployee()'s name-token check below,
+        // which silently misclassifies them as regular staff instead of Management. CB
+        // Stores and Topline can appear here in EITHER shape month to month: the structural
+        // multi-section "CUSTOMER NAME" format (matchByName=true, never reaches this code
+        // path — see the toplineStmt.matchByName branches above) or a plain code-based
+        // export with real employee codes and no MGMT section markers at all (seen on a real
+        // July 2026 CSL CB Stores file for MAS001/Onkagetse Maseko) — cbMap/toplineMap are
+        // harmless to check unconditionally since they're keyed by nameKey (never colliding
+        // with a real code) whenever the statement actually is matchByName.
         name: pay?.name
           ?? furnMap.get(code)?.name
           ?? afritecMap.get(code)?.name
           ?? boduloMap.get(code)?.name
+          ?? cbMap.get(code)?.name
+          ?? toplineMap.get(code)?.name
           ?? pensionMap.get(code)?.name
           ?? code,
         furnmart_stmt: furnmartStmt ? (furnMap.get(code)?.amount ?? null) : null,
