@@ -628,9 +628,10 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
 }
 
 // ── FTC / Casual Pay Register parser ─────────────────────────────────────────
-// Handles the bespoke multi-sheet "FIXED SERVICE PAY" xls format.
+// Handles the bespoke multi-sheet "FIXED SERVICE PAY" xls format — also single-sheet
+// exports (pickFtcSheet falls back to the only sheet when there's just one).
 // Column count and positions vary across sheets (3–14 cols); detection finds
-// "NAME"/"FULL NAME" and "TOTAL PAY"/"GROSS SALARY" header cells each time.
+// "NAME"/"FULL NAME" and "TOTAL PAY"/"GROSS SALARY"/"NETT PAY" header cells each time.
 // No employee codes — empCode is set to nameKey(name) for name-based matching.
 
 const FTC_MONTH_NAMES = [
@@ -664,7 +665,10 @@ function findFtcHeader(
     rows[i].forEach((cell: any, j: number) => {
       const s = String(cell ?? '').trim().toLowerCase();
       if (/^(full\s+)?name$/.test(s)) nameCol = j;
-      if (/total.+pay|gross.+salary/.test(s)) totalCol = j;
+      // "NETT PAY" added after a real CSL FTC export used that header instead of
+      // "TOTAL PAY"/"GROSS SALARY" — without it findFtcHeader never locates the header
+      // row at all (found stays false) and the file parses to zero rows silently.
+      if (/total.+pay|gross.+salary|^nett\s*pay\b/.test(s)) totalCol = j;
     });
     if (nameCol >= 0 && totalCol >= 0) return { found: true, nameCol, totalCol, rowIdx: i };
   }
