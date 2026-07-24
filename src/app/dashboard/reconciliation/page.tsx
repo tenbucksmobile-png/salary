@@ -904,10 +904,16 @@ export default function ReconciliationPage() {
 
       return {
         empCode: code,
+        // pensionMap included so a CFE Management employee whose ONLY code-based entry
+        // this month is Pension (e.g. no Furnmart/Bodulo line) still gets their real name
+        // instead of falling back to their raw code — a code like "BAA001" can never match
+        // matchCfeEmployee()'s name-token check below, which silently misclassified them
+        // as regular staff instead of Management.
         name: pay?.name
           ?? furnMap.get(code)?.name
           ?? afritecMap.get(code)?.name
           ?? boduloMap.get(code)?.name
+          ?? pensionMap.get(code)?.name
           ?? code,
         furnmart_stmt: furnmartStmt ? (furnMap.get(code)?.amount ?? null) : null,
         furnmart_pay: furnmartStmt && pay ? pay.furnmart : null,
@@ -924,36 +930,53 @@ export default function ReconciliationPage() {
       };
     });
 
+  // Single name→row index, live-updated as rows are created below, so a person who
+  // appears across multiple vendor files — some matched by code, some (CB/Topline) only
+  // matchable by name — always resolves to ONE row instead of fragmenting into
+  // disconnected duplicates. This was the actual cause of a CFE Management employee's
+  // Topline figure appearing on the CFEM Cross-Reference (which matches by name against
+  // the raw statement lines directly) but not showing up against that same person's row
+  // in CSL/NL's own Management (CFE) section: e.g. an employee with a Pension entry
+  // (code-based, creates a row in the main allCodes pass above) and a Topline entry
+  // (name-based, no CSL/NL payroll code to key off) used to land as two separate rows —
+  // the Topline amount sat on a second, disconnected, empty-code row instead of merging
+  // into the row showing their Pension figure.
+  const nameIndex = new Map<string, EmpRow>();
+  empRows.forEach(r => { if (r.name) nameIndex.set(nameKey(r.name), r); });
+
+  function mergeOrCreateRow(name: string, section: string | undefined, patch: Partial<EmpRow>): EmpRow {
+    const key = nameKey(name);
+    const existing = nameIndex.get(key);
+    if (existing) {
+      Object.assign(existing, patch);
+      if (section && !existing.section) existing.section = section;
+      return existing;
+    }
+    const row: EmpRow = {
+      empCode: '', name, section,
+      furnmart_stmt: null, furnmart_pay: null,
+      afritec_stmt: null,  afritec_pay: null,
+      topline_stmt: null,  topline_pay: null,
+      cb_stmt: null,       cb_pay: null,
+      bodulo_stmt: null,   bodulo_pay: null,
+      pension_stmt: null,  pension_pay: null,
+      ...patch,
+    };
+    empRows.push(row);
+    nameIndex.set(key, row);
+    return row;
+  }
+
   // Append name-matched statement entries that had no payroll counterpart
   // (in statement but not in payroll — payroll side shows —)
   if (cbStmt?.matchByName) {
     for (const [key, line] of cbMap) {
-      if (!matchedCbKeys.has(key)) {
-        empRows.push({
-          empCode: '', name: line.name, section: line.section,
-          furnmart_stmt: null, furnmart_pay: null,
-          afritec_stmt: null,  afritec_pay: null,
-          topline_stmt: null,  topline_pay: null,
-          cb_stmt: line.amount, cb_pay: null,
-          bodulo_stmt: null,   bodulo_pay: null,
-          pension_stmt: null,  pension_pay: null,
-        });
-      }
+      if (!matchedCbKeys.has(key)) mergeOrCreateRow(line.name, line.section, { cb_stmt: line.amount });
     }
   }
   if (toplineStmt?.matchByName) {
     for (const [key, line] of toplineMap) {
-      if (!matchedToplineKeys.has(key)) {
-        empRows.push({
-          empCode: '', name: line.name, section: line.section,
-          furnmart_stmt: null, furnmart_pay: null,
-          afritec_stmt: null,  afritec_pay: null,
-          topline_stmt: line.amount, topline_pay: null,
-          cb_stmt: null,       cb_pay: null,
-          bodulo_stmt: null,   bodulo_pay: null,
-          pension_stmt: null,  pension_pay: null,
-        });
-      }
+      if (!matchedToplineKeys.has(key)) mergeOrCreateRow(line.name, line.section, { topline_stmt: line.amount });
     }
   }
 
@@ -961,7 +984,10 @@ export default function ReconciliationPage() {
   // Afritec/Furnmart put unrecognised-code entries into unmatchedLines; CB/Topline
   // (old-format uploads) also store everything in unmatchedLines. Cross-check them
   // against payroll employees by sorted-word name key before surfacing in the callout.
-
+  // Deliberately restricted to rows with a real employee code — this pass only attaches
+  // a stray unmatched-code entry to a KNOWN CSL/NL payroll employee found by name; it must
+  // never silently attach staff-vendor data onto a Management row (those go through
+  // addNoPayrollRow below, via the shared nameIndex, instead).
   const empRowByNameKey = new Map<string, EmpRow>(
     empRows.filter(r => r.empCode && r.name).map(r => [nameKey(r.name), r]),
   );
@@ -999,7 +1025,11 @@ export default function ReconciliationPage() {
   if (pensionStmt) tryResolveByName(pensionStmt.unmatchedLines, resolvedPension,
     (r, l) => { if (r.pension_stmt == null) r.pension_stmt = l.amount; });
 
-  // Add entries that are truly absent from payroll (no match by code or name)
+  // Add entries that are truly absent from payroll (no match by code or name).
+  // Routed through mergeOrCreateRow (the same shared nameIndex as the CB/Topline block
+  // above) rather than an unconditional push, so e.g. a Furnmart/Bodulo/Pension entry for
+  // a CFE Management employee who already has a Topline-only row merges into that same
+  // row instead of creating yet another disconnected duplicate for the same person.
   function addNoPayrollRow(
     lines: ReconLine[],
     resolved: Set<string>,
@@ -1008,16 +1038,7 @@ export default function ReconciliationPage() {
     for (const line of lines) {
       const k = nameKey(line.name);
       if (resolved.has(k) || empRowByNameKey.has(k)) continue;
-      empRows.push({
-        empCode: '', name: line.name, section: line.section,
-        furnmart_stmt: null, furnmart_pay: null,
-        afritec_stmt: null,  afritec_pay: null,
-        topline_stmt: null,  topline_pay: null,
-        cb_stmt: null,       cb_pay: null,
-        bodulo_stmt: null,   bodulo_pay: null,
-        pension_stmt: null,  pension_pay: null,
-        ...patch(line),
-      });
+      mergeOrCreateRow(line.name, line.section, patch(line));
     }
   }
 
