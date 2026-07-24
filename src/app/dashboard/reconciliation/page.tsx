@@ -1101,7 +1101,20 @@ export default function ReconciliationPage() {
     if (/mgmt|management/i.test(r.section ?? '')) return true;
     const hasAnyPayrollFigure = r.furnmart_pay != null || r.afritec_pay != null || r.topline_pay != null
       || r.cb_pay != null || r.bodulo_pay != null || r.pension_pay != null;
-    return !hasAnyPayrollFigure && !!matchCfeEmployee(r.name);
+    if (hasAnyPayrollFigure) return false;
+    if (matchCfeEmployee(r.name)) return true;
+    // Name-first is authoritative (matchCfeEmployee, and resolveCfemLine's identical
+    // precedent below) — but different systems can disagree on someone's first name for
+    // the exact same code: confirmed on real July 2026 data, CFEM's own report calls
+    // NGW001 "Ernerst Ngwananaang" while CSL's own Furnmart file calls the same code
+    // "Kagiso Ngwananaang". matchCfeEmployee correctly rejects that as a surname-only
+    // overlap (the same guard that rejects the unrelated Dorcus/Nkwazi false positives),
+    // so it's a real miss here despite being the same person. Fall back to the row's own
+    // employee code against the CFE roster — only reachable once hasAnyPayrollFigure is
+    // already false, so this can never reclassify an actual CSL/NL staff member (they
+    // always have a payroll figure, even where their code coincidentally collides with an
+    // unrelated CFE code — see the Thapelo/Sanyumba/Tshekonyane collisions noted elsewhere).
+    return !!(r.empCode && cfeEmployees.some(e => e.employee_code?.toUpperCase() === r.empCode.toUpperCase()));
   };
 
   // Only show rows that have at least one non-zero deduction value for an uploaded statement
@@ -2239,7 +2252,13 @@ export default function ReconciliationPage() {
                             if (dedFilter === 'pension')  return (row.pension_stmt  ?? 0) > 0;
                             return true;
                           })).map((row, i) => {
-                            const cfeMatch = matchCfeEmployee(row.name);
+                            // Same name-first-then-code fallback as isMgt() above, so a row that
+                            // isMgt already classified as Management via the code fallback (e.g.
+                            // NGW001 — CFEM's own report says "Ernerst Ngwananaang", CSL's Furnmart
+                            // file says "Kagiso Ngwananaang" for the same code) doesn't then show a
+                            // contradictory "—" code and "unmatched" badge here.
+                            const cfeMatch = matchCfeEmployee(row.name)
+                              ?? (row.empCode ? cfeEmployees.find(e => e.employee_code?.toUpperCase() === row.empCode.toUpperCase()) : undefined);
                             return (
                               <tr key={`mgt-${row.name}-${i}`} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
                                 <td className="px-3 py-1.5 font-mono text-xs">
