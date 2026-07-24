@@ -46,6 +46,14 @@ export interface ParsedPayroll {
   lines: PayrollLine[];
   totals: Partial<PayrollLine>;
   fileName: string;
+  // FTC exports vary month to month in which vendor-deduction columns they carry at all
+  // (see parseFtcPayrollXls) — undefined for the regular payroll parser. When set, marks
+  // which of furnmart/bodulo/medAidEe/afritecLoans were actually found as real columns in
+  // THIS file, as opposed to the always-0 placeholder used when a column is simply absent.
+  // Consumers (reconciliation/page.tsx) use this to decide whether a 0 on an FTC employee
+  // means "confirmed zero" or "not tracked by this file" before treating it as comparable
+  // payroll-side data.
+  ftcColumnsFound?: { furnmart: boolean; bodulo: boolean; medAidEe: boolean; afritecLoans: boolean };
 }
 
 function normalizeCode(code: string): string {
@@ -659,9 +667,14 @@ function pickFtcSheet(sheetNames: string[], month: number, year: number): string
 function findFtcHeader(
   rows: any[][],
   startRow: number,
-): { found: boolean; nameCol: number; totalCol: number; basicCol: number; rowIdx: number } {
+): {
+  found: boolean; nameCol: number; totalCol: number; basicCol: number;
+  furnmartCol: number; boduloCol: number; medAidCol: number; afritecLoanCol: number;
+  rowIdx: number;
+} {
   for (let i = startRow; i < Math.min(startRow + 15, rows.length); i++) {
     let nameCol = -1, totalCol = -1, basicCol = -1;
+    let furnmartCol = -1, boduloCol = -1, medAidCol = -1, afritecLoanCol = -1;
     rows[i].forEach((cell: any, j: number) => {
       const s = String(cell ?? '').trim().toLowerCase();
       if (/^(full\s+)?name$/.test(s)) nameCol = j;
@@ -669,16 +682,30 @@ function findFtcHeader(
       // "TOTAL PAY"/"GROSS SALARY" — without it findFtcHeader never locates the header
       // row at all (found stays false) and the file parses to zero rows silently.
       if (/total.+pay|gross.+salary|^nett\s*pay\b/.test(s)) totalCol = j;
-      // A distinct "Basic Salary" column, when present, is genuine basic pay — the total/
-      // nett-pay column is NOT basic (a real CSL_FTC.xlsx export has both side by side:
-      // "Basic Salary" and "NETT PAY" as separate columns). Without this, .basic silently
-      // took on Net Pay's value, which then fed the Employees tab's Basic Salary Mismatch
-      // comparison and any other consumer expecting genuine basic salary.
-      if (/^basic(\s+salary)?$/.test(s)) basicCol = j;
+      // A distinct basic-pay column, when present, is genuine basic pay — the total/
+      // nett-pay column is NOT basic (real CSL FTC exports have both side by side: one
+      // month headers it "Basic Salary" + "NETT PAY", another headers the same concept
+      // just "Salary" + "NETT PAY" — both confirmed on real CSL FTC exports). Without
+      // this, .basic silently took on Net Pay's value, which then fed the Employees
+      // tab's Basic Salary Mismatch comparison and any other consumer expecting genuine
+      // basic salary. Anchored (^...$) so it never matches "GROSS SALARY" (already
+      // claimed by totalCol above) or any other multi-word phrase containing "salary".
+      if (/^(basic\s+)?salary$/.test(s)) basicCol = j;
+      // Vendor-deduction columns — present on some FTC exports (a real CSL FTC file has
+      // Funeral Cover/Afritec loan/Furnmart/Medical aid columns alongside Salary/NETT
+      // PAY), absent on others (the original bespoke multi-sheet format, and the simpler
+      // CSL_FTC.xlsx variant with only Afritec columns). ftcColumnsFound on the return
+      // value tells callers which of these were actually read vs left at the default 0.
+      if (/furnmart/.test(s)) furnmartCol = j;
+      if (/funeral|bodulo/.test(s)) boduloCol = j;
+      if (/medical/.test(s)) medAidCol = j;
+      if (/afritec/.test(s)) afritecLoanCol = j;
     });
-    if (nameCol >= 0 && totalCol >= 0) return { found: true, nameCol, totalCol, basicCol, rowIdx: i };
+    if (nameCol >= 0 && totalCol >= 0) {
+      return { found: true, nameCol, totalCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, rowIdx: i };
+    }
   }
-  return { found: false, nameCol: 0, totalCol: -1, basicCol: -1, rowIdx: startRow };
+  return { found: false, nameCol: 0, totalCol: -1, basicCol: -1, furnmartCol: -1, boduloCol: -1, medAidCol: -1, afritecLoanCol: -1, rowIdx: startRow };
 }
 
 export async function parseFtcPayrollXls(
@@ -695,12 +722,16 @@ export async function parseFtcPayrollXls(
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
   // Locate first header row to determine column positions for the whole sheet
-  const { found, nameCol, totalCol, basicCol, rowIdx: headerIdx } = findFtcHeader(rows, 0);
+  const { found, nameCol, totalCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, rowIdx: headerIdx } =
+    findFtcHeader(rows, 0);
   if (!found) return { lines: [], totals: {}, fileName };
 
   const lines: PayrollLine[] = [];
   let grandTotal = 0;
   let grandBasic = 0;
+  let grandFurnmart = 0;
+  let grandBodulo = 0;
+  let grandAfritecLoans = 0;
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i];
@@ -712,8 +743,12 @@ export async function parseFtcPayrollXls(
     // Second header rows (when two blocks share a sheet) have a non-numeric total
     if (total <= 0) continue;
     // Falls back to total (unchanged prior behaviour) for FTC formats with no distinct
-    // Basic Salary column — the original bespoke multi-sheet format this parser targets.
+    // basic-pay column — the original bespoke multi-sheet format this parser targets.
     const basic = basicCol >= 0 ? Number(row[basicCol]) || 0 : total;
+    const furnmart = furnmartCol >= 0 ? Number(row[furnmartCol]) || 0 : 0;
+    const bodulo = boduloCol >= 0 ? Number(row[boduloCol]) || 0 : 0;
+    const medAidEe = medAidCol >= 0 ? Number(row[medAidCol]) || 0 : 0;
+    const afritecLoans = afritecLoanCol >= 0 ? Number(row[afritecLoanCol]) || 0 : 0;
 
     const key = nameKey(rawName);
     const existing = lines.find(l => l.empCode === key);
@@ -722,27 +757,48 @@ export async function parseFtcPayrollXls(
       existing.basic += basic;
       existing.incomeTotal += total;
       existing.nettPay += total;
+      existing.furnmart += furnmart;
+      existing.bodulo += bodulo;
+      existing.medAidEe += medAidEe;
+      existing.afritecLoans += afritecLoans;
+      existing.staffLoans += afritecLoans;
     } else {
       lines.push({
         empCode: key, // nameKey-format; display as "—" in the UI
         name: rawName,
         basic,
         incomeTotal: total,
-        furnmart: 0, cbStores: 0, bodulo: 0,
-        pensionEe: 0, paye: 0, medAidEe: 0,
-        afritecLoans: 0, toplineLoans: 0, staffLoans: 0,
+        furnmart, cbStores: 0, bodulo,
+        pensionEe: 0, paye: 0, medAidEe,
+        afritecLoans, toplineLoans: 0, staffLoans: afritecLoans,
         deductionTotal: 0,
         nettPay: total,
       });
     }
     grandTotal += total;
     grandBasic += basic;
+    grandFurnmart += furnmart;
+    grandBodulo += bodulo;
+    grandAfritecLoans += afritecLoans;
   }
 
   return {
     lines,
-    totals: { basic: grandBasic, incomeTotal: grandTotal, nettPay: grandTotal },
+    // furnmart/bodulo/afritecLoans/staffLoans included so the top-level Deductions Check
+    // Summary (mergedTotals in reconciliation/page.tsx, which reads .totals.<field> per
+    // vendor) reflects these FTC-sourced figures too, not just the per-employee rows —
+    // otherwise the Summary's Statement-vs-Payroll diff would stay off by the FTC portion
+    // even after individual FTC employees resolve correctly.
+    totals: {
+      basic: grandBasic, incomeTotal: grandTotal, nettPay: grandTotal,
+      furnmart: grandFurnmart, bodulo: grandBodulo,
+      afritecLoans: grandAfritecLoans, staffLoans: grandAfritecLoans,
+    },
     fileName,
+    ftcColumnsFound: {
+      furnmart: furnmartCol >= 0, bodulo: boduloCol >= 0,
+      medAidEe: medAidCol >= 0, afritecLoans: afritecLoanCol >= 0,
+    },
   };
 }
 

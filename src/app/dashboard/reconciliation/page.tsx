@@ -893,27 +893,38 @@ export default function ReconciliationPage() {
         ?? pensionMap.get(code)?.name;
       const payFromCode = payMap.get(code);
       const pay = payFromCode ?? (statementName ? ftcByName.get(nameKey(statementName)) : undefined);
-      // parseFtcPayrollXls only ever extracts Name + the total-pay column from an FTC
-      // file — every deduction-column field on an FTC PayrollLine (furnmart, cbStores,
-      // bodulo, pensionEe, the loan columns) is a hardcoded 0 placeholder, never real data
-      // read from the file. Trusting those 0s as genuine payroll figures would show a false
-      // "payroll confirms zero" variance for the full statement amount on every vendor
-      // deduction for an FTC employee resolved only through the name fallback above (e.g.
-      // Joyce Rungwe's real R1,091 Furnmart deduction showing as a spurious variance
-      // instead of "no payroll-side data available"). Deduction-figure fields below are
-      // gated on payHasRealDeductions instead of a bare pay-truthy check; basic/nettPay
-      // aren't affected since FTC records do carry real figures for those.
-      const payHasRealDeductions = !!payFromCode;
+      // parseFtcPayrollXls only extracts whichever vendor-deduction columns a given FTC
+      // file actually has (varies month to month — some CSL FTC exports carry Furnmart/
+      // Bodulo("Funeral Cover")/Afritec loan columns, others carry only Afritec, others
+      // none at all); every column it didn't find is a hardcoded 0 placeholder, not real
+      // data. Trusting an untracked column's 0 as a genuine payroll figure would show a
+      // false "payroll confirms zero" variance for the full statement amount (e.g. Joyce
+      // Rungwe's real R1,091 Furnmart deduction, on a month where the uploaded FTC file
+      // had no Furnmart column, showing as a spurious variance instead of "no payroll-side
+      // data available"). ftcColumnsFound records which columns THIS file's parse actually
+      // captured, so each vendor below is trusted independently rather than as one blanket
+      // flag. CB Stores and Pension are never captured by this parser at all (no column
+      // detection exists for them), so they only ever trust a real payroll match.
+      const payIsFtc = !payFromCode && !!pay;
+      const ftcCols = ftcPayroll?.ftcColumnsFound;
+      const trustFurnmart = !!payFromCode || (payIsFtc && !!ftcCols?.furnmart);
+      const trustBodulo = !!payFromCode || (payIsFtc && !!ftcCols?.bodulo);
+      const trustAfritecLoans = !!payFromCode || (payIsFtc && !!ftcCols?.afritecLoans);
+      const trustToplineLoans = !!payFromCode; // FTC parser has no Topline column detection
+      // FTC's staffLoans mirrors whatever it read into afritecLoans (see parseFtcPayrollXls)
+      const trustStaffLoansCombined = trustAfritecLoans;
       // Per-employee loan payroll amounts — null when payroll has no separate column
       // and both lenders are present (can't split combined staffLoans per employee)
-      const afritecPay = !payHasRealDeductions ? null
-        : payrollHasSeparateLoanCols ? pay!.afritecLoans
-        : !toplineStmt ? pay!.staffLoans
-        : null;
-      const toplinePay = !payHasRealDeductions ? null
-        : payrollHasSeparateLoanCols ? pay!.toplineLoans
-        : !afritecStmt ? pay!.staffLoans
-        : null;
+      const afritecPay = payrollHasSeparateLoanCols
+        ? (trustAfritecLoans ? pay!.afritecLoans : null)
+        : !toplineStmt
+          ? (trustStaffLoansCombined ? pay!.staffLoans : null)
+          : null;
+      const toplinePay = payrollHasSeparateLoanCols
+        ? (trustToplineLoans ? pay!.toplineLoans : null)
+        : !afritecStmt
+          ? (trustStaffLoansCombined ? pay!.staffLoans : null)
+          : null;
 
       // CB Stores: name-based lookup using payroll employee name
       let cb_stmt: number | null = null;
@@ -962,17 +973,17 @@ export default function ReconciliationPage() {
           ?? pensionMap.get(code)?.name
           ?? code,
         furnmart_stmt: furnmartStmt ? (furnMap.get(code)?.amount ?? null) : null,
-        furnmart_pay: furnmartStmt && payHasRealDeductions ? pay!.furnmart : null,
+        furnmart_pay: furnmartStmt && trustFurnmart ? pay!.furnmart : null,
         afritec_stmt: afritecStmt ? (afritecMap.get(code)?.amount ?? null) : null,
         afritec_pay: afritecStmt ? afritecPay : null,
         topline_stmt: toplineStmt ? topline_stmt : null,
         topline_pay: toplineStmt ? toplinePay : null,
         cb_stmt: cbStmt ? cb_stmt : null,
-        cb_pay: cbStmt && payHasRealDeductions ? pay!.cbStores : null,
+        cb_pay: cbStmt && payFromCode ? pay!.cbStores : null,
         bodulo_stmt: boduloStmt ? (boduloMap.get(code)?.amount ?? null) : null,
-        bodulo_pay: boduloStmt && payHasRealDeductions ? pay!.bodulo : null,
+        bodulo_pay: boduloStmt && trustBodulo ? pay!.bodulo : null,
         pension_stmt: pensionStmt ? (pensionMap.get(code)?.amount ?? null) : null,
-        pension_pay: pensionStmt && payHasRealDeductions ? pay!.pensionEe : null,
+        pension_pay: pensionStmt && payFromCode ? pay!.pensionEe : null,
       };
     });
 
