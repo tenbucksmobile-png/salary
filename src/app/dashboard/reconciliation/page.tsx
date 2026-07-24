@@ -215,12 +215,19 @@ export default function ReconciliationPage() {
   const CONSOLIDATION_HOTELS: ConsolidationHotel[] = ['CSL', 'NL', 'CFEM'];
   type LineItem = 'basic_salary' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo' | 'pension';
   const LINE_ITEMS: LineItem[] = ['basic_salary', 'furnmart', 'afritec', 'topline', 'cbstores', 'bodulo', 'pension'];
+  // Internal key stays "basic_salary" (matches the recon_consolidation DB rows already
+  // saved under it — see migration 021) even though it now represents Net Salary; this is
+  // a display/computation change only, not a data migration.
   const LINE_ITEM_LABELS: Record<LineItem, string> = {
-    basic_salary: 'Basic Salary', furnmart: 'Furnmart', afritec: 'Afritec',
+    basic_salary: 'Net Salary', furnmart: 'Furnmart', afritec: 'Afritec',
     topline: 'Topline', cbstores: 'CB Stores', bodulo: 'Bodulo / Afri Insurance', pension: 'Pension',
   };
-  // null = no automatic source in this app for that line item (only CFEM's Basic Salary,
-  // since CFEM payroll is never uploaded here) — falls back to a manual system_amount entry.
+  // null = no automatic source in this app for that line item. CFEM's Net Salary is
+  // deliberately netted out entirely rather than falling back to a manual entry like every
+  // other "no source" cell does elsewhere — CFEM runs its own confidential payroll that must
+  // never be visible in this shared CSL/NL/CFEM reconciliation view, so unlike Furnmart/
+  // Afritec/etc (where CFEM's own deductions report supplies a real figure), there's no
+  // CFEM salary figure that should ever appear here, manually entered or otherwise.
   type SystemTotals = Record<LineItem, number | null>;
   const emptySystemTotals: SystemTotals = { basic_salary: 0, furnmart: 0, afritec: 0, topline: 0, cbstores: 0, bodulo: 0, pension: 0 };
   const [consolidationSystem, setConsolidationSystem] = useState<Record<ConsolidationHotel, SystemTotals> & { loaded: boolean }>({
@@ -411,7 +418,7 @@ export default function ReconciliationPage() {
         .eq('period_year', year)
         .eq('period_month', month)
         .maybeSingle();
-      if (!periodRow) return shortCode === 'CFEM' ? { ...emptySystemTotals, basic_salary: null } : emptySystemTotals;
+      if (!periodRow) return emptySystemTotals;
 
       const { data: ups } = await supabase
         .from('recon_uploads')
@@ -432,7 +439,9 @@ export default function ReconciliationPage() {
 
       if (shortCode === 'CFEM') {
         const cfem = byType.get('cfem_deductions') as ParsedCfemDeductions | undefined;
-        const totals: SystemTotals = { ...emptySystemTotals, basic_salary: null };
+        // Net Salary stays 0 for CFEM — netted out entirely, never a manual entry either
+        // (see consolidationIsManualSystem/consolidationSystemValue below).
+        const totals: SystemTotals = { ...emptySystemTotals };
         cfem?.sections.forEach(sec => {
           const t = lookupCfemVendorType(sec.vendor);
           if (t) totals[t] = sec.total;
@@ -444,10 +453,10 @@ export default function ReconciliationPage() {
 
       const payroll = byType.get('payroll') as ParsedPayroll | undefined;
       const ftc = byType.get('ftc_payroll') as ParsedPayroll | undefined;
-      const basicSalary = (payroll?.lines.reduce((s, l) => s + l.basic, 0) ?? 0)
-                         + (ftc?.lines.reduce((s, l) => s + l.basic, 0) ?? 0);
+      const netSalary = (payroll?.lines.reduce((s, l) => s + l.nettPay, 0) ?? 0)
+                       + (ftc?.lines.reduce((s, l) => s + l.nettPay, 0) ?? 0);
       return {
-        basic_salary: basicSalary,
+        basic_salary: netSalary,
         furnmart: get('furnmart'), afritec: get('afritec'), topline: get('topline'),
         cbstores: get('cbstores'), bodulo: get('bodulo'), pension: getPensionBank(),
       };
@@ -1432,7 +1441,14 @@ export default function ReconciliationPage() {
   function getConsolidationEntry(hotelCode: ConsolidationHotel, lineItem: LineItem) {
     return consolidationEntries.find(e => e.hotel_short_code === hotelCode && e.line_item === lineItem);
   }
+  // CFEM's Net Salary is netted out entirely — never manual, never editable, always 0 —
+  // since CFEM's payroll is confidential and must never surface in this shared view (unlike
+  // Furnmart/Afritec/etc, CFEM has no deductions-report equivalent for salary that would
+  // make a real figure safe to show here).
+  const isCfemNetSalary = (hotelCode: ConsolidationHotel, lineItem: LineItem) =>
+    hotelCode === 'CFEM' && lineItem === 'basic_salary';
   function consolidationIsManualSystem(hotelCode: ConsolidationHotel, lineItem: LineItem): boolean {
+    if (isCfemNetSalary(hotelCode, lineItem)) return false;
     return consolidationSystem[hotelCode][lineItem] == null;
   }
   // Rounded to whole currency units — matches fmt()/fmtCurrency(), which never shows
@@ -1441,11 +1457,13 @@ export default function ReconciliationPage() {
   // (rounded) System figure exactly can still show a phantom ±1 "Balance Differential"
   // purely from the auto-computed System total's sub-unit cents remainder.
   function consolidationSystemValue(hotelCode: ConsolidationHotel, lineItem: LineItem): number {
+    if (isCfemNetSalary(hotelCode, lineItem)) return 0;
     const auto = consolidationSystem[hotelCode][lineItem];
     if (auto != null) return Math.round(auto);
     return Math.round(getConsolidationEntry(hotelCode, lineItem)?.system_amount ?? 0);
   }
   function consolidationBankValue(hotelCode: ConsolidationHotel, lineItem: LineItem): number {
+    if (isCfemNetSalary(hotelCode, lineItem)) return 0;
     return Math.round(getConsolidationEntry(hotelCode, lineItem)?.bank_amount ?? 0);
   }
 
@@ -2540,12 +2558,16 @@ export default function ReconciliationPage() {
                             <td className="px-3 py-1.5 text-muted-foreground border-t">Bank Upload</td>
                             {LINE_ITEMS.map((li, i) => (
                               <td key={li} className="px-2 py-1.5 text-right border-t border-l">
-                                <input
-                                  type="number"
-                                  defaultValue={bankByLi[i] || ''}
-                                  onBlur={e => saveConsolidationEntry(h, li, 'bank_amount', e.target.value === '' ? null : Number(e.target.value))}
-                                  className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
-                                />
+                                {isCfemNetSalary(h, li) ? (
+                                  <span className="tabular-nums text-muted-foreground">—</span>
+                                ) : (
+                                  <input
+                                    type="number"
+                                    defaultValue={bankByLi[i] || ''}
+                                    onBlur={e => saveConsolidationEntry(h, li, 'bank_amount', e.target.value === '' ? null : Number(e.target.value))}
+                                    className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
+                                  />
+                                )}
                               </td>
                             ))}
                             <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmt(hotelTotalBank, country)}</td>
