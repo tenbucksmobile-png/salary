@@ -816,3 +816,30 @@ export function parseCfemDeductions(text: string, fileName: string): ParsedCfemD
 
   return { sections, fileName };
 }
+
+// ── CFEM Pension Contribution list (plain text/CSV) ────────────────────────────
+// CFEM's fund administrator can export pension in the exact same "LIST OF: <Vendor>
+// METHOD NO: ALL (Current period)" sectioned shape as the combined CFEM Deductions
+// Summary (see parseCfemDeductions above) — just for its own single "Pension Fund"
+// section, uploaded directly to the Pension slot rather than folded into the combined
+// cfem_deductions upload (Pension is deliberately never part of that combined report —
+// see the CFEM Pension Contributions note elsewhere). Reuses parseCfemDeductions's
+// section/line scanner rather than duplicating the whitespace-vs-number-anchor parsing.
+//
+// Column order is EMP.CODE / NAME / CO.CONTRIB (employer) / EMP.AMOUNT (employee) /
+// TOTAL (EE+ER) — same as every other CFEM deductions section. `lines[].amount` and
+// `total` here are EE-only (empAmount), matching parsePensionSchedule's xlsx-based
+// sibling below and keeping the Deductions Check comparison against payroll's EE-only
+// pensionEe column like-for-like; `bankTotal` carries the combined EE+ER figure (the
+// section's own TOTAL-column total) for the Consolidation tab's Pension "System" row.
+export function parseCfemPensionCsv(text: string, fileName: string): ParsedStatement {
+  const { sections } = parseCfemDeductions(text, fileName);
+  const section = sections.find(s => /pension/i.test(s.vendor)) ?? sections[0];
+  if (!section) return { uploadType: 'pension', lines: [], unmatchedLines: [], total: 0, fileName };
+
+  const lines: ReconLine[] = section.lines.map(l => ({ empCode: l.empCode, name: l.name, amount: l.empAmount }));
+  const eeSum = lines.reduce((s, l) => s + l.amount, 0);
+  const bankSum = section.total || section.lines.reduce((s, l) => s + l.total, 0);
+
+  return { uploadType: 'pension', lines, unmatchedLines: [], total: eeSum, bankTotal: bankSum, fileName };
+}

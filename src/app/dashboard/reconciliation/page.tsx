@@ -19,6 +19,7 @@ import {
   parsePayrollXlsx,
   parseFtcPayrollXls,
   parseCfemDeductions,
+  parseCfemPensionCsv,
   parsePensionSchedule,
   nameKey,
   nameTokens,
@@ -77,7 +78,7 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
   },
   {
     type: 'pension', label: 'Pension Contributions', required: false,
-    accept: '.xls,.xlsx', desc: 'Monthly pension/provident fund contribution statement (.xls) — uploaded per hotel, including CFEM',
+    accept: '.xls,.xlsx,.csv,.txt', desc: 'Monthly pension/provident fund contribution statement (.xls, or CFEM\'s .csv "LIST OF:" export) — uploaded per hotel, including CFEM',
     payrollKey: 'pensionEe',
   },
   {
@@ -569,7 +570,15 @@ export default function ReconciliationPage() {
       else if (type === 'ftc_payroll') parsed = await parseFtcPayrollXls(buf, file.name, month, year);
       else if (type === 'furnmart') parsed = await parseFurnmart(buf, file.name);
       else if (type === 'bodulo')   parsed = await parseBodulo(buf, file.name);
-      else if (type === 'pension')  parsed = await parsePensionSchedule(buf, file.name, month, year);
+      else if (type === 'pension') {
+        // CFEM's fund administrator can export pension as a plain-text/CSV "LIST OF:
+        // Pension Fund" statement (the same sectioned shape as the CFEM Deductions
+        // Summary) instead of the multi-sheet xlsx parsePensionSchedule expects — an
+        // .xlsx workbook read of a CSV would throw, so route by extension.
+        parsed = /\.(csv|txt)$/i.test(file.name)
+          ? parseCfemPensionCsv(new TextDecoder().decode(buf), file.name)
+          : await parsePensionSchedule(buf, file.name, month, year);
+      }
       else                          parsed = await parseAfritecXls(buf, file.name, type, hotelCode);
 
       const pid = await ensurePeriod();
