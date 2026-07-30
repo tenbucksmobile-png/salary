@@ -9,7 +9,9 @@ import { exportReport, type ReportSheet } from '@/lib/reports-export';
 import { RefreshCw, Download, Gift } from 'lucide-react';
 
 const HOTEL_FILTER_KEY = 'ihg-salary-bonus-hotel';
+const ACCRUAL_MONTHS_KEY = 'ihg-salary-bonus-accrual-months';
 const ALL = 'ALL';
+const DEFAULT_ACCRUAL_MONTHS = 7; // monthly total accrued to end July
 
 // Bonus Provision only applies to these four hotels.
 const BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA'];
@@ -30,6 +32,7 @@ export default function BonusProvisionPage() {
   const [bookBalances, setBookBalances] = useState<BonusProvisionBookBalance[]>([]);
   const [bookInputs, setBookInputs] = useState<Map<string, string>>(new Map());
   const [year, setYear] = useState(new Date().getFullYear());
+  const [accrualMonths, setAccrualMonths] = useState(DEFAULT_ACCRUAL_MONTHS);
   const [loading, setLoading] = useState(true);
   const [recalculating, setRecalculating] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -61,10 +64,24 @@ export default function BonusProvisionPage() {
   useEffect(() => { load(); }, []);
 
   useEffect(() => {
+    try {
+      const saved = localStorage.getItem(ACCRUAL_MONTHS_KEY);
+      if (saved) {
+        const n = parseFloat(saved);
+        if (!isNaN(n) && n > 0) setAccrualMonths(n);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
     if (hotelFilter) {
       try { localStorage.setItem(HOTEL_FILTER_KEY, hotelFilter); } catch {}
     }
   }, [hotelFilter]);
+
+  useEffect(() => {
+    try { localStorage.setItem(ACCRUAL_MONTHS_KEY, String(accrualMonths)); } catch {}
+  }, [accrualMonths]);
 
   useEffect(() => {
     if (!hotelFilter || hotels.length === 0) return;
@@ -110,26 +127,30 @@ export default function BonusProvisionPage() {
         // carries a bonus or incentive provision regardless of what's on
         // its placeholder salary record.
         const isAno = employee.grade_label === 'ANO';
-        const amount = isAno ? 0 : (salary?.bonus_provision ?? 0) + (salary?.incentive ?? 0);
-        return { employee, salary, hotel: hotelMap.get(employee.hotel_id), isAno, amount };
+        const monthlyAmount = isAno ? 0 : (salary?.bonus_provision ?? 0) + (salary?.incentive ?? 0);
+        // Bonus provision is a monthly rate — the balance actually owed by a
+        // given point in the year is that monthly rate accrued over however
+        // many months have elapsed (7 = to end July, editable in the header).
+        const provisionBalance = Math.round(monthlyAmount * accrualMonths * 100) / 100;
+        return { employee, salary, hotel: hotelMap.get(employee.hotel_id), isAno, monthlyAmount, provisionBalance };
       })
       .filter(r => r.salary)
       .sort((a, b) => {
         const hotelCmp = (a.hotel?.short_code ?? '').localeCompare(b.hotel?.short_code ?? '');
         return hotelCmp !== 0 ? hotelCmp : a.employee.surname.localeCompare(b.employee.surname);
       });
-  }, [employees, latestSalaryMap, hotelMap]);
+  }, [employees, latestSalaryMap, hotelMap, accrualMonths]);
 
   // Group totals by currency — ALL view can mix ZAR (SA: IH, ILRB, APA) and BWP (ILG).
   // Incentive-scheme employees (incentive_applicable) get salary_records.incentive
   // instead of bonus_provision (calculateBurden zeroes one or the other) — both
   // represent the same annual payout reserve via different schemes, so they're
-  // combined into one total. ANO rows contribute 0 (see `amount` above).
+  // combined into one total. ANO rows contribute 0 (see `monthlyAmount` above).
   const totalsByCountry = useMemo(() => {
     const totals = new Map<string, number>();
     for (const r of rows) {
       const key = r.hotel ? (isBotswana(r.hotel.country) ? 'BWP' : 'ZAR') : 'ZAR';
-      totals.set(key, (totals.get(key) ?? 0) + r.amount);
+      totals.set(key, (totals.get(key) ?? 0) + r.provisionBalance);
     }
     return totals;
   }, [rows]);
@@ -153,7 +174,7 @@ export default function BonusProvisionPage() {
     return adjustmentHotels.map(h => {
       const cost = rows
         .filter(r => r.hotel?.id === h.id)
-        .reduce((sum, r) => sum + r.amount, 0);
+        .reduce((sum, r) => sum + r.provisionBalance, 0);
       const book = bookMap.get(h.id)?.book_provision ?? 0;
       const adjustment = Math.floor((cost - book) / 100) * 100;
       return { hotel: h, cost, book, adjustment };
@@ -271,9 +292,9 @@ export default function BonusProvisionPage() {
     try {
       const headers = [
         ...(isAll ? ['Hotel'] : []),
-        'Emp Code', 'Surname', 'First Name', 'Grade', 'Gross Salary', 'Bonus Provision', 'Incentive',
+        'Emp Code', 'Surname', 'First Name', 'Grade', 'Gross Salary', 'Bonus Provision', 'Incentive', 'Accrual Months', 'Provision Balance',
       ];
-      const dataRows = rows.map(({ employee, salary, hotel, isAno }) => [
+      const dataRows = rows.map(({ employee, salary, hotel, isAno, provisionBalance }) => [
         ...(isAll ? [hotel?.short_code ?? '—'] : []),
         employee.employee_code ?? '—',
         employee.surname,
@@ -282,10 +303,12 @@ export default function BonusProvisionPage() {
         salary?.total_earnings ?? 0,
         isAno ? 0 : (salary?.bonus_provision ?? 0),
         isAno ? 0 : (salary?.incentive ?? 0),
+        accrualMonths,
+        provisionBalance,
       ]);
       const totalsRow = [
         ...(isAll ? [''] : []),
-        `Total (${rows.length} employees)`, '', '', '', '', '',
+        `Total (${rows.length} employees)`, '', '', '', '', '', '', '',
         [...totalsByCountry.entries()].map(([cur, v]) => `${cur} ${v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}`).join(' / '),
       ];
       const sheet: ReportSheet = {
@@ -339,6 +362,18 @@ export default function BonusProvisionPage() {
             {[year, year - 1, year - 2].map(y => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
+        <div>
+          <label className="text-xs font-medium text-muted-foreground block mb-1">Accrual Months</label>
+          <input
+            type="number" step="1" min="1" max="12"
+            value={accrualMonths}
+            onChange={e => {
+              const n = parseFloat(e.target.value);
+              setAccrualMonths(isNaN(n) ? 0 : n);
+            }}
+            className="w-24 rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white"
+          />
+        </div>
         <button
           onClick={recalculate}
           disabled={recalculating || rows.length === 0}
@@ -362,7 +397,7 @@ export default function BonusProvisionPage() {
           <div className="px-4 py-3 border-b bg-muted/40">
             <h2 className="text-sm font-semibold">Book Adjustment — {year}</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Cost of Bonus Provision (as calculated, including Incentive) less Current Provision on Books = Adjustment Required, rounded down to the nearest 100.
+              Cost of Bonus Provision (monthly total × {accrualMonths} accrual months, including Incentive) less Current Provision on Books = Adjustment Required, rounded down to the nearest 100.
             </p>
           </div>
           <table className="w-full text-sm whitespace-nowrap">
@@ -417,10 +452,11 @@ export default function BonusProvisionPage() {
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Gross Salary</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Bonus Provision</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Incentive</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Provision Balance</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ employee, salary, hotel, isAno }, i) => (
+              {rows.map(({ employee, salary, hotel, isAno, provisionBalance }, i) => (
                 <tr key={employee.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                   {isAll && <td className="px-4 py-2.5 text-muted-foreground">{hotel?.short_code ?? '—'}</td>}
                   <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{employee.employee_code ?? '—'}</td>
@@ -428,19 +464,21 @@ export default function BonusProvisionPage() {
                   <td className="px-4 py-2.5">{employee.first_name}</td>
                   <td className="px-4 py-2.5 text-muted-foreground">{employee.grade_label ?? 'Unclassified'}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(salary?.total_earnings ?? 0, hotel)}</td>
-                  <td className="px-4 py-2.5 text-right font-mono">
+                  <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">
                     {isAno || employee.incentive_applicable ? '—' : fmt(salary?.bonus_provision ?? 0, hotel)}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono">
+                  <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">
                     {!isAno && employee.incentive_applicable ? fmt(salary?.incentive ?? 0, hotel) : '—'}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono">
+                    {isAno ? '—' : fmt(provisionBalance, hotel)}
                   </td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
               <tr className="border-t bg-muted/20 font-medium">
-                <td className="px-4 py-3" colSpan={isAll ? 6 : 5}>Total ({rows.length} employees)</td>
-                <td className="px-4 py-3" />
+                <td className="px-4 py-3" colSpan={isAll ? 8 : 7}>Total ({rows.length} employees)</td>
                 <td className="px-4 py-3 text-right font-mono">
                   {[...totalsByCountry.entries()].map(([cur, v]) => (
                     <div key={cur}>{cur === 'BWP' ? 'P' : 'R'} {v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}</div>
