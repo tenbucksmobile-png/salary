@@ -376,8 +376,8 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
 
 export function isLeaveBalanceFile(firstLine: string): boolean {
   const l = normalizeHeaderCell(firstLine);
-  const hasName    = l.includes('surname') || l.includes('first name');
-  const hasLeave   = l.includes('leave') && (l.includes('balance') || l.includes('days') || l.includes('accrual'));
+  const hasName    = l.includes('surname') || l.includes('first name') || l.includes('name');
+  const hasLeave   = l.includes('leave');
   const hasSalary  = l.includes('gross') || l.includes('salary') || l.includes('earnings');
   return hasName && hasLeave && !hasSalary;
 }
@@ -396,8 +396,11 @@ export function parseLeaveBalanceFile(text: string): { employees: LeaveBalanceEn
 
   const idx = {
     surname:   header.findIndex(h => h === 'surname' || h === 'surnmae' || h === 'last name' || h === 'lastname'),
-    firstName: header.findIndex(h => h === 'name' || h === 'first name' || h === 'firstname'),
-    empCode:   header.findIndex(h => h === 'emp code' || h === 'employee code' || h === 'emp no' || h === 'employee no' || h === 'staff no' || h === 'staff code' || h === 'emp #' || h === 'emp#'),
+    firstName: header.findIndex(h => h === 'first name' || h === 'firstname'),
+    // Some exports (e.g. "Code,Name,Leave") give one combined "Name" column
+    // instead of separate surname/first name — split it token-wise below.
+    fullName:  header.findIndex(h => h === 'name'),
+    empCode:   header.findIndex(h => h === 'emp code' || h === 'employee code' || h === 'emp no' || h === 'employee no' || h === 'staff no' || h === 'staff code' || h === 'emp #' || h === 'emp#' || h === 'code'),
     leave:     header.findIndex(h => h.includes('leave')),
   };
 
@@ -408,11 +411,19 @@ export function parseLeaveBalanceFile(text: string): { employees: LeaveBalanceEn
     const cols = splitCSVLine(lines[i], delim).map(c => c.trim().replace(/^"|"$/g, ''));
     if (cols.every(c => !c)) continue;
     const get = (k: keyof typeof idx) => idx[k] >= 0 ? cols[idx[k]] ?? '' : '';
-    const surname = get('surname');
+
+    let surname = get('surname');
+    let firstName = get('firstName');
+    if (!surname && !firstName) {
+      const full = get('fullName').trim();
+      const tokens = full.split(/\s+/).filter(Boolean);
+      surname = tokens[0] ?? '';
+      firstName = tokens.slice(1).join(' ');
+    }
     if (!surname) continue;
     employees.push({
       surname,
-      firstName:        get('firstName'),
+      firstName,
       employeeCode:      get('empCode'),
       leaveBalanceDays:  parseTabularAmount(get('leave')),
     });
