@@ -32,6 +32,13 @@ export function hotelSortIndex(name: string): number {
   return idx === -1 ? HOTEL_ORDER.length : idx;
 }
 
-export function sortHotels<T extends { name: string }>(hotels: T[]): T[] {
-  return [...hotels].sort((a, b) => hotelSortIndex(a.name) - hotelSortIndex(b.name));
+// BURS-only hotels (currently just Pom Pom) are excluded by default from
+// every hotel list app-wide — pass includeBursOnly to opt back in (the BURS
+// page is the only caller that should).
+export function sortHotels<T extends { name: string; is_burs_only?: boolean | null }>(
+  hotels: T[],
+  opts?: { includeBursOnly?: boolean },
+): T[] {
+  const visible = opts?.includeBursOnly ? hotels : hotels.filter(h => !h.is_burs_only);
+  return [...visible].sort((a, b) => hotelSortIndex(a.name) - hotelSortIndex(b.name));
 }

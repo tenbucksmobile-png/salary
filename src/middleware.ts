@@ -5,6 +5,7 @@ import { verifyToken, COOKIE_NAME, CONFIGURABLE_TABS, DEFAULT_SUB_TABS, type Tab
 const SUB_BLOCKED = [
   '/dashboard/salary-review',
   '/dashboard/access',
+  '/dashboard/burs',
 ];
 
 // Route prefixes per configurable tab. 'dashboard' is matched as an EXACT

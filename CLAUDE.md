@@ -29,8 +29,11 @@ Core workflows:
 | NL | Botswana | Nata Lodge — exempt from UIF/SDL/WCA |
 | CFE | Botswana | exempt from UIF/SDL/WCA |
 | ILG | Botswana | exempt from UIF/SDL/WCA |
+| PomPom | Botswana | Pom Pom — **BURS-only**, see below; not a real operating hotel elsewhere in the app |
 
 Botswana hotels are detected via `hotel.country` — `isBotswana()` in `src/lib/payroll-calc.ts` is the canonical check. It matches if the lowercased country includes `"botswana"` **or** equals `"bw"`. Always use this function — never hardcode short codes for the exemption check.
+
+**`hotels.is_burs_only`** (migration 027) — Pom Pom is the only hotel with this set `true`. `sortHotels()` in `src/lib/utils.ts` filters it out by default from every hotel list app-wide (Employees, Dashboard, Salary Review, Reports, Methods, Import, Access, Leave/Bonus/Severance Provision) — only the BURS page calls `sortHotels(hotels, { includeBursOnly: true })` to see it. If a hotel ever needs to exist for one narrow purpose without polluting every other hotel dropdown, this is the pattern to reuse.
 
 The hotel seed data in `001_initial_schema.sql` uses older names and includes an "APA" entry not present in production. Trust the live `hotels` table, not the seed.
 
@@ -156,6 +159,7 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `024_leave_provision_book_balances.sql` | New `leave_provision_book_balances` table — Leave Provision page's Book Adjustment card (see Leave Provision section) |
 | `025_bonus_provision_book_balances.sql` | New `bonus_provision_book_balances` table — same pattern, for the Bonus Provision page (see Provisions section) |
 | `026_severance_provision_book_balances.sql` | New `severance_provision_book_balances` table — same pattern, for the Severance Provision page (see Provisions section) |
+| `027_burs_pompom_hotel.sql` | `hotels.is_burs_only` flag; inserts the Pom Pom hotel row (see BURS section) |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -332,6 +336,7 @@ src/
       salary-review/page.tsx — Per-hotel increase builder; drafts persist to DB; commit to salary_records
       reports/page.tsx    — Flexible report builder; Excel + PDF export
       reconciliation/page.tsx — Monthly payroll reconciliation for CSL/NL/CFE (admin-only)
+      burs/page.tsx        — Botswana PAYE submission scaffolding (admin-only); Omang readiness check is functional, upload/parsing awaits the BURS template
   lib/
     auth.ts               — UserContext, makeToken(), verifyToken(), hashPassword() — Edge-compatible
     payroll-calc.ts       — calculateBurden(); isBotswana(), isManager(); BurdenInput/BurdenResult
@@ -615,7 +620,7 @@ Spans **all three hotels** (CSL, NL, CFEM) for one month at once, independent of
 **Nav**: `nav-sidebar.tsx` renders `ADMIN_NAV` unfiltered for admins; for sub users it filters `SUB_NAV` down to whichever tab `key`s are in `allowedTabs` (prop passed from `dashboard/layout.tsx`, sourced from the cookie's `UserContext.allowedTabs`).
 
 **Middleware** (`src/middleware.ts`) — two layers for sub users:
-1. `SUB_BLOCKED` (always-blocked paths, not configurable): `/dashboard/salary-review`, `/dashboard/access`.
+1. `SUB_BLOCKED` (always-blocked paths, not configurable): `/dashboard/salary-review`, `/dashboard/access`, `/dashboard/burs`.
 2. `TAB_ROUTES` — maps each configurable tab key to its route prefix(es); a sub user hitting a configurable tab's route without that key in `allowedTabs` is redirected away. `'dashboard'` is matched via `matchTab()` as an **exact** path (`pathname === '/dashboard'`) rather than a prefix, since `/dashboard` is also a string-prefix of every other tab's route (`/dashboard/employees`, etc.) — a naive `startsWith` would misclassify all of them as the dashboard tab. `/dashboard/settings` (a redirect shim to Methods) is gated as a second prefix under the `'methods'` key rather than its own tab.
 
 Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE_TABS` order ∩ `allowedTabs`), falling back to `/login` only if a sub user somehow has zero tabs granted (the Access page's save validation prevents this via the UI, but doesn't stop a zero-tab state some other way).
@@ -685,6 +690,25 @@ Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE
 **Recalculate** writes back the **full** dependent field set (`provident_employee`, `uif_employee`, `total_deductions`, `net_salary`, `provident_company`, `severance`, `total_company_contrib`, `total_payroll_burden`, `total_cost`, `ctc`), not just `severance` — because `severanceApplicable` also zeroes PF EE/ER per the Botswana rule (see Payroll Burden Calculations above), a partial write would leave provident fund figures stale relative to the new severance value.
 
 **Book Adjustment**: `severance_provision_book_balances` table (migration 026), identical shape/pattern to Leave's.
+
+---
+
+## BURS
+
+`/dashboard/burs` — monthly PAYE submission to the Botswana Unified Revenue Service. **Permanently admin-only**: blocked for sub users in `middleware.ts`'s `SUB_BLOCKED` (same list as Salary Review/Access — not just hidden from nav via `adminOnly` on the nav item, since Omang/tax data is more sensitive than most other admin-only pages), and `'burs'` is not in `CONFIGURABLE_TABS`, so it can't be granted to a sub user either.
+
+**Scope**: five hotels — `BURS_HOTEL_CODES = ['ILG', 'CSL', 'NL', 'CFEM', 'PomPom']`. Split into two submission groups:
+- **ILG** — submitted on its own payroll spreadsheet, separate from the other four.
+- **CSL / NL / CFEM / Pom Pom** — submitted together on one shared/combined payroll spreadsheet.
+
+**Pom Pom** is a hotel that exists solely for this page — see `hotels.is_burs_only` above. CFEM appears here despite never having a `payroll` upload anywhere else in the app (its confidential payroll is otherwise invisible to this system, per the Reconciliation section) — BURS is a narrow exception since PAYE is a statutory submission, not an internal cost comparison.
+
+**Current state — scaffolding only, not yet functional**: the actual BURS submission template (required column layout/order/headers) hasn't been provided yet, so:
+- The two upload slots (ILG / Combined) are inert placeholders — no parser exists, nothing is stored.
+- The eventual data source will be each month's **payroll spreadsheet** upload, filtered to employees with a nonzero PAYE figure (`PayrollLine.paye` in `recon-parsers.ts` already parses this — reusable once the combined-file's per-hotel identification scheme is known, which the template will clarify).
+- **Omang Readiness** is the one piece already built and functional: lists every active employee across the five hotels missing an `id_number` (Omang), since BURS needs one for every tax-paying employee and gaps need fixing *before* the template work starts. No new import format — Omang is filled the same way as any other HR field, via **Import HR List**'s existing Omang/National ID column (see Import Formats above).
+
+When the template arrives: build a parser for the combined multi-hotel file (likely needs a per-line hotel identifier, similar to how `parseCbToplineFormat`'s `TO: <label>` sections split CSL/NL/CFEM sections in Reconciliation) and a separate one for ILG's own file, filter each hotel's lines to `paye > 0`, join to `employees.id_number`, and build the actual export in the exact column order BURS requires.
 
 ---
 

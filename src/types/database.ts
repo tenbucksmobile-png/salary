@@ -25,6 +25,9 @@ export interface Hotel {
   leave_accrual_pct?: number | null;
   bonus_provision_pct?: number | null;
   leave_provision_divisor?: number | null;
+  // BURS-only hotel (currently just Pom Pom) — excluded from every hotel list
+  // app-wide by sortHotels() unless explicitly opted back in. See BURS page.
+  is_burs_only?: boolean | null;
   created_at: string;
 }
 
