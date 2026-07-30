@@ -397,6 +397,28 @@ export default function MethodsPage() {
                   </tr>
                 )}
 
+                {/* Severance — Botswana only; fixed formula (not a configurable rate),
+                    toggled per employee via "Calculate severance accrual" on the
+                    Employee edit page. Shown here purely so the rule is visible. */}
+                <tr className={bw ? '' : 'opacity-50 pointer-events-none'}>
+                  <td className="px-5 py-3">
+                    Severance Accrual
+                    <span className="ml-1.5 text-xs text-muted-foreground">(Basic ÷ 26 daily rate)</span>
+                  </td>
+                  <td className="px-5 py-3">
+                    {bw ? (
+                      <span className="text-xs text-muted-foreground">
+                        1 day/month (&lt; 60 months service) · 2 days/month (60+ months) — per employee, toggled on the Employee page
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground italic px-2 py-0.5 bg-muted rounded">
+                        Not applicable (South Africa)
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-5 py-3 text-center text-xs text-muted-foreground">—</td>
+                </tr>
+
                 {/* UIF */}
                 {bw ? (
                   <tr className="opacity-50 pointer-events-none">
