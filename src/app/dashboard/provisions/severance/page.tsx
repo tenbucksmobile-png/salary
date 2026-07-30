@@ -21,6 +21,27 @@ function yearsOfService(date: string | null): number {
   return Math.floor(ms / (1000 * 60 * 60 * 24 * 365.25) * 10) / 10;
 }
 
+// Whole calendar months elapsed from `date` to now.
+function monthsOfService(date: string | null): number {
+  if (!date) return 0;
+  const start = new Date(date);
+  const now = new Date();
+  let months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+  if (now.getDate() < start.getDate()) months -= 1;
+  return Math.max(0, months);
+}
+
+// Severance is assumed paid out at every 5-year mark (5, 10, 15…), so the
+// provision balance only ever covers months accrued since the most recent
+// threshold crossed — not the employee's full tenure. E.g. 12.7 years of
+// service (152 months) last crossed the 10-year mark, so only the ~32
+// months since then are provisioned for.
+function monthsSinceLastPayoutThreshold(date: string | null): number {
+  const totalMonths = monthsOfService(date);
+  const lastThresholdMonths = Math.floor(totalMonths / 60) * 60;
+  return totalMonths - lastThresholdMonths;
+}
+
 export default function SeveranceProvisionPage() {
   const sb = createClient();
 
@@ -106,7 +127,12 @@ export default function SeveranceProvisionPage() {
 
   const rows = useMemo(() => {
     return employees
-      .map(employee => ({ employee, salary: latestSalaryMap.get(employee.id), hotel: hotelMap.get(employee.hotel_id) }))
+      .map(employee => {
+        const salary = latestSalaryMap.get(employee.id);
+        const monthsAccrued = monthsSinceLastPayoutThreshold(employee.employment_date);
+        const provisionBalance = Math.round((salary?.severance ?? 0) * monthsAccrued * 100) / 100;
+        return { employee, salary, hotel: hotelMap.get(employee.hotel_id), monthsAccrued, provisionBalance };
+      })
       .filter(r => r.salary)
       .sort((a, b) => {
         const hotelCmp = (a.hotel?.short_code ?? '').localeCompare(b.hotel?.short_code ?? '');
@@ -118,7 +144,7 @@ export default function SeveranceProvisionPage() {
     const totals = new Map<string, number>();
     for (const r of rows) {
       const key = r.hotel ? (isBotswana(r.hotel.country) ? 'BWP' : 'ZAR') : 'BWP';
-      totals.set(key, (totals.get(key) ?? 0) + (r.salary?.severance ?? 0));
+      totals.set(key, (totals.get(key) ?? 0) + r.provisionBalance);
     }
     return totals;
   }, [rows]);
@@ -142,7 +168,7 @@ export default function SeveranceProvisionPage() {
     return adjustmentHotels.map(h => {
       const cost = rows
         .filter(r => r.hotel?.id === h.id)
-        .reduce((sum, r) => sum + (r.salary?.severance ?? 0), 0);
+        .reduce((sum, r) => sum + r.provisionBalance, 0);
       const book = bookMap.get(h.id)?.book_provision ?? 0;
       const adjustment = Math.floor((cost - book) / 100) * 100;
       return { hotel: h, cost, book, adjustment };
@@ -268,9 +294,9 @@ export default function SeveranceProvisionPage() {
     try {
       const headers = [
         ...(isAll ? ['Hotel'] : []),
-        'Emp Code', 'Surname', 'First Name', 'Grade', 'Basic Salary', 'Yrs Service', 'Daily Rate', 'Days / Month', 'Severance Provision',
+        'Emp Code', 'Surname', 'First Name', 'Grade', 'Basic Salary', 'Yrs Service', 'Daily Rate', 'Days / Month', 'Monthly Rate', 'Months Accrued', 'Provision Balance',
       ];
-      const dataRows = rows.map(({ employee, salary, hotel }) => {
+      const dataRows = rows.map(({ employee, salary, hotel, monthsAccrued, provisionBalance }) => {
         const yrs = yearsOfService(employee.employment_date);
         const daysPerMonth = yrs >= SEVERANCE_SENIOR_YEARS ? 2 : 1;
         const dailyRate = (salary?.basic_salary ?? 0) / 26;
@@ -285,11 +311,13 @@ export default function SeveranceProvisionPage() {
           Math.round(dailyRate * 100) / 100,
           daysPerMonth,
           salary?.severance ?? 0,
+          monthsAccrued,
+          provisionBalance,
         ];
       });
       const totalsRow = [
         ...(isAll ? [''] : []),
-        `Total (${rows.length} employees)`, '', '', '', '', '', '',
+        `Total (${rows.length} employees)`, '', '', '', '', '', '', '', '',
         [...totalsByCountry.entries()].map(([cur, v]) => `${cur} ${v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}`).join(' / '),
       ];
       const sheet: ReportSheet = {
@@ -317,7 +345,7 @@ export default function SeveranceProvisionPage() {
           <h1 className="text-2xl font-bold text-foreground">Severance Provision</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          Severance accrual — Basic ÷ 26 daily rate, 1 day/month accrued up to 60 months' service, 2 days/month thereafter. Indaba Lodge Gaborone only; shows only employees with "Calculate severance accrual" ticked on the Employee page.
+          Severance accrual — Basic ÷ 26 daily rate, 1 day/month under 60 months' service, 2 days/month thereafter. Severance is assumed paid out at every 5-year mark, so the Provision Balance only covers months accrued since the most recent threshold crossed. Indaba Lodge Gaborone only; shows only employees with "Calculate severance accrual" ticked on the Employee page.
         </p>
       </div>
 
@@ -423,11 +451,13 @@ export default function SeveranceProvisionPage() {
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Yrs Service</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Daily Rate</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Days / Month</th>
-                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Severance Provision</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Monthly Rate</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Months Accrued</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Provision Balance</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ employee, salary, hotel }, i) => {
+              {rows.map(({ employee, salary, hotel, monthsAccrued, provisionBalance }, i) => {
                 const yrs = yearsOfService(employee.employment_date);
                 const daysPerMonth = yrs >= SEVERANCE_SENIOR_YEARS ? 2 : 1;
                 const dailyRate = (salary?.basic_salary ?? 0) / 26;
@@ -442,14 +472,16 @@ export default function SeveranceProvisionPage() {
                     <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{yrs.toFixed(1)}</td>
                     <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(dailyRate, hotel)}</td>
                     <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{daysPerMonth}</td>
-                    <td className="px-4 py-2.5 text-right font-mono">{fmt(salary?.severance ?? 0, hotel)}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(salary?.severance ?? 0, hotel)}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{monthsAccrued}</td>
+                    <td className="px-4 py-2.5 text-right font-mono">{fmt(provisionBalance, hotel)}</td>
                   </tr>
                 );
               })}
             </tbody>
             <tfoot>
               <tr className="border-t bg-muted/20 font-medium">
-                <td className="px-4 py-3" colSpan={isAll ? 8 : 7}>Total ({rows.length} employees)</td>
+                <td className="px-4 py-3" colSpan={isAll ? 10 : 9}>Total ({rows.length} employees)</td>
                 <td className="px-4 py-3 text-right font-mono">
                   {[...totalsByCountry.entries()].map(([cur, v]) => (
                     <div key={cur}>{cur === 'BWP' ? 'P' : 'R'} {v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}</div>
