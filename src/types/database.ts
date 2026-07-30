@@ -298,6 +298,16 @@ export interface LeaveProvisionBookBalance {
   updated_at: string;
 }
 
+// Same shape as LeaveProvisionBookBalance, for the Bonus Provision page's
+// Book Adjustment table.
+export interface BonusProvisionBookBalance {
+  id: string;
+  hotel_id: string;
+  period_year: number;
+  book_provision: number;
+  updated_at: string;
+}
+
 // Dashboard stat per hotel
 export interface HotelStats {
   hotel: Hotel;
