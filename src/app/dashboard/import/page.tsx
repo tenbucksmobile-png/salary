@@ -278,11 +278,27 @@ export default function ImportPage() {
         (existing ?? []).filter((e: any) => e.employee_code).map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string])
       );
 
-      const matched = emps.map(emp => {
+      // Code matches are authoritative and claimed first; a name-fallback match
+      // that would collide with an employee another row already claims is left
+      // unmatched (flagged) rather than assigned — a single upsert statement
+      // can't touch the same target row twice, which silently failed the whole
+      // batch when two file rows resolved to one employee.
+      const seenEmployeeIds = new Set<string>();
+      const codeMatches = emps.map(emp => {
         const codeKey = emp.employeeCode ? emp.employeeCode.toUpperCase() : '';
+        const employeeId = codeKey ? codeMap.get(codeKey) ?? null : null;
+        if (employeeId) seenEmployeeIds.add(employeeId);
+        return { emp, employeeId };
+      });
+      const matched = codeMatches.map(({ emp, employeeId }) => {
+        if (employeeId) return { ...emp, employeeId };
         const nameKey = `${emp.surname.toLowerCase()}|${emp.firstName.toLowerCase()}`;
-        const employeeId = (codeKey ? codeMap.get(codeKey) : undefined) ?? nameMap.get(nameKey) ?? null;
-        return { ...emp, employeeId };
+        const nameMatchId = nameMap.get(nameKey) ?? null;
+        if (nameMatchId && !seenEmployeeIds.has(nameMatchId)) {
+          seenEmployeeIds.add(nameMatchId);
+          return { ...emp, employeeId: nameMatchId };
+        }
+        return { ...emp, employeeId: null };
       });
 
       const employeeIds = matched.filter(m => m.employeeId).map(m => m.employeeId!);
@@ -499,7 +515,7 @@ export default function ImportPage() {
       const importId = (importRec as any)?.id;
 
       if (matchedRows.length > 0) {
-        await sb2.from('leave_provisions').upsert(
+        const { error: upsertError } = await sb2.from('leave_provisions').upsert(
           matchedRows.map(r => ({
             employee_id:        r.employeeId,
             hotel_id:           hotelId,
@@ -513,6 +529,7 @@ export default function ImportPage() {
           })),
           { onConflict: 'employee_id,period_year' },
         );
+        if (upsertError) throw new Error(upsertError.message);
       }
 
       setResult({ added: 0, updated: matchedRows.length });
