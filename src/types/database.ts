@@ -320,6 +320,19 @@ export interface SeveranceProvisionBookBalance {
   updated_at: string;
 }
 
+// BURS PAYE submission: one row per period per upload group ('ilg' or
+// 'combined' — CSL/NL/CFEM/PomPom share one file). parsed_data holds the
+// ParsedPayroll shape from recon-parsers.ts's parsePayrollXlsx().
+export interface BursUpload {
+  id: string;
+  period_year: number;
+  period_month: number;
+  upload_group: 'ilg' | 'combined';
+  file_name: string | null;
+  parsed_data: unknown;
+  uploaded_at: string;
+}
+
 // Dashboard stat per hotel
 export interface HotelStats {
   hotel: Hotel;
