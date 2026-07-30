@@ -351,7 +351,7 @@ src/
       server.ts           — Server-side Supabase client (used only in RSC `dashboard/page.tsx`)
     utils.ts              — fmtZAR(), fmtCurrency(), fmtNumber(), MONTH_NAMES, sortHotels(), hotelSortIndex(), cn()
   components/
-    nav-sidebar.tsx       — Role-aware navigation; admin sees all tabs, sub sees whichever tabs their `allowedTabs` grants
+    nav-sidebar.tsx       — Role-aware navigation, grouped into coloured sections (e.g. "CFE Payroll" for Reconciliation/BURS); admin sees all tabs, sub sees whichever tabs their `allowedTabs` grants
   middleware.ts           — HMAC cookie auth gate; always blocks sub-users from Salary Review/Access; gates Dashboard/Employees/Import/Reconciliation/Reports/Methods per-user via allowedTabs
   types/
     database.ts           — Hotel, Employee, SalaryRecord, PayrollImport, IncreaseScenario, ScenarioLine, AppUser, ReconciliationPeriod, ReconUpload, ReconQuery
@@ -618,7 +618,7 @@ Spans **all three hotels** (CSL, NL, CFEM) for one month at once, independent of
 
 **Default/legacy fallback**: `allowed_tabs: null` (pre-migration-016 sub users, or an already-issued cookie from before this shipped, which won't carry the field until the user logs in again) falls back to `DEFAULT_SUB_TABS = ['employees', 'import', 'reconciliation']` — the fixed set every sub user had before *any* of this became configurable. Note this deliberately does **not** include Dashboard/Reports/Methods even though they're now configurable — those were never accessible to sub users before, so the safe legacy default excludes them; an admin must explicitly check them per user.
 
-**Nav**: `nav-sidebar.tsx` renders `ADMIN_NAV` unfiltered for admins; for sub users it filters `SUB_NAV` down to whichever tab `key`s are in `allowedTabs` (prop passed from `dashboard/layout.tsx`, sourced from the cookie's `UserContext.allowedTabs`).
+**Nav**: `nav-sidebar.tsx` defines `NAV_GROUPS` (each a heading + items, optionally with `containerClass`/`headingClass` to tint the group — e.g. **CFE Payroll**, an indigo-tinted group holding Reconciliation and BURS, separate from the plain **HR List** group which now only holds Dashboard/Employees). Renders every group unfiltered for admins; for sub users, each item is dropped unless `adminOnly` is unset and its `key` is in `allowedTabs` (prop passed from `dashboard/layout.tsx`, sourced from the cookie's `UserContext.allowedTabs`) — a group with zero remaining items after filtering is hidden entirely.
 
 **Middleware** (`src/middleware.ts`) — two layers for sub users:
 1. `SUB_BLOCKED` (always-blocked paths, not configurable): `/dashboard/salary-review`, `/dashboard/access`, `/dashboard/burs`.
