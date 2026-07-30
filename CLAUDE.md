@@ -153,6 +153,9 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `021_recon_consolidation.sql` | New `recon_consolidation` table — Reconciliation's Consolidation tab (director bank-release sign-off) |
 | `022_recon_employee_approvals.sql` | New `recon_employee_approvals` table — Reconciliation Employees tab's per-record Submit tickbox state |
 | `023_recon_approvals_commit.sql` | Adds `committed_at`/`committed_by` to `recon_employee_approvals` — tracks the admin-only Commit step |
+| `024_leave_provision_book_balances.sql` | New `leave_provision_book_balances` table — Leave Provision page's Book Adjustment card (see Leave Provision section) |
+| `025_bonus_provision_book_balances.sql` | New `bonus_provision_book_balances` table — same pattern, for the Bonus Provision page (see Provisions section) |
+| `026_severance_provision_book_balances.sql` | New `severance_provision_book_balances` table — same pattern, for the Severance Provision page (see Provisions section) |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -319,9 +322,12 @@ src/
       employees/
         page.tsx          — Employee list; column picker, hotel CSV export, Calculate Burden
         [id]/page.tsx     — Employee detail + edit form; salary section has Structure (stored in allowances.structure) + Total (Gross) inputs; Basic Salary = Total − Structure is derived read-only; provident fund uses basic for EE and ER (APA Director exception: 14% of gross)
-      leave-provision/page.tsx — Standalone annual leave balance provisioning; hotel + year selector, Recalculate button; reads the leave_provisions table, populated only via Import HR List
+      leave-provision/page.tsx — Standalone annual leave balance provisioning; hotel + year selector, Book Adjustment card, Recalculate button; reads the leave_provisions table, populated only via Import HR List
+      provisions/bonus/page.tsx — Bonus Provision; ILG/IH/ILRB/APA only; no import, pulls live from employees + latest salary_records
+      provisions/severance/page.tsx — Severance Provision; ILG only, severance_applicable employees only
+      provisions/wca/page.tsx — Placeholder ("coming soon")
       import/page.tsx     — Multi-format import (HR List xlsx/CSV/TSV, VIP, Medical Aid, Leave Balance, Round-trip CSV, CSL Payroll Schedule xlsx); nav label "Import HR List"; no period selector for HR List type
-      methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All; InflationHistoryCard rendered at bottom
+      methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All; read-only Severance Accrual row under Provident Fund; InflationHistoryCard rendered at bottom
       settings/page.tsx   — Redirects to /dashboard/methods
       salary-review/page.tsx — Per-hotel increase builder; drafts persist to DB; commit to salary_records
       reports/page.tsx    — Flexible report builder; Excel + PDF export
@@ -622,7 +628,9 @@ Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE
 
 `/dashboard/methods` — configurable payroll rates per hotel (replaces old Settings page).
 
-**Contributions section**: PF EE, PF ER (single rate for SA; junior/senior split for BW), UIF + cap, SDL, WCA — all with "Include in CTC" checkbox. Botswana rows for UIF/SDL/WCA are shown greyed with "Exempt" label.
+**Contributions section**: PF EE, PF ER (single rate for SA; junior/senior split for BW), **Severance Accrual** (Botswana only — see below), UIF + cap, SDL, WCA — all with "Include in CTC" checkbox. Botswana rows for UIF/SDL/WCA are shown greyed with "Exempt" label.
+
+**Severance Accrual row** (directly under Provident Fund) — **read-only display, not a configurable rate**: shows the fixed formula (`Basic ÷ 26` daily rate, 1 day/month under 60 months' service, 2 days/month thereafter) for Botswana hotels; SA hotels show "Not applicable". No hotel-level columns back this — the formula is identical across every Botswana hotel and is hardcoded in `calculateBurden()` (`payroll-calc.ts`). The actual per-employee toggle is the "Calculate severance accrual" checkbox on the Employee edit page (`severance_applicable`), not anything on this page.
 
 **Provisions section**: Staff Meals standard/manager, Leave Accrual (`days / 365 × %`), Bonus Provision (`days / 365 × %`) — each with "Include in CTC" checkbox. The `%` multiplier (stored as `leave_accrual_pct` / `bonus_provision_pct` on `hotels`) is applied after the days/365 factor: `basic × (days/365) × pct`.
 
@@ -644,7 +652,39 @@ Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE
 
 **24-day cap** (`LEAVE_PROVISION_CAP_DAYS` in `payroll-calc.ts`) — the provision Rand value is only ever calculated up to 24 days, regardless of how large the actual imported balance is. The table shows both **Actual Leave Balance** (`leave_provisions.leave_balance_days`, uncapped, exactly as imported) and **Capped Leave Balance** (`min(actual, 24)`, computed client-side — not a stored column) side by side, so the difference is always visible. `daily_rate`/`provision_value` in the DB are always derived from the capped figure, both at import time and by Recalculate.
 
-**Page**: hotel selector with an **"All Hotels"** option (unlike the Employees page's single-hotel-only convention) — selecting it adds a Hotel column, groups the totals row by currency (ZAR/BWP shown separately, since Botswana and South Africa hotels use different currencies and summing across them would be meaningless), and Recalculate/Export operate across every visible row. A Year selector is populated from whichever `period_year` values exist for the current hotel selection. Table: Hotel (All Hotels view only) / Emp Code / Surname / First Name / Grade / Actual Leave Balance / Capped Leave Balance / Daily Rate / Provision Value / Imported date, with a totals row. **Recalculate** re-reads each employee's *current* `basic_salary` and their hotel's *current* `leave_provision_divisor` to refresh `daily_rate`/`provision_value` in place (still capped at 24 days) — useful if a raise happened after the July import, or after the cap/divisor changes. Recalculate never touches `leave_balance_days`; only a fresh import can change the actual balance. **Export to Excel** (via `exportReport()` in `src/lib/reports-export.ts`, the same generic exporter the Reports page uses) writes the currently visible rows plus the totals row to a single-sheet workbook named `Leave_Provision_{HotelOrAllHotels}_{year}.xlsx`.
+**Indaba Lodge Gaborone exception**: `leaveProvisionCapDays(hotelShortCode)` in `payroll-calc.ts` returns **21 days** for ILG instead of the 24-day default — same "hardcoded per-hotel override" pattern as the APA Director PF rate. Used everywhere `LEAVE_PROVISION_CAP_DAYS` would otherwise apply directly: the Leave Balance import calc, the Leave Provision page's display/Recalculate/export.
+
+**Page**: hotel selector with an **"All Hotels"** option (unlike the Employees page's single-hotel-only convention) — selecting it adds a Hotel column, groups the totals row by currency (ZAR/BWP shown separately, since Botswana and South Africa hotels use different currencies and summing across them would be meaningless), and Recalculate/Export operate across every visible row. A Year selector is populated from whichever `period_year` values exist for the current hotel selection. Table: Hotel (All Hotels view only) / Emp Code / Surname / First Name / Grade / Actual Leave Balance / Capped Leave Balance / Daily Rate / Provision Value / Imported date, with a totals row. **Recalculate** re-reads each employee's *current* `basic_salary` and their hotel's *current* `leave_provision_divisor` to refresh `daily_rate`/`provision_value` in place (still capped per `leaveProvisionCapDays()`) — useful if a raise happened after the July import, or after the cap/divisor changes. Recalculate never touches `leave_balance_days`; only a fresh import can change the actual balance. **Export to Excel** (via `exportReport()` in `src/lib/reports-export.ts`, the same generic exporter the Reports page uses) writes the currently visible rows plus the totals row to a single-sheet workbook named `Leave_Provision_{HotelOrAllHotels}_{year}.xlsx`.
+
+**Book Adjustment card** (top of page, above the main table) — one row per hotel (All Hotels view) or a single row for the selected hotel: **Cost of Leave Accrual (as uploaded)** (read-only, `sum(provision_value)` for that hotel + selected year) minus a manually-entered **Current Provision on Books** input (persisted to `leave_provision_book_balances`, migration 024, `UNIQUE(hotel_id, period_year)`, upserted on blur) equals **Adjustment Required** (floored to the nearest 100 toward negative infinity — `Math.floor(x / 100) * 100`, so a negative adjustment gets slightly *more* negative, not smaller in magnitude). No cross-currency grand total in All Hotels view — each hotel's figure stands alone, same as the totals row above it. This same Book Adjustment pattern (own `*_book_balances` table, same floor-to-100 formula, same card layout) is reused verbatim on the Bonus and Severance Provision pages below.
+
+---
+
+## Bonus Provision
+
+`/dashboard/provisions/bonus` — same page shape as Leave Provision (hotel/year selector, Book Adjustment card, employee table, Recalculate, Export), but with **no import mechanism**: everything is pulled live from data that already exists. Scoped to exactly four hotels — **ILG, IH, ILRB, APA** (`BONUS_HOTEL_CODES` in the page) — CSL/NL/CFEM are excluded entirely.
+
+**Data source**: each active employee's **latest `salary_records.bonus_provision`** (the monthly 13th-cheque accrual `calculateBurden()` already computes from the hotel's Methods-configured `bonus_days`/`bonus_provision_pct`) plus **`salary_records.incentive`** for employees ticked `incentive_applicable` on the Employee page — `calculateBurden()` gives an employee one or the other, never both, so the two columns are mutually exclusive per row and both fold into the same combined total (both represent the same annual payout reserve via different schemes).
+
+**ANO (vacant position) rows are always zeroed** — `employee.grade_label === 'ANO'` forces Bonus Provision, Incentive, and Provision Balance to `—`/0 regardless of what's on the placeholder salary record, since a vacant position isn't a real employee. Display-only — doesn't touch `salary_records`.
+
+**Accrual Months multiplier**: bonus/incentive is a *monthly* rate; the actual balance owed at a point in the year is that rate accrued over however many months have elapsed. An "Accrual Months" number input in the header toolbar (default **7**, i.e. to end July; persisted to `localStorage` under `ihg-salary-bonus-accrual-months`, applied uniformly across all four hotels) drives a **Provision Balance** column = `(bonus_provision + incentive) × accrualMonths` (0 for ANO rows). Totals, the Book Adjustment's "Cost of Bonus Provision", and the Excel export all use this balance — the raw monthly Bonus Provision/Incentive columns stay visible alongside it for reference.
+
+**Recalculate** re-runs `calculateBurden()` per employee using the hotel's *current* Methods rates and writes back `bonus_provision`, `incentive`, `total_payroll_burden`, `total_cost`, and `ctc` (not just `bonus_provision`) — unlike Leave, which is fully standalone, bonus provision already feeds CTC/total cost when a hotel's `ctc_bonus` flag is set, so a partial write would leave those stale.
+
+**Book Adjustment**: `bonus_provision_book_balances` table (migration 025), identical shape/pattern to Leave's.
+
+---
+
+## Severance Provision
+
+`/dashboard/provisions/severance` — same page shape again, but scoped to **Indaba Lodge Gaborone only** (`SEVERANCE_HOTEL_CODES = ['ILG']`), and the employee list itself is filtered to **only employees with `severance_applicable = true`** ("Calculate severance accrual" ticked on the Employee page) — unlike Bonus, which shows every active employee, this page is specifically a review of the (currently 4) flagged individuals, so showing the whole ILG roster with mostly dashes would be noise.
+
+**Provision Balance ≠ the monthly `severance` rate** — severance is assumed **paid out at every 5-year mark** (5, 10, 15…), so the balance actually owed today only covers months accrued since the most recent threshold crossed, not full tenure. `monthsSinceLastPayoutThreshold()` (page-local, calendar-month based via `employment_date`) computes this: e.g. an employee at 151 total months (12.6 yrs) last crossed the 10-year mark, so only the 31 months since then are owed, not 152. Table columns: Basic Salary, Yrs Service, Daily Rate, Days/Month (1 or 2, from total tenure — unchanged by the threshold logic), **Monthly Rate** (`salary_records.severance`), **Months Accrued**, **Provision Balance** (`Monthly Rate × Months Accrued`). Totals and the Book Adjustment cost use Provision Balance; `salary_records.severance` itself (feeding CTC/total cost elsewhere) is untouched by any of this — display-only, same split as Leave's monthly `leave_accrual` vs. its standalone balance.
+
+**Recalculate** writes back the **full** dependent field set (`provident_employee`, `uif_employee`, `total_deductions`, `net_salary`, `provident_company`, `severance`, `total_company_contrib`, `total_payroll_burden`, `total_cost`, `ctc`), not just `severance` — because `severanceApplicable` also zeroes PF EE/ER per the Botswana rule (see Payroll Burden Calculations above), a partial write would leave provident fund figures stale relative to the new severance value.
+
+**Book Adjustment**: `severance_provision_book_balances` table (migration 026), identical shape/pattern to Leave's.
 
 ---
 
