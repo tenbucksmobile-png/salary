@@ -20,6 +20,8 @@ interface NavItem {
 interface NavGroup {
   heading: string;
   items: NavItem[];
+  containerClass?: string;
+  headingClass?: string;
 }
 
 const NAV_GROUPS: NavGroup[] = [
@@ -28,6 +30,13 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'Dashboard',      href: '/dashboard',               icon: LayoutDashboard, key: 'dashboard' },
       { label: 'Employees',      href: '/dashboard/employees',     icon: Users,           key: 'employees' },
+    ],
+  },
+  {
+    heading: 'CFE PAYROLL',
+    containerClass: 'bg-indigo-50 border-indigo-200',
+    headingClass: 'text-indigo-700',
+    items: [
       { label: 'Reconciliation', href: '/dashboard/reconciliation', icon: ClipboardCheck, key: 'reconciliation' },
       { label: 'BURS',           href: '/dashboard/burs',           icon: Receipt,         key: 'burs', adminOnly: true },
     ],
@@ -70,6 +79,8 @@ export function NavSidebar({ role, username, allowedTabs }: NavSidebarProps) {
 
   const groups = NAV_GROUPS.map(group => ({
     heading: group.heading,
+    containerClass: group.containerClass,
+    headingClass: group.headingClass,
     items: group.items.filter(item => {
       if (role === 'admin') return true;
       if (item.adminOnly) return false;
@@ -90,10 +101,16 @@ export function NavSidebar({ role, username, allowedTabs }: NavSidebarProps) {
       <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
         {groups.map(group => (
           <div key={group.heading}>
-            <p className="px-2 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <p className={cn(
+              'px-2 mb-1.5 text-[11px] font-semibold uppercase tracking-wider',
+              group.headingClass ?? 'text-muted-foreground',
+            )}>
               {group.heading}
             </p>
-            <div className="rounded-lg border border-border bg-muted/30 p-1 shadow-sm">
+            <div className={cn(
+              'rounded-lg border p-1 shadow-sm',
+              group.containerClass ?? 'border-border bg-muted/30',
+            )}>
               {group.items.map(({ label, href, icon: Icon }) => {
                 const active = pathname === href || (href !== '/dashboard' && pathname.startsWith(href));
                 return (
