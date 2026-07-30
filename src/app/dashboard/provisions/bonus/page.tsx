@@ -104,7 +104,15 @@ export default function BonusProvisionPage() {
 
   const rows = useMemo(() => {
     return employees
-      .map(employee => ({ employee, salary: latestSalaryMap.get(employee.id), hotel: hotelMap.get(employee.hotel_id) }))
+      .map(employee => {
+        const salary = latestSalaryMap.get(employee.id);
+        // ANO = an unfilled/vacant position, not a real employee — never
+        // carries a bonus or incentive provision regardless of what's on
+        // its placeholder salary record.
+        const isAno = employee.grade_label === 'ANO';
+        const amount = isAno ? 0 : (salary?.bonus_provision ?? 0) + (salary?.incentive ?? 0);
+        return { employee, salary, hotel: hotelMap.get(employee.hotel_id), isAno, amount };
+      })
       .filter(r => r.salary)
       .sort((a, b) => {
         const hotelCmp = (a.hotel?.short_code ?? '').localeCompare(b.hotel?.short_code ?? '');
@@ -116,13 +124,12 @@ export default function BonusProvisionPage() {
   // Incentive-scheme employees (incentive_applicable) get salary_records.incentive
   // instead of bonus_provision (calculateBurden zeroes one or the other) — both
   // represent the same annual payout reserve via different schemes, so they're
-  // combined into one total.
+  // combined into one total. ANO rows contribute 0 (see `amount` above).
   const totalsByCountry = useMemo(() => {
     const totals = new Map<string, number>();
     for (const r of rows) {
       const key = r.hotel ? (isBotswana(r.hotel.country) ? 'BWP' : 'ZAR') : 'ZAR';
-      const amount = (r.salary?.bonus_provision ?? 0) + (r.salary?.incentive ?? 0);
-      totals.set(key, (totals.get(key) ?? 0) + amount);
+      totals.set(key, (totals.get(key) ?? 0) + r.amount);
     }
     return totals;
   }, [rows]);
@@ -146,7 +153,7 @@ export default function BonusProvisionPage() {
     return adjustmentHotels.map(h => {
       const cost = rows
         .filter(r => r.hotel?.id === h.id)
-        .reduce((sum, r) => sum + (r.salary?.bonus_provision ?? 0) + (r.salary?.incentive ?? 0), 0);
+        .reduce((sum, r) => sum + r.amount, 0);
       const book = bookMap.get(h.id)?.book_provision ?? 0;
       const adjustment = Math.floor((cost - book) / 100) * 100;
       return { hotel: h, cost, book, adjustment };
@@ -266,15 +273,15 @@ export default function BonusProvisionPage() {
         ...(isAll ? ['Hotel'] : []),
         'Emp Code', 'Surname', 'First Name', 'Grade', 'Gross Salary', 'Bonus Provision', 'Incentive',
       ];
-      const dataRows = rows.map(({ employee, salary, hotel }) => [
+      const dataRows = rows.map(({ employee, salary, hotel, isAno }) => [
         ...(isAll ? [hotel?.short_code ?? '—'] : []),
         employee.employee_code ?? '—',
         employee.surname,
         employee.first_name,
         employee.grade_label ?? 'Unclassified',
         salary?.total_earnings ?? 0,
-        salary?.bonus_provision ?? 0,
-        salary?.incentive ?? 0,
+        isAno ? 0 : (salary?.bonus_provision ?? 0),
+        isAno ? 0 : (salary?.incentive ?? 0),
       ]);
       const totalsRow = [
         ...(isAll ? [''] : []),
@@ -306,7 +313,7 @@ export default function BonusProvisionPage() {
           <h1 className="text-2xl font-bold text-foreground">Bonus Provision</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          13th-cheque bonus provision — pulled from each employee's latest salary record and their hotel's Methods-configured bonus rates, plus employees ticked for incentive bonus on the Employee page (Incentive column). ILG, IH, ILRB and APA only.
+          13th-cheque bonus provision — pulled from each employee's latest salary record and their hotel's Methods-configured bonus rates, plus employees ticked for incentive bonus on the Employee page (Incentive column). ANO (vacant) positions always show "—". ILG, IH, ILRB and APA only.
         </p>
       </div>
 
@@ -413,7 +420,7 @@ export default function BonusProvisionPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ employee, salary, hotel }, i) => (
+              {rows.map(({ employee, salary, hotel, isAno }, i) => (
                 <tr key={employee.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                   {isAll && <td className="px-4 py-2.5 text-muted-foreground">{hotel?.short_code ?? '—'}</td>}
                   <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{employee.employee_code ?? '—'}</td>
@@ -422,10 +429,10 @@ export default function BonusProvisionPage() {
                   <td className="px-4 py-2.5 text-muted-foreground">{employee.grade_label ?? 'Unclassified'}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(salary?.total_earnings ?? 0, hotel)}</td>
                   <td className="px-4 py-2.5 text-right font-mono">
-                    {employee.incentive_applicable ? '—' : fmt(salary?.bonus_provision ?? 0, hotel)}
+                    {isAno || employee.incentive_applicable ? '—' : fmt(salary?.bonus_provision ?? 0, hotel)}
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono">
-                    {employee.incentive_applicable ? fmt(salary?.incentive ?? 0, hotel) : '—'}
+                    {!isAno && employee.incentive_applicable ? fmt(salary?.incentive ?? 0, hotel) : '—'}
                   </td>
                 </tr>
               ))}
