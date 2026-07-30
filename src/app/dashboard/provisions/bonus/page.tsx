@@ -112,12 +112,17 @@ export default function BonusProvisionPage() {
       });
   }, [employees, latestSalaryMap, hotelMap]);
 
-  // Group totals by currency — ALL view can mix ZAR (SA: IH, ILRB, APA) and BWP (ILG)
+  // Group totals by currency — ALL view can mix ZAR (SA: IH, ILRB, APA) and BWP (ILG).
+  // Incentive-scheme employees (incentive_applicable) get salary_records.incentive
+  // instead of bonus_provision (calculateBurden zeroes one or the other) — both
+  // represent the same annual payout reserve via different schemes, so they're
+  // combined into one total.
   const totalsByCountry = useMemo(() => {
     const totals = new Map<string, number>();
     for (const r of rows) {
       const key = r.hotel ? (isBotswana(r.hotel.country) ? 'BWP' : 'ZAR') : 'ZAR';
-      totals.set(key, (totals.get(key) ?? 0) + (r.salary?.bonus_provision ?? 0));
+      const amount = (r.salary?.bonus_provision ?? 0) + (r.salary?.incentive ?? 0);
+      totals.set(key, (totals.get(key) ?? 0) + amount);
     }
     return totals;
   }, [rows]);
@@ -141,7 +146,7 @@ export default function BonusProvisionPage() {
     return adjustmentHotels.map(h => {
       const cost = rows
         .filter(r => r.hotel?.id === h.id)
-        .reduce((sum, r) => sum + (r.salary?.bonus_provision ?? 0), 0);
+        .reduce((sum, r) => sum + (r.salary?.bonus_provision ?? 0) + (r.salary?.incentive ?? 0), 0);
       const book = bookMap.get(h.id)?.book_provision ?? 0;
       const adjustment = Math.floor((cost - book) / 100) * 100;
       return { hotel: h, cost, book, adjustment };
@@ -239,6 +244,7 @@ export default function BonusProvisionPage() {
 
       return sb.from('salary_records').update({
         bonus_provision:      burden.bonus_provision,
+        incentive:            burden.incentive,
         total_payroll_burden: burden.total_payroll_burden,
         total_cost:           burden.total_cost,
         ctc:                  burden.ctc,
@@ -258,7 +264,7 @@ export default function BonusProvisionPage() {
     try {
       const headers = [
         ...(isAll ? ['Hotel'] : []),
-        'Emp Code', 'Surname', 'First Name', 'Grade', 'Gross Salary', 'Bonus Provision',
+        'Emp Code', 'Surname', 'First Name', 'Grade', 'Gross Salary', 'Bonus Provision', 'Incentive',
       ];
       const dataRows = rows.map(({ employee, salary, hotel }) => [
         ...(isAll ? [hotel?.short_code ?? '—'] : []),
@@ -268,10 +274,11 @@ export default function BonusProvisionPage() {
         employee.grade_label ?? 'Unclassified',
         salary?.total_earnings ?? 0,
         salary?.bonus_provision ?? 0,
+        salary?.incentive ?? 0,
       ]);
       const totalsRow = [
         ...(isAll ? [''] : []),
-        `Total (${rows.length} employees)`, '', '', '',
+        `Total (${rows.length} employees)`, '', '', '', '', '',
         [...totalsByCountry.entries()].map(([cur, v]) => `${cur} ${v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}`).join(' / '),
       ];
       const sheet: ReportSheet = {
@@ -299,7 +306,7 @@ export default function BonusProvisionPage() {
           <h1 className="text-2xl font-bold text-foreground">Bonus Provision</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          13th-cheque bonus provision — pulled from each employee's latest salary record and their hotel's Methods-configured bonus rates. ILG, IH, ILRB and APA only.
+          13th-cheque bonus provision — pulled from each employee's latest salary record and their hotel's Methods-configured bonus rates, plus employees ticked for incentive bonus on the Employee page (Incentive column). ILG, IH, ILRB and APA only.
         </p>
       </div>
 
@@ -348,7 +355,7 @@ export default function BonusProvisionPage() {
           <div className="px-4 py-3 border-b bg-muted/40">
             <h2 className="text-sm font-semibold">Book Adjustment — {year}</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Cost of Bonus Provision (as calculated) less Current Provision on Books = Adjustment Required, rounded down to the nearest 100.
+              Cost of Bonus Provision (as calculated, including Incentive) less Current Provision on Books = Adjustment Required, rounded down to the nearest 100.
             </p>
           </div>
           <table className="w-full text-sm whitespace-nowrap">
@@ -402,6 +409,7 @@ export default function BonusProvisionPage() {
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">Grade</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Gross Salary</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Bonus Provision</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Incentive</th>
               </tr>
             </thead>
             <tbody>
@@ -416,12 +424,15 @@ export default function BonusProvisionPage() {
                   <td className="px-4 py-2.5 text-right font-mono">
                     {employee.incentive_applicable ? '—' : fmt(salary?.bonus_provision ?? 0, hotel)}
                   </td>
+                  <td className="px-4 py-2.5 text-right font-mono">
+                    {employee.incentive_applicable ? fmt(salary?.incentive ?? 0, hotel) : '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
               <tr className="border-t bg-muted/20 font-medium">
-                <td className="px-4 py-3" colSpan={isAll ? 5 : 4}>Total ({rows.length} employees)</td>
+                <td className="px-4 py-3" colSpan={isAll ? 6 : 5}>Total ({rows.length} employees)</td>
                 <td className="px-4 py-3" />
                 <td className="px-4 py-3 text-right font-mono">
                   {[...totalsByCountry.entries()].map(([cur, v]) => (
