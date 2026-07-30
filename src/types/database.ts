@@ -287,6 +287,17 @@ export interface LeaveProvision {
   imported_at: string;
 }
 
+// Manually-entered "what's currently on the books" figure per hotel/year —
+// compared against the summed leave_provisions.provision_value to compute
+// the adjustment needed at year-end.
+export interface LeaveProvisionBookBalance {
+  id: string;
+  hotel_id: string;
+  period_year: number;
+  book_provision: number;
+  updated_at: string;
+}
+
 // Dashboard stat per hotel
 export interface HotelStats {
   hotel: Hotel;

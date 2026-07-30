@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { Employee, Hotel, LeaveProvision, SalaryRecord } from '@/types/database';
+import { Employee, Hotel, LeaveProvision, LeaveProvisionBookBalance, SalaryRecord } from '@/types/database';
 import { fmtCurrency, sortHotels } from '@/lib/utils';
 import { isBotswana, LEAVE_PROVISION_CAP_DAYS, leaveProvisionCapDays } from '@/lib/payroll-calc';
 import { exportReport, type ReportSheet } from '@/lib/reports-export';
@@ -18,6 +18,8 @@ export default function LeaveProvisionPage() {
   const [hotelFilter, setHotelFilter] = useState('');
   const [provisions, setProvisions] = useState<LeaveProvision[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [bookBalances, setBookBalances] = useState<LeaveProvisionBookBalance[]>([]);
+  const [bookInputs, setBookInputs] = useState<Map<string, string>>(new Map());
   const [year, setYear] = useState(new Date().getFullYear());
   const [loading, setLoading] = useState(true);
   const [recalculating, setRecalculating] = useState(false);
@@ -59,12 +61,14 @@ export default function LeaveProvisionPage() {
     if (!hotelFilter || hotels.length === 0) return;
     (async () => {
       const hotelIds = hotelFilter === ALL ? hotels.map(h => h.id) : [hotelFilter];
-      const [{ data: p }, { data: e }] = await Promise.all([
+      const [{ data: p }, { data: e }, { data: b }] = await Promise.all([
         sb.from('leave_provisions').select('*').in('hotel_id', hotelIds),
         sb.from('employees').select('*').in('hotel_id', hotelIds),
+        sb.from('leave_provision_book_balances').select('*').in('hotel_id', hotelIds),
       ]);
       setProvisions((p ?? []) as LeaveProvision[]);
       setEmployees((e ?? []) as Employee[]);
+      setBookBalances((b ?? []) as LeaveProvisionBookBalance[]);
     })();
   }, [hotelFilter, hotels]);
 
@@ -102,6 +106,66 @@ export default function LeaveProvisionPage() {
   }, [rows]);
 
   const fmt = (n: number, hotel?: Hotel) => fmtCurrency(n, hotel?.country ?? selectedHotel?.country ?? '');
+
+  // Book Adjustment — cost of leave accrual (as uploaded) less the manually-
+  // entered current book provision, floored to the nearest 100 toward
+  // negative infinity.
+  const bookMap = useMemo(
+    () => new Map(bookBalances.filter(b => b.period_year === year).map(b => [b.hotel_id, b])),
+    [bookBalances, year],
+  );
+
+  const adjustmentHotels = useMemo(() => {
+    if (isAll) return hotels;
+    return selectedHotel ? [selectedHotel] : [];
+  }, [isAll, hotels, selectedHotel]);
+
+  const adjustmentRows = useMemo(() => {
+    return adjustmentHotels.map(h => {
+      const accrual = provisions
+        .filter(p => p.hotel_id === h.id && p.period_year === year)
+        .reduce((sum, p) => sum + p.provision_value, 0);
+      const book = bookMap.get(h.id)?.book_provision ?? 0;
+      const adjustment = Math.floor((accrual - book) / 100) * 100;
+      return { hotel: h, accrual, book, adjustment };
+    });
+  }, [adjustmentHotels, provisions, year, bookMap]);
+
+  // Text inputs are seeded from the loaded book balances whenever the
+  // underlying data or year changes, but stay locally editable in between.
+  useEffect(() => {
+    setBookInputs(prev => {
+      const next = new Map(prev);
+      for (const h of adjustmentHotels) {
+        next.set(h.id, String(bookMap.get(h.id)?.book_provision ?? ''));
+      }
+      return next;
+    });
+  }, [bookMap, adjustmentHotels]);
+
+  function handleBookInputChange(hotelId: string, value: string) {
+    setBookInputs(prev => new Map(prev).set(hotelId, value));
+  }
+
+  async function handleBookInputBlur(hotelId: string) {
+    const raw = bookInputs.get(hotelId) ?? '';
+    const parsed = parseFloat(raw.replace(/[^0-9.\-]/g, ''));
+    const value = isNaN(parsed) ? 0 : parsed;
+    const { data } = await sb
+      .from('leave_provision_book_balances')
+      .upsert(
+        { hotel_id: hotelId, period_year: year, book_provision: value, updated_at: new Date().toISOString() },
+        { onConflict: 'hotel_id,period_year' },
+      )
+      .select()
+      .single();
+    if (data) {
+      setBookBalances(prev => [
+        ...prev.filter(b => !(b.hotel_id === hotelId && b.period_year === year)),
+        data as LeaveProvisionBookBalance,
+      ]);
+    }
+  }
 
   async function recalculate() {
     setRecalculating(true);
@@ -236,6 +300,49 @@ export default function LeaveProvisionPage() {
           {exporting ? 'Exporting…' : 'Export to Excel'}
         </button>
       </div>
+
+      {adjustmentRows.length > 0 && (
+        <div className="bg-white rounded-xl border overflow-x-auto mb-6">
+          <div className="px-4 py-3 border-b bg-muted/40">
+            <h2 className="text-sm font-semibold">Book Adjustment — {year}</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Cost of Leave Accrual (as uploaded) less Current Provision on Books = Adjustment Required, rounded down to the nearest 100.
+            </p>
+          </div>
+          <table className="w-full text-sm whitespace-nowrap">
+            <thead>
+              <tr className="border-b bg-muted/20">
+                {isAll && <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Hotel</th>}
+                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Cost of Leave Accrual (as uploaded)</th>
+                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Current Provision on Books (@ end July)</th>
+                <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Adjustment Required</th>
+              </tr>
+            </thead>
+            <tbody>
+              {adjustmentRows.map(({ hotel, accrual, adjustment }) => (
+                <tr key={hotel.id} className="border-b last:border-0">
+                  {isAll && <td className="px-4 py-2.5 text-muted-foreground">{hotel.short_code}</td>}
+                  <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(accrual, hotel)}</td>
+                  <td className="px-4 py-2.5 text-right">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={bookInputs.get(hotel.id) ?? ''}
+                      onChange={e => handleBookInputChange(hotel.id, e.target.value)}
+                      onBlur={() => handleBookInputBlur(hotel.id)}
+                      placeholder="0"
+                      className="w-32 text-right rounded-md border border-input px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </td>
+                  <td className={`px-4 py-2.5 text-right font-mono font-medium ${adjustment === 0 ? 'text-muted-foreground' : adjustment < 0 ? 'text-red-600' : 'text-amber-600'}`}>
+                    {fmt(adjustment, hotel)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <div className="bg-white rounded-xl border p-10 text-center text-sm text-muted-foreground">
