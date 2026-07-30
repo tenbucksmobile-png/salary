@@ -160,6 +160,7 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `025_bonus_provision_book_balances.sql` | New `bonus_provision_book_balances` table — same pattern, for the Bonus Provision page (see Provisions section) |
 | `026_severance_provision_book_balances.sql` | New `severance_provision_book_balances` table — same pattern, for the Severance Provision page (see Provisions section) |
 | `027_burs_pompom_hotel.sql` | `hotels.is_burs_only` flag; inserts the Pom Pom hotel row (see BURS section) |
+| `028_burs_uploads.sql` | New `burs_uploads` table — persists each period's ILG/Combined payroll spreadsheet parse for the BURS page |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -336,7 +337,7 @@ src/
       salary-review/page.tsx — Per-hotel increase builder; drafts persist to DB; commit to salary_records
       reports/page.tsx    — Flexible report builder; Excel + PDF export
       reconciliation/page.tsx — Monthly payroll reconciliation for CSL/NL/CFE (admin-only)
-      burs/page.tsx        — Botswana PAYE submission scaffolding (admin-only); Omang readiness check is functional, upload/parsing awaits the BURS template
+      burs/page.tsx        — Botswana PAYE (ITW8) submission, admin-only; upload/match/export functional against itw8_paye_template.csv, several export columns still placeholder pending TIN/benefits/etc. data sources
   lib/
     auth.ts               — UserContext, makeToken(), verifyToken(), hashPassword() — Edge-compatible
     payroll-calc.ts       — calculateBurden(); isBotswana(), isManager(); BurdenInput/BurdenResult
@@ -703,12 +704,19 @@ Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE
 
 **Pom Pom** is a hotel that exists solely for this page — see `hotels.is_burs_only` above. CFEM appears here despite never having a `payroll` upload anywhere else in the app (its confidential payroll is otherwise invisible to this system, per the Reconciliation section) — BURS is a narrow exception since PAYE is a statutory submission, not an internal cost comparison.
 
-**Current state — scaffolding only, not yet functional**: the actual BURS submission template (required column layout/order/headers) hasn't been provided yet, so:
-- The two upload slots (ILG / Combined) are inert placeholders — no parser exists, nothing is stored.
-- The eventual data source will be each month's **payroll spreadsheet** upload, filtered to employees with a nonzero PAYE figure (`PayrollLine.paye` in `recon-parsers.ts` already parses this — reusable once the combined-file's per-hotel identification scheme is known, which the template will clarify).
-- **Omang Readiness** is the one piece already built and functional: lists every active employee across the five hotels missing an `id_number` (Omang), since BURS needs one for every tax-paying employee and gaps need fixing *before* the template work starts. No new import format — Omang is filled the same way as any other HR field, via **Import HR List**'s existing Omang/National ID column (see Import Formats above).
+**Upload & parsing**: both groups reuse `parsePayrollXlsx()` from `recon-parsers.ts` unchanged — the same parser Reconciliation's Payroll Spreadsheet slot uses. Each upload is persisted to `burs_uploads` (migration 028; `parsed_data` jsonb = the raw `ParsedPayroll`, `UNIQUE(period_year, period_month, upload_group)`, `upload_group` is `'ilg' | 'combined'`) so it survives navigation/reload, mirroring `recon_uploads`' shape. **The combined file is assumed to be one flat sheet with all four hotels' employees mixed together, not per-hotel sheets or sections** — there's no real sample of it yet, so hotel attribution happens entirely through employee matching (below), not through anything read directly off the file. If the real file turns out to be multi-sheet-per-hotel instead, `parsePayrollXlsx` (which only reads `wb.SheetNames[0]`) will need extending to accept a sheet name/index.
 
-When the template arrives: build a parser for the combined multi-hotel file (likely needs a per-line hotel identifier, similar to how `parseCbToplineFormat`'s `TO: <label>` sections split CSL/NL/CFEM sections in Reconciliation) and a separate one for ILG's own file, filter each hotel's lines to `paye > 0`, join to `employees.id_number`, and build the actual export in the exact column order BURS requires.
+**Employee matching** (`matchTaxpayers()` in the page): code first, name second (`nameKey()`) — same two-pass strategy as Reconciliation's Deductions Check, since CSL/NL employee codes are NULL (migration 014). For the combined group, the roster is the union of CSL+NL+CFEM+PomPom's active employees; whichever hotel's roster contains the match determines the row's hotel — there is no explicit hotel column being read from the file itself. **Only lines with `paye > 0` count as taxpayers** — everything else is out of scope for this submission by definition. Unmatched taxed lines (tax deducted but no employee match) are called out separately so gaps are visible rather than silently dropped.
+
+**Export** (`buildItw8Csv()`) produces the exact ITW8 shape from `itw8_paye_template.csv` — 25 columns, `;`-delimited, verified byte-for-byte against the template's header/column rows (`padRow()` pads every row to 25 fields, matching the template's trailing-semicolon padding exactly). One `TaxYear;TaxMonth;EmployerTin;EmployerName` row, then the fixed column-header row, then one row per taxpayer. Field mapping — **several columns are still placeholders, deliberately deferred rather than guessed**:
+- `SalaryWages` ← `PayrollLine.basic`; `TaxDeducted` ← `PayrollLine.paye`; `PaymentsToApprovedFund` ← `PayrollLine.pensionEe`. These three are real.
+- `ID` ← `employees.id_number` (Omang); `Name` ← `first_name surname`; `EmployedFrom` ← `employees.employment_date` (dd/MM/yyyy). Real, but only as good as the underlying employee data.
+- `ResidentialStatus` = `'R'`, `ITW5Variation` = `'N'`, `PayeTaxCalcMethod` = `'ANNUALIZATION'` — fixed defaults, matching the template's own example row.
+- `TIN` (per-employee BURS Taxpayer ID — separate from Omang), `BonusCommission`, all four `Benefits*` columns, `SeverancePayGratuity`/its payment date, `Retrenchment*`, `Pension Cashout`/`PensionTotalFund`/`PensionPaymentDate`, `OtherPayments`, `ExemptionAmount`, `EmployedTo` — **no data source exists yet**, export blank/`0`. Called out explicitly in an amber notice on the page itself so this isn't a silent gap.
+
+**EmployerTin/EmployerName are deferred to plain per-group text inputs** (`localStorage`, key `ihg-salary-burs-employer-info`) rather than a real per-hotel entity model — each of the five hotels is presumably its own separate BURS-registered employer, but that grouping/TIN-per-hotel work was explicitly deferred. The combined group currently exports **one** EmployerTin/EmployerName shared across all four hotels, not four separate submissions — flagged on the page. Revisit both the employer-TIN model and per-employee TIN capture (likely the same "new field + Import HR List extension" pattern Omang already uses) once that's prioritized.
+
+**Omang Readiness** section (independent of any upload) lists every active employee across the five hotels missing an `id_number`; the Taxpayers table below it additionally flags missing Omangs among just that month's actual taxpayers. No new import format for Omang — filled the same way as any other HR field, via **Import HR List**'s existing Omang/National ID column (see Import Formats above).
 
 ---
 
