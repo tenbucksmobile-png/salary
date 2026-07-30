@@ -6,7 +6,7 @@ import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalA
 import { isEmployeeCsvExport, parseEmployeeCsvExport, type RoundtripRow } from '@/lib/employee-csv';
 import { Hotel } from '@/types/database';
 import { fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
-import { isBotswana, LEAVE_PROVISION_CAP_DAYS } from '@/lib/payroll-calc';
+import { isBotswana, leaveProvisionCapDays } from '@/lib/payroll-calc';
 import { Upload, CheckCircle, FileText, ChevronRight } from 'lucide-react';
 
 type Step = 'select' | 'preview' | 'done';
@@ -319,10 +319,11 @@ export default function ImportPage() {
       const selectedHotel = hotels.find(h => h.id === hotelId);
       const bw = selectedHotel ? isBotswana(selectedHotel.country) : false;
       const divisor = selectedHotel?.leave_provision_divisor ?? (bw ? 26 : 30.42);
+      const capDays = leaveProvisionCapDays(selectedHotel?.short_code);
 
       const lRows: LeaveRow[] = matched.map(emp => {
         const gross = emp.employeeId ? latestSalMap.get(emp.employeeId)?.total_earnings ?? 0 : 0;
-        const cappedLeaveBalanceDays = Math.min(emp.leaveBalanceDays, LEAVE_PROVISION_CAP_DAYS);
+        const cappedLeaveBalanceDays = Math.min(emp.leaveBalanceDays, capDays);
         const dailyRate = Math.round((gross / divisor) * 100) / 100;
         const provisionValue = Math.round(dailyRate * cappedLeaveBalanceDays * 100) / 100;
         return {

@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, LeaveProvision, SalaryRecord } from '@/types/database';
 import { fmtCurrency, sortHotels } from '@/lib/utils';
-import { isBotswana, LEAVE_PROVISION_CAP_DAYS } from '@/lib/payroll-calc';
+import { isBotswana, LEAVE_PROVISION_CAP_DAYS, leaveProvisionCapDays } from '@/lib/payroll-calc';
 import { exportReport, type ReportSheet } from '@/lib/reports-export';
 import { RefreshCw, Download } from 'lucide-react';
 
@@ -126,7 +126,7 @@ export default function LeaveProvisionPage() {
       // Gross salary (total_earnings, inclusive of structure) drives the daily
       // rate — never basic or CTC.
       const gross = latestSalary.get(r.employee!.id)?.total_earnings ?? r.provision.basic_at_calc;
-      const cappedDays = Math.min(r.provision.leave_balance_days, LEAVE_PROVISION_CAP_DAYS);
+      const cappedDays = Math.min(r.provision.leave_balance_days, leaveProvisionCapDays(hotel?.short_code));
       const dailyRate = Math.round((gross / divisor) * 100) / 100;
       const provisionValue = Math.round(dailyRate * cappedDays * 100) / 100;
       return sb.from('leave_provisions').update({
@@ -157,7 +157,7 @@ export default function LeaveProvisionPage() {
         employee!.first_name,
         employee!.grade_label ?? 'Unclassified',
         provision.leave_balance_days,
-        Math.min(provision.leave_balance_days, LEAVE_PROVISION_CAP_DAYS),
+        Math.min(provision.leave_balance_days, leaveProvisionCapDays(hotel?.short_code)),
         provision.daily_rate,
         provision.provision_value,
         new Date(provision.imported_at).toLocaleDateString(),
@@ -190,7 +190,10 @@ export default function LeaveProvisionPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Leave Provision</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Annual (July) leave balance provisioning — daily rate × leave balance, capped at {LEAVE_PROVISION_CAP_DAYS} days. Standalone from payroll burden; import via Import HR List.
+          Annual (July) leave balance provisioning — daily rate × leave balance, capped at{' '}
+          {isAll
+            ? `${LEAVE_PROVISION_CAP_DAYS} days (21 for Indaba Lodge Gaborone)`
+            : `${leaveProvisionCapDays(selectedHotel?.short_code)} days`}. Standalone from payroll burden; import via Import HR List.
         </p>
       </div>
 
@@ -265,7 +268,7 @@ export default function LeaveProvisionPage() {
                   <td className="px-4 py-2.5">{employee!.first_name}</td>
                   <td className="px-4 py-2.5 text-muted-foreground">{employee!.grade_label ?? 'Unclassified'}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{provision.leave_balance_days}</td>
-                  <td className="px-4 py-2.5 text-right font-mono">{Math.min(provision.leave_balance_days, LEAVE_PROVISION_CAP_DAYS)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono">{Math.min(provision.leave_balance_days, leaveProvisionCapDays(hotel?.short_code))}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(provision.daily_rate, hotel)}</td>
                   <td className="px-4 py-2.5 text-right font-mono">{fmt(provision.provision_value, hotel)}</td>
                   <td className="px-4 py-2.5 text-muted-foreground">{new Date(provision.imported_at).toLocaleDateString()}</td>

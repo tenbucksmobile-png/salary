@@ -21,6 +21,15 @@ const CALENDAR_DAYS_PA  = 365;
 // LEAVE_DAYS_SA/BW above (those drive the forward monthly leave_accrual).
 export const LEAVE_PROVISION_CAP_DAYS = 24;
 
+// Indaba Lodge Gaborone's max leave accrual is 21 days, not the 24-day
+// default — a hotel-specific exception, same pattern as the APA Director
+// PF override above.
+const LEAVE_PROVISION_CAP_DAYS_ILG = 21;
+
+export function leaveProvisionCapDays(hotelShortCode: string | null | undefined): number {
+  return hotelShortCode === 'ILG' ? LEAVE_PROVISION_CAP_DAYS_ILG : LEAVE_PROVISION_CAP_DAYS;
+}
+
 export function isBotswana(country: string): boolean {
   const c = country.toLowerCase();
   return c.includes('botswana') || c === 'bw';
