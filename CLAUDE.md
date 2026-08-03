@@ -23,8 +23,9 @@ Core workflows:
 
 | Short Code | Country | Notes |
 |-----------|---------|-------|
-| IH | South Africa | InterContinental Hazyview |
-| ILRB | South Africa | |
+| APA | South Africa | African Procurement Agencies — live hotel row (see note below); scoped into Bonus Provision and WCA Reconciliation only |
+| IH | South Africa | Indaba Hotel |
+| ILRB | South Africa | Indaba Lodge Richards Bay |
 | CSL | Botswana | Chobe Safari Lodge — exempt from UIF/SDL/WCA |
 | NL | Botswana | Nata Lodge — exempt from UIF/SDL/WCA |
 | CFE | Botswana | exempt from UIF/SDL/WCA |
@@ -35,7 +36,7 @@ Botswana hotels are detected via `hotel.country` — `isBotswana()` in `src/lib/
 
 **`hotels.is_burs_only`** (migration 027) — Pom Pom is the only hotel with this set `true`. `sortHotels()` in `src/lib/utils.ts` filters it out by default from every hotel list app-wide (Employees, Dashboard, Salary Review, Reports, Methods, Import, Access, Leave/Bonus/Severance Provision) — only the BURS page calls `sortHotels(hotels, { includeBursOnly: true })` to see it. If a hotel ever needs to exist for one narrow purpose without polluting every other hotel dropdown, this is the pattern to reuse.
 
-The hotel seed data in `001_initial_schema.sql` uses older names and includes an "APA" entry not present in production. Trust the live `hotels` table, not the seed.
+**APA is a live row in the `hotels` table** (confirmed 2026-08-03 by direct query) — earlier notes in this file calling it "not present in production" / "not a live hotel" were stale. It doesn't appear as a regular operating hotel across most of the app (Employees, Import, Salary Review, etc. — no employees are seeded against it), but it is real and does show up wherever a page explicitly scopes it in: Bonus Provision (`BONUS_HOTEL_CODES`) and WCA Reconciliation (`WCA_HOTEL_CODES`). Trust the live `hotels` table over any stale claim in this file if the two ever disagree again.
 
 **Hotel sort order** (applied via `sortHotels()` in `src/lib/utils.ts` — use on every page that lists hotels):
 African Procurement Agencies → Indaba Hotel → Indaba Lodge Richards Bay → Indaba Lodge Gaborone → CFE Management → Chobe Safari Lodge → Nata Lodge
@@ -161,6 +162,7 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `026_severance_provision_book_balances.sql` | New `severance_provision_book_balances` table — same pattern, for the Severance Provision page (see Provisions section) |
 | `027_burs_pompom_hotel.sql` | `hotels.is_burs_only` flag; inserts the Pom Pom hotel row (see BURS section) |
 | `028_burs_uploads.sql` | New `burs_uploads` table — persists each period's ILG/Combined payroll spreadsheet parse for the BURS page |
+| `029_wca_reconciliation.sql` | New `wca_annual_consolidation`, `wca_manual_entries`, `wca_roe_rates` tables for the WCA Reconciliation page |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -227,7 +229,7 @@ All rates have fallback constants used when the hotel hasn't had migration 009 a
 
 ### APA Director override
 
-`isDirector()` (exported from `payroll-calc.ts`) detects `"director"` in job title. When `hotelShortCode === 'APA'` and `isDirector()` is true, ER provident fund is calculated as `gross × 14%` (`PF_ER_APA_DIRECTOR`) instead of the standard rate. APA is not a live hotel but the constant is retained.
+`isDirector()` (exported from `payroll-calc.ts`) detects `"director"` in job title. When `hotelShortCode === 'APA'` and `isDirector()` is true, ER provident fund is calculated as `gross × 14%` (`PF_ER_APA_DIRECTOR`) instead of the standard rate. APA is a live hotel row (see Hotels section above) but has no employees seeded against it, so this override has never actually fired in practice.
 
 ---
 
@@ -330,7 +332,7 @@ src/
       leave-provision/page.tsx — Standalone annual leave balance provisioning; hotel + year selector, Book Adjustment card, Recalculate button; reads the leave_provisions table, populated only via Import HR List
       provisions/bonus/page.tsx — Bonus Provision; ILG/IH/ILRB/APA only; no import, pulls live from employees + latest salary_records
       provisions/severance/page.tsx — Severance Provision; ILG only, severance_applicable employees only
-      provisions/wca/page.tsx — Placeholder ("coming soon")
+      provisions/wca/page.tsx — WCA Reconciliation; IH/ILRB/APA (WCA_HOTEL_CODES); annual consolidation of the Compensation Fund statement + a separate manual reconciliation ledger + Tourism ROE % rates
       import/page.tsx     — Multi-format import (HR List xlsx/CSV/TSV, VIP, Medical Aid, Leave Balance, Round-trip CSV, CSL Payroll Schedule xlsx); nav label "Import HR List"; no period selector for HR List type
       methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All; read-only Severance Accrual row under Provident Fund; InflationHistoryCard rendered at bottom
       settings/page.tsx   — Redirects to /dashboard/methods
@@ -691,6 +693,30 @@ Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE
 **Recalculate** writes back the **full** dependent field set (`provident_employee`, `uif_employee`, `total_deductions`, `net_salary`, `provident_company`, `severance`, `total_company_contrib`, `total_payroll_burden`, `total_cost`, `ctc`), not just `severance` — because `severanceApplicable` also zeroes PF EE/ER per the Botswana rule (see Payroll Burden Calculations above), a partial write would leave provident fund figures stale relative to the new severance value.
 
 **Book Adjustment**: `severance_provision_book_balances` table (migration 026), identical shape/pattern to Leave's.
+
+---
+
+## WCA Reconciliation
+
+`/dashboard/provisions/wca` — reconciles each hotel's Compensation Fund (COIDA) Statement of Account against what the company actually knows/has done, since the Fund's own statements don't always tie out cleanly (confirmed on both hotels built so far — see below). Scoped to **`WCA_HOTEL_CODES` = `['IH', 'ILRB', 'APA']`** in the page, built up one hotel at a time; not yet a `CONFIGURABLE_TABS` entry (same admin-only-by-omission pattern as Bonus/Severance — visible to admins via nav, reachable by direct URL for anyone authenticated, not gated in `middleware.ts`).
+
+**Not a line-by-line ledger** — deliberately simplified to **one consolidated row per hotel per year** (`wca_annual_consolidation`, migration 029) rather than mirroring every transaction on the statement, since the reconciliation only needs yearly totals per category, not day-by-day SAP document history. Columns: `opening_balance` (first year only, brought forward), `provisional_invoice` (an estimate submitted for the year ahead), `reversal` (cancels the provisional once the actual is submitted), `actual_invoice` (raised against actual payroll × Tourism ROE %), `penalty`, `interest`, `payment`, `dispute_credit`, `other`, `notes`. Closing Balance per year is **computed client-side**, never stored: prior year's closing + opening_balance + provisional_invoice + actual_invoice + penalty + interest + other − reversal − payment − dispute_credit (`netEffect()` / `ADDITION_KEYS` / `SUBTRACTION_KEYS` in the page). A category value can be stored negative when its real-world effect is the opposite of its normal sign (e.g. a reversal-of-a-prior-payment nets straight into that year's `payment` field as a negative, rather than inventing a new category) — the fields represent *net yearly effect*, not raw statement-line signs.
+
+**Confirmed document-type mapping** (from manually reading IH's and ILRB's actual PDF statements): `SD Billing Document` = an invoice (provisional or actual); `Payment Lot` = payment; `Int. Doc Int. Run` = interest; `Manual Posting` = **penalty** when it's a debit, or a **dispute credit** when it's an unexplained credit not fitting the penalty pattern; `Reversal` = cancels whichever line it targets (invoice, interest, or penalty) and should be netted into that same category, not treated as its own bucket, except when it's specifically reversing a Provisional Invoice (then it belongs in the dedicated `reversal` column).
+
+**The "10%" penalty rule is confirmed but not universal** — IH and ILRB both apply a late-submission penalty that is *supposed* to be 10% of the relevant invoice, and on both hotels the yearly penalty totals tie out exactly (ILRB) or closely (IH) to the Fund's own printed "Penalty Balance" summary figure, confirming `Manual Posting` (debit) = penalty is correct. But the **rate actually charged varies year to year** even on the same hotel (ILRB alone shows 5.50%, 9.52%, 9.95%, 5.91%, two exact 10% hits, and a flat R3,450 recurring across two different-sized invoices) — the company's own reported concern, not a data-entry error on this app's side. 2020's ILRB invoice got no penalty at all and 2021's penalty was charged against 2020's invoice rather than that year's own — consistent with the company's belief that COVID-era changes to the Fund's formula/timing are the cause. Do not assume a hotel's penalty can be derived as a clean 10% of its own invoice — always use the number actually printed on the statement.
+
+**IH** (CF Ref. 990000375988, "Fourway Park Hotel and Conference Centre" on the statement) has history going back to **2003** that isn't in the statement PDF obtained so far (that PDF only starts at 2011, with a large opening batch of ~50 `Manual Posting` lines on 24.10.2011 treated as a single `opening_balance` = R191,404.31 for the 2011 row). Once the earlier statement is obtained, the 2011 row's `opening_balance` will need correcting (either replaced with the true 2003 figure, or broken out into its own pre-2011 rows) — flagged, not yet done.
+
+**ILRB** (CF Ref. 990001086020, "Indaba Lodge Richards Bay") has no pre-2017 history and reconciles far more cleanly than IH: Assessment and Penalty yearly totals both tie out **exactly** to the Fund's own summary. Its 2023 shows three separate `SD Billing Document` invoices with no reversal linking them at all (unlike IH's clean provisional→reversal→actual cycles in 2014/2023) — different cycle shape, not an error. A same-day cluster of 3× `Payment Lot` + 6× `Reversal` on 16.07.2022 nets to a single real payment when read via running balance; the Fund's own "Payment Balance" summary figure appears to sum the gross `Payment Lot` lines without netting the offsetting reversals, which is why that one total won't match a running-balance-based reconciliation even though everything else does.
+
+**APA** has no WCA history at all — added to `WCA_HOTEL_CODES` with no seed data; rows are entered manually per year via the Annual Consolidation tab's "Add Year" button as statements become available.
+
+**Reconciliation tab** (`wca_manual_entries`) — separate from the yearly consolidation, this is where the company records what the Fund's statement doesn't yet reflect: a payment made but not posted (`payment_not_reflected`), a dispute raised (`dispute_raised`), or a free-text note (`discrepancy_note`), each with a status (`open`/`resolved`) and an optional `period_year` tag (not a foreign key — there's no per-line statement data to link to, by design). The Adjusted Balance card = Closing Balance − open payments-not-reflected − open disputes.
+
+**Tourism ROE % tab** (`wca_roe_rates`) — per-hotel, per-year rate, intended to eventually cross-check a year's Actual Invoice against payroll submitted × rate%; not yet wired into any automatic calculation, just recorded for reference.
+
+Data for IH and ILRB was entered directly via one-off scripts run against the anon-key Supabase client (RLS is `anon_all`, same as every other table in this app) rather than through the UI, since transcribing ~150 raw statement lines by hand into the UI wasn't worth it once the "one row per year" model was agreed — the scripts were deleted after running, this file is the record of what was inserted and why.
 
 ---
 
