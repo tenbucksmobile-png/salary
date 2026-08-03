@@ -333,6 +333,64 @@ export interface BursUpload {
   uploaded_at: string;
 }
 
+// WCA reconciliation — one consolidated row per hotel per year (not a
+// line-by-line ledger) summarising that year's Compensation Fund statement
+// activity. The confirmed cycle: an employer submits a provisional
+// assessment for the year ahead; once the actual is submitted, the
+// provisional is reversed and a fresh invoice raised against actual payroll
+// × the Tourism ROE % (see WcaRoeRate). Penalty is the ~10%-of-invoice
+// late-submission charge; dispute_credit covers credits passed due to
+// historical disputes. Closing balance for a year is computed client-side
+// as: prior year's closing + opening_balance + provisional_invoice +
+// actual_invoice + penalty + interest + other − reversal − payment −
+// dispute_credit.
+export interface WcaAnnualConsolidation {
+  id: string;
+  hotel_id: string;
+  period_year: number;
+  opening_balance: number;
+  provisional_invoice: number;
+  reversal: number;
+  actual_invoice: number;
+  penalty: number;
+  interest: number;
+  payment: number;
+  dispute_credit: number;
+  other: number;
+  notes: string | null;
+  updated_at: string;
+}
+
+// The company's own reconciling records — what the Fund's statement doesn't
+// yet reflect: a payment made but not posted, a dispute raised, or a
+// free-text discrepancy note. `period_year` is an optional tag (not a
+// foreign key — there's no per-line statement data to link to).
+export type WcaManualEntryType = 'payment_not_reflected' | 'dispute_raised' | 'discrepancy_note';
+export type WcaManualEntryStatus = 'open' | 'resolved';
+
+export interface WcaManualEntry {
+  id: string;
+  hotel_id: string;
+  entry_date: string;
+  period_year: number | null;
+  entry_type: WcaManualEntryType;
+  amount: number;
+  status: WcaManualEntryStatus;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Tourism ROE % per hotel per year — used to independently check a year's
+// Actual Invoice (payroll submitted × rate%) against what the Fund billed.
+export interface WcaRoeRate {
+  id: string;
+  hotel_id: string;
+  period_year: number;
+  rate_pct: number;
+  updated_at: string;
+}
+
 // Dashboard stat per hotel
 export interface HotelStats {
   hotel: Hotel;
