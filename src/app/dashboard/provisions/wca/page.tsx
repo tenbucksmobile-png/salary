@@ -10,9 +10,8 @@ import { fmtCurrency, sortHotels } from '@/lib/utils';
 import { ShieldCheck, Plus, Pencil, Trash2, X } from 'lucide-react';
 
 // WCA reconciliation is being built hotel by hotel — each hotel gets its own
-// separate reconciliation (same schema, own data). IH and ILRB done; APA
-// still to come (not currently a live hotel row).
-const WCA_HOTEL_CODES = ['IH', 'ILRB'];
+// separate reconciliation (same schema, own data).
+const WCA_HOTEL_CODES = ['IH', 'ILRB', 'APA'];
 
 const HOTEL_FILTER_KEY = 'ihg-salary-wca-hotel';
 const INPUT_CLS = 'rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white w-full';
@@ -271,7 +270,7 @@ export default function WcaProvisionPage() {
           <h1 className="text-2xl font-bold text-foreground">WCA Reconciliation</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          One consolidated row per year summarising the Compensation Fund statement of account. Reconciliation captures what the company has done that the Fund hasn't reflected yet — payments not posted, disputes raised, discrepancies. Being built hotel by hotel — IH and ILRB so far.
+          One consolidated row per year summarising the Compensation Fund statement of account. Reconciliation captures what the company has done that the Fund hasn't reflected yet — payments not posted, disputes raised, discrepancies. Covers IH, ILRB and APA.
         </p>
       </div>
 
