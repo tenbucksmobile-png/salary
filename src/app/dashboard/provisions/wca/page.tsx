@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import {
   Hotel, WcaAnnualConsolidation,
-  WcaManualEntry, WcaManualEntryType, WcaManualEntryStatus, WcaRoeRate,
+  WcaManualEntry, WcaManualEntryType, WcaManualEntryStatus, WcaRoeRate, WcaProvisionCalc,
 } from '@/types/database';
 import { fmtCurrency, sortHotels } from '@/lib/utils';
 import { ShieldCheck, Plus, Pencil, Trash2, X } from 'lucide-react';
@@ -53,6 +53,20 @@ function emptyYearForm(hotelId: string, year: number) {
   };
 }
 
+function emptyProvisionForm(hotelId: string, year: number) {
+  return {
+    id: null as string | null,
+    hotel_id: hotelId,
+    period_year: year,
+    accrual_not_invoiced: '',
+    penalty_dispute_amount: '',
+    penalty_risk_pct: '50',
+    interest_dispute_amount: '',
+    interest_risk_pct: '50',
+    provision_on_hand: '',
+  };
+}
+
 function emptyEntryForm(hotelId: string) {
   return {
     id: null as string | null,
@@ -77,11 +91,13 @@ export default function WcaProvisionPage() {
   const [years, setYears] = useState<WcaAnnualConsolidation[]>([]);
   const [entries, setEntries] = useState<WcaManualEntry[]>([]);
   const [roeRates, setRoeRates] = useState<WcaRoeRate[]>([]);
+  const [provisions, setProvisions] = useState<WcaProvisionCalc[]>([]);
 
   const [yearForm, setYearForm] = useState<ReturnType<typeof emptyYearForm> | null>(null);
   const [entryForm, setEntryForm] = useState<ReturnType<typeof emptyEntryForm> | null>(null);
   const [roeYearInput, setRoeYearInput] = useState(new Date().getFullYear());
   const [roeRateInput, setRoeRateInput] = useState('');
+  const [provisionForm, setProvisionForm] = useState<ReturnType<typeof emptyProvisionForm> | null>(null);
 
   async function load() {
     const [{ data: h }, meRes] = await Promise.all([
@@ -116,14 +132,16 @@ export default function WcaProvisionPage() {
   }, [hotelId]);
 
   async function loadHotelData(id: string) {
-    const [{ data: y }, { data: e }, { data: r }] = await Promise.all([
+    const [{ data: y }, { data: e }, { data: r }, { data: p }] = await Promise.all([
       sb.from('wca_annual_consolidation').select('*').eq('hotel_id', id).order('period_year'),
       sb.from('wca_manual_entries').select('*').eq('hotel_id', id).order('entry_date', { ascending: false }),
       sb.from('wca_roe_rates').select('*').eq('hotel_id', id).order('period_year', { ascending: false }),
+      sb.from('wca_provision_calc').select('*').eq('hotel_id', id).order('period_year', { ascending: false }),
     ]);
     setYears((y ?? []) as WcaAnnualConsolidation[]);
     setEntries((e ?? []) as WcaManualEntry[]);
     setRoeRates((r ?? []) as WcaRoeRate[]);
+    setProvisions((p ?? []) as WcaProvisionCalc[]);
   }
 
   useEffect(() => {
@@ -168,6 +186,20 @@ export default function WcaProvisionPage() {
     const adjustedBalance = summary.closingBalance - openPaymentsNotReflected - openDisputes;
     return { openPaymentsNotReflected, openDisputes, adjustedBalance };
   }, [entries, summary.closingBalance]);
+
+  // Latest provision-calc row (one per hotel per year); its Provision
+  // Required is recomputed live from the current Adjusted Balance, not
+  // stored — only the manual inputs below it are persisted.
+  const latestProvision = provisions[0] ?? null;
+  const provisionCalc = useMemo(() => {
+    if (!latestProvision) return null;
+    const penaltyAtRisk = latestProvision.penalty_dispute_amount * (latestProvision.penalty_risk_pct / 100);
+    const interestAtRisk = latestProvision.interest_dispute_amount * (latestProvision.interest_risk_pct / 100);
+    const provisionRequired = reconciliation.adjustedBalance + latestProvision.accrual_not_invoiced - penaltyAtRisk - interestAtRisk;
+    const rounded = Math.round(provisionRequired / 1000) * 1000;
+    const surplus = latestProvision.provision_on_hand - Math.abs(rounded);
+    return { penaltyAtRisk, interestAtRisk, provisionRequired, rounded, surplus };
+  }, [latestProvision, reconciliation.adjustedBalance]);
 
   async function saveYear() {
     if (!yearForm) return;
@@ -237,6 +269,31 @@ export default function WcaProvisionPage() {
     const status: WcaManualEntryStatus = entry.status === 'open' ? 'resolved' : 'open';
     const { data } = await sb.from('wca_manual_entries').update({ status, updated_at: new Date().toISOString() }).eq('id', entry.id).select().single();
     setEntries(prev => prev.map(e => (e.id === entry.id ? (data as WcaManualEntry) : e)));
+  }
+
+  async function saveProvision() {
+    if (!provisionForm) return;
+    const num = (v: string) => parseFloat(v) || 0;
+    const payload = {
+      hotel_id: provisionForm.hotel_id,
+      period_year: provisionForm.period_year,
+      accrual_not_invoiced: num(provisionForm.accrual_not_invoiced),
+      penalty_dispute_amount: num(provisionForm.penalty_dispute_amount),
+      penalty_risk_pct: num(provisionForm.penalty_risk_pct),
+      interest_dispute_amount: num(provisionForm.interest_dispute_amount),
+      interest_risk_pct: num(provisionForm.interest_risk_pct),
+      provision_on_hand: num(provisionForm.provision_on_hand),
+      updated_at: new Date().toISOString(),
+    };
+    const { data } = await sb
+      .from('wca_provision_calc')
+      .upsert(payload, { onConflict: 'hotel_id,period_year' })
+      .select()
+      .single();
+    if (data) {
+      setProvisions(prev => [data as WcaProvisionCalc, ...prev.filter(p => p.period_year !== provisionForm.period_year)].sort((a, b) => b.period_year - a.period_year));
+    }
+    setProvisionForm(null);
   }
 
   async function saveRoeRate() {
@@ -342,6 +399,11 @@ export default function WcaProvisionPage() {
               reconciliation={reconciliation}
               closingBalance={summary.closingBalance}
               hotelId={hotelId}
+              latestProvision={latestProvision}
+              provisionCalc={provisionCalc}
+              provisionForm={provisionForm}
+              setProvisionForm={setProvisionForm}
+              saveProvision={saveProvision}
             />
           )}
 
@@ -494,6 +556,7 @@ function ConsolidationTab({
 
 function ReconciliationTab({
   entries, fmt, entryForm, setEntryForm, saveEntry, deleteEntry, toggleEntryStatus, reconciliation, closingBalance, hotelId,
+  latestProvision, provisionCalc, provisionForm, setProvisionForm, saveProvision,
 }: {
   entries: WcaManualEntry[];
   fmt: (n: number) => string;
@@ -505,6 +568,11 @@ function ReconciliationTab({
   reconciliation: { openPaymentsNotReflected: number; openDisputes: number; adjustedBalance: number };
   closingBalance: number;
   hotelId: string;
+  latestProvision: WcaProvisionCalc | null;
+  provisionCalc: { penaltyAtRisk: number; interestAtRisk: number; provisionRequired: number; rounded: number; surplus: number } | null;
+  provisionForm: ReturnType<typeof emptyProvisionForm> | null;
+  setProvisionForm: (f: ReturnType<typeof emptyProvisionForm> | null) => void;
+  saveProvision: () => void;
 }) {
   return (
     <div className="space-y-6">
@@ -519,6 +587,89 @@ function ReconciliationTab({
           <div><div className="text-xs text-muted-foreground mb-1">Open Disputes</div><div className="font-mono text-sm font-medium text-amber-700">−{fmt(reconciliation.openDisputes)}</div></div>
           <div><div className="text-xs text-muted-foreground mb-1">Adjusted Balance</div><div className="font-mono text-sm font-bold">{fmt(reconciliation.adjustedBalance)}</div></div>
         </div>
+      </div>
+
+      <div className="bg-white rounded-xl border overflow-hidden">
+        <div className="px-4 py-3 border-b bg-muted/40 flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold">Provision</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Flows from Adjusted Balance above: + accrual not yet invoiced − penalty at risk − interest at risk. Recalculates live whenever Adjusted Balance changes.
+            </p>
+          </div>
+          {!provisionForm && (
+            <button
+              onClick={() => setProvisionForm(
+                latestProvision
+                  ? {
+                      id: latestProvision.id,
+                      hotel_id: latestProvision.hotel_id,
+                      period_year: latestProvision.period_year,
+                      accrual_not_invoiced: String(latestProvision.accrual_not_invoiced),
+                      penalty_dispute_amount: String(latestProvision.penalty_dispute_amount),
+                      penalty_risk_pct: String(latestProvision.penalty_risk_pct),
+                      interest_dispute_amount: String(latestProvision.interest_dispute_amount),
+                      interest_risk_pct: String(latestProvision.interest_risk_pct),
+                      provision_on_hand: String(latestProvision.provision_on_hand),
+                    }
+                  : emptyProvisionForm(hotelId, new Date().getFullYear())
+              )}
+              className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors"
+            >
+              <Pencil className="h-3.5 w-3.5" /> {latestProvision ? 'Edit' : 'Set Up'}
+            </button>
+          )}
+        </div>
+
+        {provisionForm && (
+          <div className="p-4 border-b bg-muted/10">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+              <Field label="Year">
+                <input type="number" value={provisionForm.period_year} onChange={e => setProvisionForm({ ...provisionForm, period_year: parseInt(e.target.value) || provisionForm.period_year })} className={INPUT_CLS} />
+              </Field>
+              <Field label="Accrual Not Yet Invoiced">
+                <input type="text" inputMode="decimal" value={provisionForm.accrual_not_invoiced} onChange={e => setProvisionForm({ ...provisionForm, accrual_not_invoiced: e.target.value })} className={INPUT_CLS} />
+              </Field>
+              <Field label="Penalty Dispute Amount">
+                <input type="text" inputMode="decimal" value={provisionForm.penalty_dispute_amount} onChange={e => setProvisionForm({ ...provisionForm, penalty_dispute_amount: e.target.value })} className={INPUT_CLS} />
+              </Field>
+              <Field label="Penalty Risk %">
+                <input type="text" inputMode="decimal" value={provisionForm.penalty_risk_pct} onChange={e => setProvisionForm({ ...provisionForm, penalty_risk_pct: e.target.value })} className={INPUT_CLS} />
+              </Field>
+              <Field label="Interest Dispute Amount">
+                <input type="text" inputMode="decimal" value={provisionForm.interest_dispute_amount} onChange={e => setProvisionForm({ ...provisionForm, interest_dispute_amount: e.target.value })} className={INPUT_CLS} />
+              </Field>
+              <Field label="Interest Risk %">
+                <input type="text" inputMode="decimal" value={provisionForm.interest_risk_pct} onChange={e => setProvisionForm({ ...provisionForm, interest_risk_pct: e.target.value })} className={INPUT_CLS} />
+              </Field>
+              <Field label="Provision On Hand">
+                <input type="text" inputMode="decimal" value={provisionForm.provision_on_hand} onChange={e => setProvisionForm({ ...provisionForm, provision_on_hand: e.target.value })} className={INPUT_CLS} />
+              </Field>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={saveProvision} className="rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium">Save</button>
+              <button onClick={() => setProvisionForm(null)} className="rounded-md border px-3 py-2 text-sm"><X className="h-4 w-4" /></button>
+            </div>
+          </div>
+        )}
+
+        {!latestProvision && !provisionForm ? (
+          <div className="p-10 text-center text-sm text-muted-foreground">No provision set up yet. Click "Set Up" to record the accrual and risk assumptions the company uses.</div>
+        ) : latestProvision && provisionCalc && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
+            <div><div className="text-xs text-muted-foreground mb-1">Adjusted Balance</div><div className="font-mono text-sm font-medium">{fmt(reconciliation.adjustedBalance)}</div></div>
+            <div><div className="text-xs text-muted-foreground mb-1">Accrual Not Yet Invoiced</div><div className="font-mono text-sm font-medium">{fmt(latestProvision.accrual_not_invoiced)}</div></div>
+            <div><div className="text-xs text-muted-foreground mb-1">Penalty at Risk ({latestProvision.penalty_risk_pct}%)</div><div className="font-mono text-sm font-medium text-amber-700">−{fmt(provisionCalc.penaltyAtRisk)}</div></div>
+            <div><div className="text-xs text-muted-foreground mb-1">Interest at Risk ({latestProvision.interest_risk_pct}%)</div><div className="font-mono text-sm font-medium text-amber-700">−{fmt(provisionCalc.interestAtRisk)}</div></div>
+            <div><div className="text-xs text-muted-foreground mb-1">Provision Required</div><div className="font-mono text-sm font-bold">{fmt(provisionCalc.provisionRequired)}</div></div>
+            <div><div className="text-xs text-muted-foreground mb-1">Rounded</div><div className="font-mono text-sm font-medium">{fmt(provisionCalc.rounded)}</div></div>
+            <div><div className="text-xs text-muted-foreground mb-1">Provision On Hand</div><div className="font-mono text-sm font-medium">{fmt(latestProvision.provision_on_hand)}</div></div>
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Surplus / (Shortfall)</div>
+              <div className={`font-mono text-sm font-bold ${provisionCalc.surplus < 0 ? 'text-red-600' : 'text-green-700'}`}>{fmt(provisionCalc.surplus)}</div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="bg-white rounded-xl border overflow-hidden">

@@ -391,6 +391,24 @@ export interface WcaRoeRate {
   updated_at: string;
 }
 
+// The company's periodic provision cascade, layered on top of the
+// Reconciliation tab's Adjusted Balance. Provision Required is computed
+// live (not stored) as: Adjusted Balance + accrual_not_invoiced
+// − penalty_dispute_amount × penalty_risk_pct/100
+// − interest_dispute_amount × interest_risk_pct/100
+export interface WcaProvisionCalc {
+  id: string;
+  hotel_id: string;
+  period_year: number;
+  accrual_not_invoiced: number;
+  penalty_dispute_amount: number;
+  penalty_risk_pct: number;
+  interest_dispute_amount: number;
+  interest_risk_pct: number;
+  provision_on_hand: number;
+  updated_at: string;
+}
+
 // Dashboard stat per hotel
 export interface HotelStats {
   hotel: Hotel;
