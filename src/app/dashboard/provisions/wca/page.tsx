@@ -594,7 +594,7 @@ function ReconciliationTab({
           <div>
             <h2 className="text-sm font-semibold">Provision</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Flows from Adjusted Balance above: + accrual not yet invoiced − penalty at risk − interest at risk. Recalculates live whenever Adjusted Balance changes.
+              Flows from Adjusted Balance above: + accrual not yet invoiced − penalty at risk − interest at risk. Recalculates live whenever Adjusted Balance changes. Enter a negative Risk % if the hotel's own reconciliation adds the risk buffer back rather than subtracting it (seen on ILRB's worksheet vs IH's).
             </p>
           </div>
           {!provisionForm && (
