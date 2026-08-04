@@ -365,7 +365,7 @@ export interface WcaAnnualConsolidation {
 // yet reflect: a payment made but not posted, a dispute raised, or a
 // free-text discrepancy note. `period_year` is an optional tag (not a
 // foreign key — there's no per-line statement data to link to).
-export type WcaManualEntryType = 'payment_not_reflected' | 'dispute_raised' | 'discrepancy_note';
+export type WcaManualEntryType = 'payment_not_reflected' | 'dispute_raised' | 'discrepancy_note' | 'provision_held';
 export type WcaManualEntryStatus = 'open' | 'resolved';
 
 export interface WcaManualEntry {

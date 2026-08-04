@@ -22,6 +22,7 @@ const ENTRY_TYPE_CONFIG: Record<WcaManualEntryType, { label: string; classes: st
   payment_not_reflected: { label: 'Payment Not Reflected', classes: 'bg-green-100 text-green-700' },
   dispute_raised:        { label: 'Dispute Raised',        classes: 'bg-amber-100 text-amber-700' },
   discrepancy_note:      { label: 'Discrepancy Note',      classes: 'bg-slate-100 text-slate-700' },
+  provision_held:        { label: 'Provision Held',        classes: 'bg-indigo-100 text-indigo-700' },
 };
 
 // Additions increase what's owed; subtractions reduce it.
@@ -270,7 +271,7 @@ export default function WcaProvisionPage() {
           <h1 className="text-2xl font-bold text-foreground">WCA Reconciliation</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          One consolidated row per year summarising the Compensation Fund statement of account. Reconciliation captures what the company has done that the Fund hasn't reflected yet — payments not posted, disputes raised, discrepancies. Covers IH, ILRB and APA.
+          One consolidated row per year summarising the Compensation Fund statement of account. Reconciliation captures what the company has done that the Fund hasn't reflected yet — payments not posted, disputes raised, discrepancies, and any contingency provision held against a dispute not fully succeeding. Covers IH, ILRB and APA.
         </p>
       </div>
 
