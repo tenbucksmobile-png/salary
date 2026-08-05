@@ -2,8 +2,9 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile, isLeaveBalanceFile, parseLeaveBalanceFile, isEmpCodeUpdateFile, parseEmpCodeUpdateFile, isOmangUpdateFile, parseOmangUpdateFile, parseCslPayrollSchedule, type PayrollSchedulePeriod } from '@/lib/vip-parser';
+import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile, isLeaveBalanceFile, parseLeaveBalanceFile, isEmpCodeUpdateFile, parseEmpCodeUpdateFile, isOmangUpdateFile, parseOmangUpdateFile, isVipPersonalInfoFile, parseVipPersonalInfoFile, parseCslPayrollSchedule, type PayrollSchedulePeriod } from '@/lib/vip-parser';
 import { isEmployeeCsvExport, parseEmployeeCsvExport, type RoundtripRow } from '@/lib/employee-csv';
+import { nameKey } from '@/lib/recon-parsers';
 import { Hotel } from '@/types/database';
 import { fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
 import { isBotswana, leaveProvisionCapDays } from '@/lib/payroll-calc';
@@ -192,8 +193,9 @@ export default function ImportPage() {
     const isLeave      = !isMedical && !isRoundtrip && isLeaveBalanceFile(firstLine);
     const isEmpCode    = !isMedical && !isRoundtrip && !isLeave && isEmpCodeUpdateFile(firstLine);
     const isOmang      = !isMedical && !isRoundtrip && !isLeave && !isEmpCode && isOmangUpdateFile(firstLine);
-    const isEmployee   = !isMedical && !isRoundtrip && !isLeave && !isEmpCode && !isOmang && isTabularEmployeeFile(firstLine);
-    setImportType(isMedical ? 'medical' : isRoundtrip ? 'roundtrip' : isLeave ? 'leave' : isEmpCode ? 'empcode' : isOmang ? 'omang' : isEmployee ? 'employee' : 'vip');
+    const isVipInfo    = !isMedical && !isRoundtrip && !isLeave && !isEmpCode && !isOmang && isVipPersonalInfoFile(firstLine);
+    const isEmployee   = !isMedical && !isRoundtrip && !isLeave && !isEmpCode && !isOmang && !isVipInfo && isTabularEmployeeFile(firstLine);
+    setImportType(isMedical ? 'medical' : isRoundtrip ? 'roundtrip' : isLeave ? 'leave' : isEmpCode ? 'empcode' : (isOmang || isVipInfo) ? 'omang' : isEmployee ? 'employee' : 'vip');
 
     if (isRoundtrip) {
       // ── Employee CSV round-trip re-import ─────────────────────────────────
@@ -385,9 +387,13 @@ export default function ImportPage() {
       setLoading(false);
       setStep('preview');
       return;
-    } else if (isOmang) {
-      // ── Omang / National ID Update — matches by employee code, patches ONLY id_number ─
-      const { employees: emps } = parseOmangUpdateFile(text);
+    } else if (isOmang || isVipInfo) {
+      // ── Omang / National ID Update — matches by employee code first, falling
+      // back to name (needed for the VIP Personal Info format, whose codes come
+      // from ILG's own payroll system and don't always match employee_code here
+      // — e.g. confirmed live: MAK002 in the file vs MAL002 in the DB for the
+      // same person). Patches ONLY id_number, never surname/first_name/etc.
+      const { employees: emps } = isVipInfo ? parseVipPersonalInfoFile(text) : parseOmangUpdateFile(text);
 
       const { data: existing } = await sb
         .from('employees')
@@ -397,14 +403,20 @@ export default function ImportPage() {
       const codeMap = new Map(
         (existing ?? []).filter((e: any) => e.employee_code).map((e: any) => [String(e.employee_code).toUpperCase(), e])
       );
+      const nameMap = new Map(
+        (existing ?? []).map((e: any) => [nameKey(`${e.surname} ${e.first_name}`), e])
+      );
 
       const oRows: OmangRow[] = emps.map(emp => {
-        const match = codeMap.get(emp.employeeCode.toUpperCase());
+        const fileName = 'surname' in emp && 'firstName' in emp ? { surname: emp.surname, firstName: emp.firstName } : null;
+        const byCode = codeMap.get(emp.employeeCode.toUpperCase());
+        const byName = fileName ? nameMap.get(nameKey(`${fileName.surname} ${fileName.firstName}`)) : undefined;
+        const match = byCode ?? byName;
         return {
           employeeCode: emp.employeeCode,
           employeeId: match?.id ?? null,
-          surname: match?.surname ?? null,
-          firstName: match?.first_name ?? null,
+          surname: match?.surname ?? fileName?.surname ?? null,
+          firstName: match?.first_name ?? fileName?.firstName ?? null,
           currentIdNumber: match?.id_number ?? null,
           newIdNumber: emp.idNumber,
         };
@@ -1346,7 +1358,7 @@ export default function ImportPage() {
             )}
           </div>
           <p className="text-sm text-muted-foreground">
-            Matched by Employee Code only. This only updates the Omang / ID Number field — no other employee data is changed.
+            Matched by Employee Code, falling back to Name. This only updates the Omang / ID Number field — no other employee data is changed.
           </p>
 
           <div className="bg-white rounded-xl border overflow-x-auto">

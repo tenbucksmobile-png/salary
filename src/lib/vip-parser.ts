@@ -531,6 +531,62 @@ export function parseOmangUpdateFile(text: string): { employees: OmangUpdateEntr
   return { employees, errors };
 }
 
+// ─── VIP Personal Information Report (RPRT552-style) ─────────────────────────
+// A block-per-employee text export from the VIP payroll system ("EMPLOYEE
+// SELF-SERVICE" style change form) — one block per employee starting with
+// "EMP CODE: <code>", each field on its own two-column line: a label, the
+// current VIP value, then a blank "MAKE CHANGES WHERE OUTDATED" fill-in column
+// (a run of underscores). Only Surname/First Name/Initials/ID Number are
+// extracted; every other field (bank details, address, tax directive, etc.) is
+// ignored — this format exists here solely to backfill Omang numbers.
+//
+// A field's VALUE column is only present when non-blank — the label is always
+// followed by ample padding before the underscore fill-in column, so a blank
+// field's line has just two whitespace-run-separated segments (label,
+// placeholder) while a populated one has three (label, value, placeholder).
+// Splitting each line on runs of 2+ spaces and checking segment count is far
+// more robust than a regex trying to capture-or-not the value directly, since
+// \s (used for the "at least this much padding" gap) also matches the newline
+// between lines, which made lazy capture spill across line boundaries.
+
+export function isVipPersonalInfoFile(firstLine: string): boolean {
+  const l = firstLine.toUpperCase();
+  return l.includes('EMP CODE:') && l.includes('EXISTING INFORMATION');
+}
+
+export interface VipPersonalInfoEntry {
+  employeeCode: string;
+  surname: string;
+  firstName: string;
+  idNumber: string;
+}
+
+function vipInfoFieldValue(blockLines: string[], label: string): string {
+  const line = blockLines.find(l => l.replace(/^[*$#\s]+/, '').startsWith(label));
+  if (!line) return '';
+  const parts = line.split(/\s{2,}/).map(s => s.trim()).filter(Boolean);
+  return parts.length >= 3 ? parts[1] : '';
+}
+
+export function parseVipPersonalInfoFile(text: string): { employees: VipPersonalInfoEntry[]; errors: string[] } {
+  const blocks = text.split(/(?=EMP CODE:)/).filter(b => b.trim().startsWith('EMP CODE:'));
+  const employees: VipPersonalInfoEntry[] = [];
+  const errors: string[] = [];
+
+  for (const block of blocks) {
+    const codeMatch = block.match(/EMP CODE:\s*(\S+)/);
+    const employeeCode = codeMatch?.[1] ?? '';
+    if (!employeeCode) continue;
+    const lines = block.split(/\r?\n/);
+    const surname = vipInfoFieldValue(lines, 'Surname:');
+    const firstName = vipInfoFieldValue(lines, 'First Name:') || vipInfoFieldValue(lines, 'Initials');
+    const idNumber = vipInfoFieldValue(lines, 'ID Number:').replace(/\s+/g, '');
+    if (!surname || !idNumber) continue;
+    employees.push({ employeeCode, surname, firstName, idNumber });
+  }
+  return { employees, errors };
+}
+
 // ─── VIP Report 710 parser ────────────────────────────────────────────────────
 
 export function parseVIPReport(text: string): ParseResult {
