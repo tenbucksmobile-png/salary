@@ -32,13 +32,26 @@ function padRow(values: string[]): string {
   return row.slice(0, 25).join(';');
 }
 
-function formatDate(d: string | null): string {
-  if (!d) return '';
-  const dt = new Date(d);
-  if (isNaN(dt.getTime())) return '';
-  const dd = String(dt.getDate()).padStart(2, '0');
-  const mm = String(dt.getMonth() + 1).padStart(2, '0');
-  return `${dd}/${mm}/${dt.getFullYear()}`;
+// Botswana's PAYE tax year runs July–June, labelled by the calendar year it
+// ENDS in — confirmed against a real ILG ITW8 export for June 2026, which
+// carries TaxYear 2026 / TaxMonth 12 (June = the 12th month of a July-start
+// tax year). Jul–Dec map to months 1–6 of the FOLLOWING calendar year's tax
+// year; Jan–Jun map to months 7–12 of the CURRENT calendar year's tax year.
+function toBwTaxPeriod(calendarYear: number, calendarMonth: number): { taxYear: number; taxMonth: number } {
+  return calendarMonth >= 7
+    ? { taxYear: calendarYear + 1, taxMonth: calendarMonth - 6 }
+    : { taxYear: calendarYear, taxMonth: calendarMonth + 6 };
+}
+
+// dd/mm/yyyy for the first and last calendar day of the selected payroll period —
+// confirmed against the same real export, where every employee's EmployedFrom/
+// EmployedTo is the period's own bounds (01/06/2026–30/06/2026 for June), not
+// each employee's actual hire date.
+function periodBounds(calendarYear: number, calendarMonth: number): { from: string; to: string } {
+  const first = new Date(calendarYear, calendarMonth - 1, 1);
+  const last = new Date(calendarYear, calendarMonth, 0);
+  const fmt = (d: Date) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  return { from: fmt(first), to: fmt(last) };
 }
 
 interface TaxpayerRow {
@@ -76,31 +89,40 @@ function matchTaxpayers(
   return { matched, unmatched };
 }
 
-function buildItw8Csv(rows: TaxpayerRow[], taxYear: number, taxMonth: number, tin: string, employerName: string): string {
+function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: number, tin: string, employerName: string): string {
+  const { taxYear, taxMonth } = toBwTaxPeriod(calendarYear, calendarMonth);
+  const { from, to } = periodBounds(calendarYear, calendarMonth);
   const lines: string[] = [];
   lines.push(padRow(ITW8_HEADER_LABELS));
   lines.push(padRow([String(taxYear), String(taxMonth), tin, employerName]));
   lines.push(padRow(ITW8_COLUMNS));
   for (const { line, employee } of rows) {
+    // OtherPayments = variable pay (overtime, Sunday pay, tips/gratuity, leave
+    // paid) = the payroll's Income Total less Basic and any bonus/commission —
+    // there's no dedicated variable-pay column upstream, so this is derived.
+    const bonusCommission = 0; // no data source yet — see "Fields not yet wired up" below
+    const otherPayments = Math.max(0, (line.incomeTotal || 0) - (line.basic || 0) - bonusCommission);
     lines.push(padRow([
       employee.id_number ?? '',
-      '', // TIN — not yet captured per employee; fill manually until wired up
+      '', // TIN — not required (per-employee BURS Taxpayer ID not captured)
       `${employee.first_name} ${employee.surname}`.trim(),
       'R',
       'N',
       String(line.basic || 0),
-      '0', '0', '0', '0', '0', '0',
+      String(bonusCommission),
+      '0', '0', '0', '0',
+      '0', // SeverancePayGratuity — no data source yet (occasional payout, not tracked per period)
       '', // SeverancePayGratuityPaymentDate
       '', // RetrenchmentPaymentDate
       '0', '0', '0',
       '', // PensionPaymentDate
-      '0',
+      String(otherPayments),
       String(line.pensionEe || 0),
       '0',
       'ANNUALIZATION',
       String(line.paye || 0),
-      formatDate(employee.employment_date),
-      '', // EmployedTo
+      from,
+      to,
     ]));
   }
   return lines.join('\r\n');
@@ -135,8 +157,11 @@ export default function BursPage() {
   const [uploadingCombined, setUploadingCombined] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
+  // ILG's BW TIN/name confirmed from a real submitted ITW8 export — seeded as
+  // the default so it doesn't have to be retyped; localStorage (below) still
+  // wins once the user has saved their own value.
   const [employerInfo, setEmployerInfo] = useState<Record<'ilg' | 'combined', { tin: string; name: string }>>({
-    ilg: { tin: '', name: '' },
+    ilg: { tin: 'BW00000841555', name: 'Indaba Lodge Gaborone' },
     combined: { tin: '', name: '' },
   });
 
@@ -454,7 +479,10 @@ export default function BursPage() {
         <strong>Fields not yet wired up</strong> — TIN (per-employee BURS Taxpayer ID), BonusCommission, Benefits
         (Housing/MotorCar/Furniture/Other), SeverancePayGratuity, Retrenchment, Pension Cashout, and ExemptionAmount all
         export as blank/0 until those data sources exist. SalaryWages and TaxDeducted come from the uploaded payroll
-        spreadsheet's Basic and PAYE columns; PaymentsToApprovedFund comes from its Pension EE column.
+        spreadsheet's Basic and PAYE columns; PaymentsToApprovedFund comes from its Pension EE column; OtherPayments is
+        derived as Income Total − Basic (the variable pay not captured in Basic or Bonus/Commission); TaxYear/TaxMonth
+        are converted to Botswana's July–June PAYE tax year, and EmployedFrom/EmployedTo are the selected period's own
+        first/last day (not each employee's hire date) — all confirmed against a real submitted ILG export.
       </div>
     </div>
   );
