@@ -394,15 +394,27 @@ export default function BursPage() {
     [combinedTaxpayersByHotel],
   );
 
-  const allTaxpayerRows = useMemo(
-    () => [...ilgTaxpayers.matched, ...combinedMatched].sort((a, b) => {
+  // ILG and Combined are shown on separate tabs, not one merged list — a
+  // concluded ILG submission was visually mixing in with in-progress
+  // Combined-group work in the same table, which was confusing since the two
+  // groups export separately anyway.
+  const [taxpayerTab, setTaxpayerTab] = useState<'ilg' | 'combined'>('ilg');
+
+  const ilgTaxpayerRows = useMemo(
+    () => [...ilgTaxpayers.matched].sort((a, b) => a.employee.surname.localeCompare(b.employee.surname)),
+    [ilgTaxpayers],
+  );
+  const combinedTaxpayerRows = useMemo(
+    () => [...combinedMatched].sort((a, b) => {
       const hc = (a.hotel?.short_code ?? '').localeCompare(b.hotel?.short_code ?? '');
       return hc !== 0 ? hc : a.employee.surname.localeCompare(b.employee.surname);
     }),
-    [ilgTaxpayers, combinedMatched],
+    [combinedMatched],
   );
+  const activeTaxpayerRows = taxpayerTab === 'ilg' ? ilgTaxpayerRows : combinedTaxpayerRows;
+  const activeUnmatched = taxpayerTab === 'ilg' ? ilgTaxpayers.unmatched : combinedUnmatched;
 
-  const missingOmangAmongTaxpayers = allTaxpayerRows.filter(r => !r.employee.id_number || !r.employee.id_number.trim());
+  const missingOmangAmongTaxpayers = activeTaxpayerRows.filter(r => !r.employee.id_number || !r.employee.id_number.trim());
 
   function updateEmployerInfo(group: 'ilg' | 'combined', field: 'tin' | 'name', value: string) {
     setEmployerInfo(prev => ({ ...prev, [group]: { ...prev[group], [field]: value } }));
@@ -586,14 +598,14 @@ export default function BursPage() {
         </div>
       </div>
 
-      {(ilgTaxpayers.unmatched.length > 0 || combinedUnmatched.length > 0) && (
+      {activeUnmatched.length > 0 && (
         <div className="mb-8 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <div className="flex items-center gap-2 font-medium mb-1">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            {ilgTaxpayers.unmatched.length + combinedUnmatched.length} payroll line(s) with tax deducted could not be matched to an employee
+            {activeUnmatched.length} payroll line(s) with tax deducted could not be matched to an employee
           </div>
           <ul className="text-xs space-y-0.5 mt-2">
-            {[...ilgTaxpayers.unmatched, ...combinedUnmatched].map((l, i) => (
+            {activeUnmatched.map((l, i) => (
               <li key={i}>{l.name || l.empCode || '(unnamed)'} — tax {l.paye}</li>
             ))}
           </ul>
@@ -601,13 +613,32 @@ export default function BursPage() {
       )}
 
       <div className="bg-white rounded-xl border overflow-hidden mb-8">
-        <div className="px-5 py-3 border-b bg-muted/30 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Taxpayers — {MONTH_NAMES[month - 1]} {year}</h2>
-          <span className="text-xs text-muted-foreground">{allTaxpayerRows.length} employee(s) with tax deducted</span>
+        <div className="px-5 border-b bg-muted/30 flex items-center justify-between">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setTaxpayerTab('ilg')}
+              className={`px-3 py-3 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                taxpayerTab === 'ilg' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              ILG ({ilgTaxpayerRows.length})
+            </button>
+            <button
+              onClick={() => setTaxpayerTab('combined')}
+              className={`px-3 py-3 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                taxpayerTab === 'combined' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Combined ({combinedTaxpayerRows.length})
+            </button>
+          </div>
+          <span className="text-xs text-muted-foreground">{MONTH_NAMES[month - 1]} {year}</span>
         </div>
-        {allTaxpayerRows.length === 0 ? (
+        {activeTaxpayerRows.length === 0 ? (
           <div className="p-8 text-center text-sm text-muted-foreground">
-            No taxpayers yet — upload ILG's and/or the combined-group hotels' payroll spreadsheets for {MONTH_NAMES[month - 1]} {year} above.
+            {taxpayerTab === 'ilg'
+              ? `No ILG taxpayers yet — upload ILG's payroll spreadsheet for ${MONTH_NAMES[month - 1]} ${year} above.`
+              : `No combined-group taxpayers yet — upload CFEM/CSL/NL/PomPom's payroll spreadsheets for ${MONTH_NAMES[month - 1]} ${year} above.`}
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -622,7 +653,7 @@ export default function BursPage() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {allTaxpayerRows.map(({ line, employee, hotel }, i) => (
+              {activeTaxpayerRows.map(({ line, employee, hotel }, i) => (
                 <tr key={`${employee.id}-${i}`}>
                   <td className="px-5 py-2.5 text-muted-foreground">{hotel?.short_code ?? '—'}</td>
                   <td className="px-5 py-2.5 font-medium">{employee.surname}</td>
