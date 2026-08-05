@@ -635,6 +635,126 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
   return { lines, totals, fileName };
 }
 
+// ── ILG "12 Month Analysis Report" (plain-text, saved as .csv) ───────────────
+// Not a real delimited CSV — a fixed-width text export from ILG's own payroll
+// system. Each employee is a block: a header line (Code, Name, then a bracketed
+// [status,periodFrom - periodTo][...] metadata tag) followed by indented label
+// lines (Salary/Tips/PROV/PAYE/etc), each showing up to 12 monthly columns
+// (headed AUG..JUL — this system's own fiscal year) plus a trailing TOTAL. The
+// text is paginated for printing, so "001 Indaba Lodge Gaborone... PAGE n" and
+// the repeated "MONTHS AUG SEP ... TOTAL" header line can appear MID-BLOCK,
+// splitting an employee's header from its data lines across a page break —
+// those must be skipped without ending the current block. Confirmed against a
+// real July 2026 file: every employee had at most one populated monthly column
+// (this being presumably the first month tracked in this system), so rather
+// than trying to map header labels to calendar months (unverified — the one
+// populated value for July 2026 data sat under this file's "AUG" column, not
+// "JUL", so the header labels don't reliably correspond to real calendar
+// months), the LAST non-zero monthly value on each line (i.e. immediately
+// before the always-present TOTAL) is taken as "this period's" figure — robust
+// whether the report resets every month or accumulates across the fiscal year.
+// Caveat: if an employee's most recent month is genuinely a blank cell (not an
+// explicit 0) with a nonzero value in an earlier column, this would incorrectly
+// pick up the earlier value — unconfirmed with only one month of sample data.
+
+const ILG_REPORT_LABEL_RE = /ANALYSIS REPORT/i;
+
+export function isIlgAnalysisReportFile(text: string): boolean {
+  return ILG_REPORT_LABEL_RE.test(text) && /^\s*MONTHS\b/m.test(text);
+}
+
+const ILG_EMPLOYEE_HEADER_RE = /^([A-Z0-9]{3,10})\s+(.+?)\s*\[/;
+
+function ilgCurrentMonthValue(trimmedLine: string): number {
+  const numbers = trimmedLine
+    .split(/\s+/)
+    .slice(1) // drop the label word
+    .map(t => parseFloat(t.replace(/,/g, '')))
+    .filter(n => !isNaN(n));
+  if (numbers.length === 0) return 0;
+  const monthly = numbers.slice(0, -1); // last token is always TOTAL
+  return monthly.length ? monthly[monthly.length - 1] : numbers[numbers.length - 1];
+}
+
+export function parseIlgAnalysisReport(text: string, fileName: string): ParsedPayroll {
+  const lines = text.split(/\r?\n/);
+  const result: PayrollLine[] = [];
+
+  let current: { empCode: string; name: string; basic: number; other: number; pensionEe: number; paye: number } | null = null;
+  let ended = false;
+
+  const flush = () => {
+    if (!current) return;
+    result.push({
+      empCode: normalizeCode(current.empCode),
+      name: current.name,
+      basic: current.basic,
+      incomeTotal: current.basic + current.other,
+      furnmart: 0, cbStores: 0, bodulo: 0,
+      pensionEe: current.pensionEe,
+      paye: current.paye,
+      medAidEe: 0,
+      afritecLoans: 0, toplineLoans: 0, staffLoans: 0,
+      deductionTotal: 0,
+      nettPay: current.basic + current.other - current.pensionEe - current.paye,
+    });
+  };
+
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!trimmed || ended) continue;
+
+    const headerMatch = raw.match(ILG_EMPLOYEE_HEADER_RE);
+    if (headerMatch) {
+      flush();
+      current = {
+        empCode: headerMatch[1],
+        name: headerMatch[2].trim().replace(/\s+/g, ' '),
+        basic: 0, other: 0, pensionEe: 0, paye: 0,
+      };
+      continue;
+    }
+
+    // Page-break boilerplate ("... (Pty) Ltd ... 12 MONTH ANALYSIS REPORT ...
+    // PAGE n" and the repeated "MONTHS AUG SEP ... TOTAL" header) — skip
+    // without disturbing the in-progress block, since an employee's data
+    // lines can resume right after it on the next page.
+    if (ILG_REPORT_LABEL_RE.test(raw) || trimmed.startsWith('MONTHS')) {
+      continue;
+    }
+
+    // Grand-total summary block at the end of the report — flush the last real
+    // employee and stop; everything after this belongs to the report totals,
+    // not any individual employee.
+    if (trimmed === 'TOTAL' || /above Totals include/i.test(raw)) {
+      flush();
+      current = null;
+      ended = true;
+      continue;
+    }
+
+    if (!current) continue;
+    const labelMatch = trimmed.match(/^([A-Za-z][A-Za-z ]*?)\s+[\d.,-]/);
+    if (!labelMatch) continue;
+    const label = labelMatch[1].trim().toLowerCase();
+    const value = ilgCurrentMonthValue(trimmed);
+    if (label === 'salary') current.basic += value;
+    else if (label === 'prov') current.pensionEe += value;
+    else if (label === 'paye') current.paye += value;
+    else current.other += value; // Tips and any other variable-pay line item
+  }
+  flush();
+
+  const totals = result.reduce<Partial<PayrollLine>>((acc, l) => ({
+    basic: (acc.basic ?? 0) + l.basic,
+    incomeTotal: (acc.incomeTotal ?? 0) + l.incomeTotal,
+    pensionEe: (acc.pensionEe ?? 0) + l.pensionEe,
+    paye: (acc.paye ?? 0) + l.paye,
+  }), {});
+
+  return { lines: result, totals, fileName };
+}
+
 // ── FTC / Casual Pay Register parser ─────────────────────────────────────────
 // Handles the bespoke multi-sheet "FIXED SERVICE PAY" xls format — also single-sheet
 // exports (pickFtcSheet falls back to the only sheet when there's just one).

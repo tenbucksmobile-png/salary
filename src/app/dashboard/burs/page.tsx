@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, BursUpload } from '@/types/database';
 import { sortHotels, MONTH_NAMES } from '@/lib/utils';
-import { parsePayrollXlsx, nameKey, type ParsedPayroll, type PayrollLine } from '@/lib/recon-parsers';
+import { parsePayrollXlsx, isIlgAnalysisReportFile, parseIlgAnalysisReport, nameKey, type ParsedPayroll, type PayrollLine } from '@/lib/recon-parsers';
 import { Receipt, Upload, Download, AlertTriangle } from 'lucide-react';
 
 // BURS = Botswana Unified Revenue Service. Monthly PAYE submission covering
@@ -219,8 +219,14 @@ export default function BursPage() {
     setUploading(true);
     setUploadError(null);
     try {
-      const buf = await file.arrayBuffer();
-      const parsed = await parsePayrollXlsx(buf, file.name);
+      // ILG's own payroll export is a plain-text "12 Month Analysis Report"
+      // (saved with a .csv extension but not real delimited CSV) — detected
+      // by content, not extension, since the combined group's file is a real
+      // tabular spreadsheet handled by parsePayrollXlsx.
+      const text = await file.text();
+      const parsed = isIlgAnalysisReportFile(text)
+        ? parseIlgAnalysisReport(text, file.name)
+        : await parsePayrollXlsx(await file.arrayBuffer(), file.name);
       const { data, error } = await sb
         .from('burs_uploads')
         .upsert(
@@ -326,7 +332,7 @@ export default function BursPage() {
           <p className="text-xs text-muted-foreground mb-4">
             Indaba Lodge Gaborone is submitted on its own payroll file, separate from the other four properties.
           </p>
-          <input ref={ilgFileRef} type="file" accept=".xlsx,.xls" className="hidden"
+          <input ref={ilgFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload('ilg', f); e.target.value = ''; }} />
           <button
             onClick={() => ilgFileRef.current?.click()}
