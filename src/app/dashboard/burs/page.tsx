@@ -26,10 +26,13 @@ const ITW8_COLUMNS = [
   'PayeTaxCalcMethod', 'TaxDeducted', 'EmployedFrom', 'EmployedTo',
 ];
 
+// Comma-delimited — confirmed against a real BURS-submitted ILG ITW8 file
+// (June 2026). An earlier semicolon-delimited version caused BURS's own
+// upload to reject the file.
 function padRow(values: string[]): string {
   const row = [...values];
   while (row.length < 25) row.push('');
-  return row.slice(0, 25).join(';');
+  return row.slice(0, 25).join(',');
 }
 
 // Botswana's PAYE tax year runs July–June, labelled by the calendar year it
