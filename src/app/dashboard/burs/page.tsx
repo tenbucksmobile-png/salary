@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, BursUpload } from '@/types/database';
 import { sortHotels, MONTH_NAMES } from '@/lib/utils';
 import { parsePayrollXlsx, isIlgAnalysisReportFile, parseIlgAnalysisReport, isRprt739File, parseRprt739, nameKey, type ParsedPayroll, type PayrollLine } from '@/lib/recon-parsers';
-import { Receipt, Upload, Download, AlertTriangle } from 'lucide-react';
+import { Receipt, Upload, Download, AlertTriangle, Trash2 } from 'lucide-react';
 
 // BURS = Botswana Unified Revenue Service. Monthly PAYE submission covering
 // every taxed employee across these five properties. ILG submits its own
@@ -384,6 +384,31 @@ export default function BursPage() {
     );
   }
 
+  async function handleRemoveUpload(uploadGroup: string, errorLabel: string, onSuccess: () => void) {
+    if (!confirm(`Remove the uploaded file for ${errorLabel} — ${MONTH_NAMES[month - 1]} ${year}? This can't be undone.`)) return;
+    setUploadError(null);
+    try {
+      const { error } = await sb
+        .from('burs_uploads')
+        .delete()
+        .eq('period_year', year)
+        .eq('period_month', month)
+        .eq('upload_group', uploadGroup);
+      if (error) throw new Error(error.message);
+      onSuccess();
+    } catch (err) {
+      setUploadError(`Removing ${errorLabel}'s upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  function handleRemoveIlgUpload() {
+    handleRemoveUpload('ilg', 'ILG', () => setIlgUploadRow(null));
+  }
+
+  function handleRemoveCombinedUpload(hotelCode: string) {
+    handleRemoveUpload(uploadGroupFor(hotelCode), hotelCode, () => setCombinedUploadRows(prev => ({ ...prev, [hotelCode]: null })));
+  }
+
   const ilgParsed = (ilgUploadRow?.parsed_data as ParsedPayroll | undefined) ?? null;
 
   const ilgTaxpayers = useMemo(
@@ -559,14 +584,25 @@ export default function BursPage() {
           </p>
           <input ref={ilgFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleIlgUpload(f); e.target.value = ''; }} />
-          <button
-            onClick={() => ilgFileRef.current?.click()}
-            disabled={uploadingIlg}
-            className="w-full flex items-center justify-center gap-2 rounded-md border border-dashed px-4 py-3 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            {uploadingIlg ? 'Uploading…' : ilgUploadRow ? `Replace (${ilgUploadRow.file_name})` : 'Upload ILG Payroll Spreadsheet'}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => ilgFileRef.current?.click()}
+              disabled={uploadingIlg}
+              className="flex-1 flex items-center justify-center gap-2 rounded-md border border-dashed px-4 py-3 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              {uploadingIlg ? 'Uploading…' : ilgUploadRow ? `Replace (${ilgUploadRow.file_name})` : 'Upload ILG Payroll Spreadsheet'}
+            </button>
+            {ilgUploadRow && (
+              <button
+                onClick={handleRemoveIlgUpload}
+                title="Remove this upload"
+                className="shrink-0 flex items-center justify-center rounded-md border border-dashed px-3 text-red-600 hover:bg-red-50 transition-colors"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
           {ilgUploadRow && (
             <p className="text-xs text-muted-foreground mt-2">
               {ilgTaxpayers.matched.length} taxpayer{ilgTaxpayers.matched.length === 1 ? '' : 's'} found
@@ -618,14 +654,25 @@ export default function BursPage() {
                     type="file" accept=".xlsx,.xls,.csv" className="hidden"
                     onChange={e => { const f = e.target.files?.[0]; if (f) handleCombinedUpload(code, f); e.target.value = ''; }}
                   />
-                  <button
-                    onClick={() => combinedFileRefs.current[code]?.click()}
-                    disabled={isUploading}
-                    className="w-full flex items-center justify-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
-                  >
-                    <Upload className="h-3.5 w-3.5" />
-                    {isUploading ? `Uploading ${code}…` : uploadRow ? `${code}: Replace (${uploadRow.file_name})` : `Upload ${code} Payroll Spreadsheet`}
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => combinedFileRefs.current[code]?.click()}
+                      disabled={isUploading}
+                      className="flex-1 flex items-center justify-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      {isUploading ? `Uploading ${code}…` : uploadRow ? `${code}: Replace (${uploadRow.file_name})` : `Upload ${code} Payroll Spreadsheet`}
+                    </button>
+                    {uploadRow && (
+                      <button
+                        onClick={() => handleRemoveCombinedUpload(code)}
+                        title={`Remove ${code}'s upload`}
+                        className="shrink-0 flex items-center justify-center rounded-md border border-dashed px-3 text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                   {uploadRow && taxpayers && (
                     <p className="text-xs text-muted-foreground mt-1 pl-1">
                       {taxpayers.matched.length} taxpayer{taxpayers.matched.length === 1 ? '' : 's'} found
