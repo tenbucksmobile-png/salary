@@ -43,6 +43,14 @@ export interface PayrollLine {
   staffLoans: number;     // Combined: afritecLoans + toplineLoans (or single combined col)
   deductionTotal: number;
   nettPay: number;
+  // BURS ITW8 fields — explicit sums from named CSL/NL payroll columns, set
+  // ONLY by the Code-anchored parsePayrollXlsx shape (confirmed against real
+  // CSL/NL files). Left undefined by every other parser (ILG's report,
+  // Pom Pom, CFEM's RPRT739), which have no equivalent granular columns —
+  // buildItw8Csv() falls back to its incomeTotal-basic derivation for those.
+  otherPayments?: number;       // 1000 - Overtime PPHoliday, 1003 - General Staff Tip, 1004 - Notice pay, 5321/5323 - Overtime — NOT 1001 (Maternity Leave-NegativeIncome, confirmed a different item despite the similar numbering)
+  bonusCommission?: number;     // 5300 - Commission
+  severanceNonTaxable?: number; // 5771 - Severance Pay - Non Taxable Portion
 }
 
 export interface ParsedPayroll {
@@ -561,6 +569,19 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
   const colName         = colNameFound >= 0 ? colNameFound : 1;
   const colBasic       = col('5000');
   const colIncome      = col('income total');
+  // BURS ITW8 fields — confirmed against real CSL/NL payroll spreadsheets
+  // (column presence varies month to month; a missing column here means no
+  // payment of that kind occurred, per explicit instruction, not "unknown").
+  // 1001 ("Maternity Leave-NegativeIncome") is deliberately excluded from
+  // OtherPayments despite its similar numbering to 1000 — confirmed a
+  // different, unrelated item, not overtime.
+  const col1000Overtime = col(/\b1000\b/);
+  const col1003Tip      = col(/\b1003\b/);
+  const col1004Notice   = col(/\b1004\b/);
+  const col5321Ot15     = col(/\b5321\b/);
+  const col5323Ot2      = col(/\b5323\b/);
+  const col5300Comm     = col(/\b5300\b/);
+  const col5771Sever    = col(/\b5771\b/);
   const colFurnmart    = col('furnmart');
   const colCbStores    = col(/cb.?stores/);
   const colBodulo      = col(/funeral|bodulo/);
@@ -643,6 +664,9 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
         : n(row, colStaffLoans),
       deductionTotal: n(row, colDedTotal),
       nettPay: n(row, colNett),
+      otherPayments: n(row, col1000Overtime) + n(row, col1003Tip) + n(row, col1004Notice) + n(row, col5321Ot15) + n(row, col5323Ot2),
+      bonusCommission: n(row, col5300Comm),
+      severanceNonTaxable: n(row, col5771Sever),
     });
   }
 

@@ -144,11 +144,22 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
   lines.push(csvRow([String(taxYear), String(taxMonth), tin, employerName]));
   lines.push(csvRow(ITW8_COLUMNS));
   for (const { line, employee } of rows) {
-    // OtherPayments = variable pay (overtime, Sunday pay, tips/gratuity, leave
-    // paid) = the payroll's Income Total less Basic and any bonus/commission —
-    // there's no dedicated variable-pay column upstream, so this is derived.
-    const bonusCommission = 0; // no data source yet — see "Fields not yet wired up" below
-    const otherPayments = Math.max(0, (line.incomeTotal || 0) - (line.basic || 0) - bonusCommission);
+    // OtherPayments / BonusCommission / SeverancePayGratuity: CSL/NL payroll
+    // spreadsheets carry the exact named columns for these (1000/1003/1004/
+    // 5321/5323, 5300, 5771 — see PayrollLine), captured explicitly by
+    // parsePayrollXlsx. Every other source (ILG's report, Pom Pom, CFEM's
+    // RPRT739) has no equivalent granular columns, so line.otherPayments/etc
+    // are undefined there and this falls back to the old Income Total minus
+    // Basic derivation for OtherPayments, and 0 for the other two.
+    const bonusCommission = line.bonusCommission ?? 0;
+    const otherPayments = line.otherPayments ?? Math.max(0, (line.incomeTotal || 0) - (line.basic || 0) - bonusCommission);
+    const severanceNonTaxable = line.severanceNonTaxable ?? 0;
+    // A severance payment requires a payment date on the ITW8 — confirmed
+    // convention: the 25th of the selected export period's month, not each
+    // employee's own pay date (no per-employee severance date exists upstream).
+    const severanceDate = severanceNonTaxable > 0
+      ? `25/${String(calendarMonth).padStart(2, '0')}/${calendarYear}`
+      : '';
     // A PAYE deduction is owed to BURS regardless of whether our own
     // employee database has a matching record — fall back to the payroll
     // line's own name/idNumber when there's no employee to enrich from.
@@ -163,8 +174,8 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
       String(line.basic || 0),
       String(bonusCommission),
       '0', '0', '0', '0',
-      '0', // SeverancePayGratuity — no data source yet (occasional payout, not tracked per period)
-      '', // SeverancePayGratuityPaymentDate
+      String(severanceNonTaxable),
+      severanceDate,
       '', // RetrenchmentPaymentDate
       '0', '0', '0',
       '', // PensionPaymentDate
