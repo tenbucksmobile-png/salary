@@ -132,7 +132,9 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
       to,
     ]));
   }
-  return lines.join('\r\n');
+  // Trailing CRLF after the last row — confirmed present in BURS's own
+  // itw8_paye_template.csv; our export was missing it.
+  return lines.join('\r\n') + '\r\n';
 }
 
 function downloadCsv(content: string, filename: string) {
