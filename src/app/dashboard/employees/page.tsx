@@ -13,7 +13,7 @@ import { buildEmployeeCsv } from '@/lib/employee-csv';
 
 type ColId =
   | 'employee_code' | 'surname' | 'name' | 'hotel' | 'department' | 'title'
-  | 'employment_date' | 'years_service' | 'structure'
+  | 'employment_date' | 'years_service' | 'structure' | 'id_number'
   | 'basic' | 'structure_sal' | 'gross_salary' | 'ctc'
   | 'medical_co' | 'provident_co'
   | 'uif_co' | 'sdl' | 'wca'
@@ -39,6 +39,8 @@ const ALL_COLUMNS: ColDef[] = [
   { id: 'employment_date', label: 'Start Date',        group: 'Employee',    defaultVisible: false },
   { id: 'years_service',   label: 'Yrs Service',       group: 'Employee',    defaultVisible: false, align: 'right' },
   { id: 'structure',       label: 'Grade',             group: 'Employee',    defaultVisible: true },
+  // Botswana only (CSL/NL/CFEM) — see OMANG_HOTEL_CODES
+  { id: 'id_number',       label: 'Omang',             group: 'Employee',    defaultVisible: false },
   // Core salary
   { id: 'basic',           label: 'Basic Salary',      group: 'Salary',      defaultVisible: true,  align: 'right' },
   { id: 'structure_sal',   label: 'Structure',         group: 'Salary',      defaultVisible: true },
@@ -67,6 +69,14 @@ const STORAGE_KEY        = 'ihg-salary-emp-cols';
 const HOTEL_FILTER_KEY   = 'ihg-salary-emp-hotel';
 
 const DEFAULT_VISIBLE = new Set(ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.id));
+
+// Omang / ID number is only tracked for CSL, NL and CFE Management —
+// hidden from the column picker and table for every other hotel.
+const OMANG_HOTEL_CODES = new Set(['CSL', 'NL', 'CFEM']);
+function columnsForHotel(shortCode: string | undefined): ColDef[] {
+  const showOmang = !!shortCode && OMANG_HOTEL_CODES.has(shortCode);
+  return ALL_COLUMNS.filter(c => c.id !== 'id_number' || showOmang);
+}
 
 const GRADE_OPTIONS  = ['ANO', 'Fixed Term', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
 const STATUS_OPTIONS = ['active', 'terminated'] as const;
@@ -655,7 +665,11 @@ export default function EmployeesPage() {
     setTimeout(() => setCalcDone(false), 3000);
   }
 
-  const visibleDefs = useMemo(() => ALL_COLUMNS.filter(c => visibleCols.has(c.id)), [visibleCols]);
+  const availableColumns = useMemo(() => columnsForHotel(selectedHotel?.short_code), [selectedHotel]);
+  const visibleDefs = useMemo(
+    () => availableColumns.filter(c => visibleCols.has(c.id)),
+    [availableColumns, visibleCols]
+  );
 
   // Cell renderer per column
   function cellValue(col: ColId, e: Employee, sal: SalaryRecord | undefined, isStale: boolean): React.ReactNode {
@@ -686,6 +700,7 @@ export default function EmployeesPage() {
       case 'years_service':   return yrs != null ? `${yrs}` : '—';
       // Salary fields
       case 'structure':       return e.grade_label ?? '—';
+      case 'id_number':       return e.id_number ?? '—';
       case 'structure_sal': { const s = (sal?.allowances as Record<string, number>)?.structure; return s ? fmt(s) : '—'; }
       case 'basic':           return sal?.basic_salary    ? fmt(sal.basic_salary)    : '—';
       case 'gross_salary':    return sal?.total_earnings  ? fmt(sal.total_earnings)  : '—';
@@ -704,7 +719,7 @@ export default function EmployeesPage() {
     }
   }
 
-  const groups = [...new Set(ALL_COLUMNS.map(c => c.group))];
+  const groups = [...new Set(availableColumns.map(c => c.group))];
 
   return (
     <div className="p-8">
@@ -824,7 +839,7 @@ export default function EmployeesPage() {
                   <div key={group} className="mb-4">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">{group}</p>
                     <div className="space-y-1">
-                      {ALL_COLUMNS.filter(c => c.group === group).map(col => (
+                      {availableColumns.filter(c => c.group === group).map(col => (
                         <label key={col.id} className="flex items-center gap-2 cursor-pointer hover:bg-muted/30 rounded px-1 py-0.5">
                           <input
                             type="checkbox"

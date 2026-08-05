@@ -343,7 +343,7 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
     gross:     header.findIndex(h => h.includes('gross') || h.includes('earnings') || (h.includes('salary') && !h.includes('net'))),
     grade:     header.findIndex(h => h === 'grade' || h === 'grade label' || h === 'gradelabel'),
     medical:   header.findIndex(h => h.includes('medical')),
-    idNumber:  header.findIndex(h => h === 'omang' || h === 'id number' || h === 'id_number' || h === 'id no' || h === 'national id' || h.includes('identity')),
+    idNumber:  header.findIndex(h => h.includes('omang') || h === 'id number' || h === 'id_number' || h === 'id no' || h === 'national id' || h.includes('identity')),
     empCode:   header.findIndex(h => h === 'emp code' || h === 'employee code' || h === 'emp no' || h === 'employee no' || h === 'staff no' || h === 'staff code' || h === 'emp #' || h === 'emp#'),
   };
 
