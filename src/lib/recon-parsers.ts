@@ -532,7 +532,17 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
     String(r[0] || '').trim().toLowerCase() === 'code' &&
     r.some((c: any) => String(c || '').toLowerCase().includes('employee')),
   );
-  if (headerIdx < 0) throw new Error('Could not find header row in payroll spreadsheet (expected "Code" in column A)');
+  if (headerIdx < 0) {
+    // Pom Pom's own export is a differently-shaped tabular layout — separate
+    // "Last Name"/"First Name" columns (not one combined name column), the
+    // employee code in "Emp. Number" (not column A), and its own "omang"
+    // column. Confirmed live (July 2026): "Total Allowances" is actually the
+    // GROSS earnings total (Basic Pay + Leave Pay + Overtime + Tip + Unpaid
+    // Leave, the last of which can be negative) — despite the misleading
+    // name, it's what feeds incomeTotal here, the same role "Income Total"
+    // plays in the Code-anchored shape above.
+    return parsePomPomPayrollXlsx(rows, fileName);
+  }
 
   const hRow = rows[headerIdx];
 
@@ -627,6 +637,94 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
       staffLoans: hasSeparateLoanCols
         ? afritecLoans + toplineLoans
         : n(row, colStaffLoans),
+      deductionTotal: n(row, colDedTotal),
+      nettPay: n(row, colNett),
+    });
+  }
+
+  return { lines, totals, fileName };
+}
+
+// ── Pom Pom Staff Payroll (differently-shaped tabular .xlsx) ─────────────────
+// Header row anchored on "Last Name" (col A) instead of "Code" — everything
+// else about the layout differs too: employee code lives in "Emp. Number",
+// the name is split across "Last Name"/"First Name", and there's a genuine
+// "omang" column BURS matching doesn't need but a future Omang import could
+// use. Vendor deduction columns (Afritec life/Loan, Curios, Flights,
+// Furniture Mart) use PomPom's own vocabulary, not the SA/CSL vendor set —
+// irrelevant to BURS (which only reads basic/incomeTotal/pensionEe/paye), so
+// left at 0 rather than guessing a mapping with no consumer to verify against.
+function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll {
+  const headerIdx = rows.findIndex(r =>
+    String(r[0] || '').trim().toLowerCase() === 'last name' &&
+    r.some((c: any) => String(c || '').toLowerCase().includes('first name')),
+  );
+  if (headerIdx < 0) throw new Error('Could not find header row in payroll spreadsheet (expected "Code" or "Last Name" in column A)');
+
+  const hRow = rows[headerIdx];
+  function col(keyword: string | RegExp): number {
+    return hRow.findIndex((h: any) => {
+      const s = String(h || '').trim().toLowerCase();
+      return typeof keyword === 'string' ? s.includes(keyword) : keyword.test(s);
+    });
+  }
+
+  const colSurname   = 0;
+  const colFirstName = col('first name');
+  const colCode       = col(/emp\.?\s*number|emp\.?\s*no/);
+  const colBasic       = col('basic pay');
+  const colIncome      = col('total allowances'); // misleadingly named — this is the gross earnings total
+  const colPension     = col(/pension\s*employee/);
+  const colPaye        = col(/paye|pay as you earn/);
+  const colMedAid      = col(/medical.*aid.*employee/);
+  const colDedTotal    = col('total deductions');
+  const colNett        = col('total net pay');
+
+  function n(row: any[], c: number): number {
+    return c >= 0 ? Number(row[c]) || 0 : 0;
+  }
+
+  const lines: PayrollLine[] = [];
+  let totals: Partial<PayrollLine> = {};
+
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    const surname = String(row[colSurname] || '').trim();
+    const firstName = String(row[colFirstName] || '').trim();
+    const code = String(row[colCode] || '').trim();
+
+    if (!surname && !firstName) {
+      // No name — either a genuinely blank row, or (if there are real
+      // numeric totals) the sheet's final totals row.
+      const isTotalsRow = n(row, colIncome) > 0 || n(row, colDedTotal) > 0 || n(row, colNett) > 0;
+      if (isTotalsRow) {
+        totals = {
+          basic: n(row, colBasic),
+          incomeTotal: n(row, colIncome),
+          pensionEe: n(row, colPension),
+          paye: n(row, colPaye),
+          medAidEe: n(row, colMedAid),
+          deductionTotal: n(row, colDedTotal),
+          nettPay: n(row, colNett),
+        };
+      }
+      continue;
+    }
+
+    lines.push({
+      empCode: normalizeCode(code),
+      name: `${firstName} ${surname}`.trim(),
+      basic: n(row, colBasic),
+      incomeTotal: n(row, colIncome),
+      furnmart: 0,
+      cbStores: 0,
+      bodulo: 0,
+      pensionEe: n(row, colPension),
+      paye: n(row, colPaye),
+      medAidEe: n(row, colMedAid),
+      afritecLoans: 0,
+      toplineLoans: 0,
+      staffLoans: 0,
       deductionTotal: n(row, colDedTotal),
       nettPay: n(row, colNett),
     });
