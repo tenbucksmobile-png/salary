@@ -480,6 +480,57 @@ export function parseEmpCodeUpdateFile(text: string): { employees: EmpCodeUpdate
   return { employees, errors };
 }
 
+// ─── Omang / National ID Update (ad-hoc — CSL/NL style code+ID sheets) ───────
+// A narrow, dedicated file — employee code + Omang number, nothing else. Unlike
+// the generic HR List format (which requires a separate Surname column), files
+// like NL's Omang sheet give one combined "Name" column ("MISS Kenosi Haake")
+// with an inconsistent title/first/surname word order that can't be reliably
+// split — so this format matches by employee code ONLY and patches ONLY
+// id_number, the same "narrow update, one column" pattern as EmpCodeUpdateFile
+// above. Must NOT have a surname column (that's the generic HR List/CSL Omang
+// shape, already handled by isTabularEmployeeFile) or gross/leave/medical data.
+
+export function isOmangUpdateFile(firstLine: string): boolean {
+  const l = normalizeHeaderCell(firstLine);
+  const hasCode    = l.includes('code');
+  const hasOmang   = l.includes('omang') || l.includes('id number') || l.includes('national id') || l.includes('identity');
+  const hasSurname = l.includes('surname');
+  const hasSalary  = l.includes('gross') || l.includes('salary') || l.includes('earnings');
+  const hasLeave   = l.includes('leave');
+  const hasMedical = l.includes('medical');
+  return hasCode && hasOmang && !hasSurname && !hasSalary && !hasLeave && !hasMedical;
+}
+
+export interface OmangUpdateEntry {
+  employeeCode: string;
+  idNumber: string;
+}
+
+export function parseOmangUpdateFile(text: string): { employees: OmangUpdateEntry[]; errors: string[] } {
+  const lines = text.split('\n').map(l => l.trimEnd()).filter(Boolean);
+  const delim = detectDelimiter(lines[0] ?? '');
+  const header = splitCSVLine(lines[0], delim).map(normalizeHeaderCell);
+
+  const idx = {
+    empCode: header.findIndex(h => h === 'code' || h === 'emp code' || h === 'employee code' || h === 'emp no' || h === 'employee no' || h === 'staff no' || h === 'staff code' || h === 'emp #' || h === 'emp#'),
+    idNumber: header.findIndex(h => h.includes('omang') || h === 'id number' || h === 'id_number' || h === 'id no' || h === 'national id' || h.includes('identity')),
+  };
+
+  const employees: OmangUpdateEntry[] = [];
+  const errors: string[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i], delim).map(c => c.trim().replace(/^"|"$/g, ''));
+    if (cols.every(c => !c)) continue;
+    const get = (k: keyof typeof idx) => idx[k] >= 0 ? cols[idx[k]] ?? '' : '';
+    const employeeCode = get('empCode');
+    const idNumber = get('idNumber').replace(/\s+/g, '');
+    if (!employeeCode || !idNumber) continue;
+    employees.push({ employeeCode, idNumber });
+  }
+  return { employees, errors };
+}
+
 // ─── VIP Report 710 parser ────────────────────────────────────────────────────
 
 export function parseVIPReport(text: string): ParseResult {

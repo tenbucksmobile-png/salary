@@ -34,8 +34,6 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     heading: 'CFE PAYROLL',
-    containerClass: 'bg-indigo-50 border-indigo-200',
-    headingClass: 'text-indigo-700',
     items: [
       { label: 'Reconciliation', href: '/dashboard/reconciliation', icon: ClipboardCheck, key: 'reconciliation' },
       { label: 'BURS',           href: '/dashboard/burs',           icon: Receipt,         key: 'burs', adminOnly: true },
