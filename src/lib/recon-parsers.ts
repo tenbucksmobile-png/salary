@@ -27,6 +27,9 @@ export interface ParsedStatement {
 export interface PayrollLine {
   empCode: string;
   name: string;
+  firstName?: string;    // set only when the source has separate name columns (avoids a lossy re-split of `name`)
+  surname?: string;
+  idNumber: string;      // Omang/National ID, when the payroll source carries one (blank otherwise)
   basic: number;
   incomeTotal: number;
   furnmart: number;
@@ -624,6 +627,7 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
     lines.push({
       empCode: normalizeCode(code),
       name,
+      idNumber: '',
       basic: n(row, colBasic),
       incomeTotal: n(row, colIncome),
       furnmart: n(row, colFurnmart),
@@ -672,6 +676,7 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
   const colSurname   = 0;
   const colFirstName = col('first name');
   const colCode       = col(/emp\.?\s*number|emp\.?\s*no/);
+  const colOmang       = col('omang');
   const colBasic       = col('basic pay');
   const colIncome      = col('total allowances'); // misleadingly named — this is the gross earnings total
   const colPension     = col(/pension\s*employee/);
@@ -714,6 +719,9 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
     lines.push({
       empCode: normalizeCode(code),
       name: `${firstName} ${surname}`.trim(),
+      firstName,
+      surname,
+      idNumber: colOmang >= 0 ? String(row[colOmang] || '').trim() : '',
       basic: n(row, colBasic),
       incomeTotal: n(row, colIncome),
       furnmart: 0,
@@ -786,6 +794,7 @@ export function parseIlgAnalysisReport(text: string, fileName: string): ParsedPa
     result.push({
       empCode: normalizeCode(current.empCode),
       name: current.name,
+      idNumber: '',
       basic: current.basic,
       incomeTotal: current.basic + current.other,
       furnmart: 0, cbStores: 0, bodulo: 0,
@@ -984,6 +993,7 @@ export async function parseFtcPayrollXls(
       lines.push({
         empCode: key, // nameKey-format; display as "—" in the UI
         name: rawName,
+        idNumber: '',
         basic,
         incomeTotal: total,
         furnmart, cbStores: 0, bodulo,

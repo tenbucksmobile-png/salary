@@ -83,6 +83,23 @@ interface TaxpayerRow {
   hotel?: Hotel;
 }
 
+// Lines in a parsed payroll that resolve to NO existing employee at all
+// (neither by code nor by name) — candidates to create as new employee
+// records. Matching (and so this month's ITW8 inclusion) needs a real
+// employee row to attach to; a hotel with no roster yet (e.g. Pom Pom) would
+// otherwise show every taxpayer as permanently "unmatched".
+function findMissingLines(parsed: ParsedPayroll | null, roster: Employee[]): PayrollLine[] {
+  if (!parsed) return [];
+  const codeSet = new Set(roster.filter(e => e.employee_code).map(e => e.employee_code!.toUpperCase()));
+  const nameSet = new Set(roster.map(e => nameKey(`${e.surname} ${e.first_name}`)));
+  return parsed.lines.filter(line => {
+    const code = line.empCode?.trim().toUpperCase();
+    if (code && codeSet.has(code)) return false;
+    if (nameSet.has(nameKey(line.name))) return false;
+    return true;
+  });
+}
+
 // Matches payroll lines to a roster by employee code first (CFEM/PomPom may
 // have real codes), falling back to name match (CSL/NL employee codes are
 // NULL — migration 014) — same two-pass strategy Reconciliation's Deductions
@@ -312,6 +329,62 @@ export default function BursPage() {
     return result;
   }, [combinedUploadRows, combinedEmployeesByHotel, combinedHotels]);
 
+  // Lines with no employee at all yet (e.g. Pom Pom, which starts with zero
+  // employees) — offered as a one-click bulk-create so this month's taxpayers
+  // can actually be matched, without needing the Import HR List page (which
+  // deliberately hides BURS-only hotels like Pom Pom from its own picker).
+  const combinedMissingByHotel = useMemo(() => {
+    const result: Record<string, PayrollLine[]> = {};
+    for (const code of COMBINED_CODES) {
+      const parsed = (combinedUploadRows[code]?.parsed_data as ParsedPayroll | undefined) ?? null;
+      result[code] = findMissingLines(parsed, combinedEmployeesByHotel[code] ?? []);
+    }
+    return result;
+  }, [combinedUploadRows, combinedEmployeesByHotel]);
+
+  const [creatingEmployees, setCreatingEmployees] = useState<Record<string, boolean>>({});
+
+  async function createMissingEmployees(hotelCode: string) {
+    const hotel = combinedHotels.find(h => h.short_code === hotelCode);
+    const missing = combinedMissingByHotel[hotelCode] ?? [];
+    if (!hotel || missing.length === 0) return;
+    setCreatingEmployees(prev => ({ ...prev, [hotelCode]: true }));
+    setUploadError(null);
+    try {
+      const rows = missing.map(line => {
+        let firstName = line.firstName;
+        let surname = line.surname;
+        if (firstName === undefined && surname === undefined) {
+          // No separately-tracked name columns in the source — best-effort
+          // split (first token = first name, rest = surname).
+          const tokens = line.name.trim().split(/\s+/);
+          firstName = tokens[0] ?? '';
+          surname = tokens.slice(1).join(' ') || tokens[0] || '';
+        }
+        return {
+          hotel_id: hotel.id,
+          employee_code: line.empCode || null,
+          surname: surname || line.name || '(unknown)',
+          first_name: firstName || '',
+          id_number: line.idNumber || null,
+          status: 'active' as const,
+        };
+      });
+      const { error } = await sb.from('employees').insert(rows);
+      if (error) throw new Error(error.message);
+
+      const hotelIds = hotels.map(h => h.id);
+      const { data: e } = hotelIds.length
+        ? await sb.from('employees').select('*').in('hotel_id', hotelIds).eq('status', 'active')
+        : { data: [] };
+      setEmployees((e ?? []) as Employee[]);
+    } catch (err) {
+      setUploadError(`Creating employees for ${hotelCode} failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setCreatingEmployees(prev => ({ ...prev, [hotelCode]: false }));
+    }
+  }
+
   const combinedMatched = useMemo(
     () => COMBINED_CODES.flatMap(code => combinedTaxpayersByHotel[code]?.matched ?? []),
     [combinedTaxpayersByHotel],
@@ -448,6 +521,8 @@ export default function BursPage() {
               const uploadRow = combinedUploadRows[code];
               const taxpayers = combinedTaxpayersByHotel[code];
               const isUploading = !!uploadingCombined[code];
+              const missing = combinedMissingByHotel[code] ?? [];
+              const isCreating = !!creatingEmployees[code];
               return (
                 <div key={code}>
                   <input
@@ -468,6 +543,15 @@ export default function BursPage() {
                       {taxpayers.matched.length} taxpayer{taxpayers.matched.length === 1 ? '' : 's'} found
                       {taxpayers.unmatched.length > 0 && `, ${taxpayers.unmatched.length} unmatched`}
                     </p>
+                  )}
+                  {missing.length > 0 && (
+                    <button
+                      onClick={() => createMissingEmployees(code)}
+                      disabled={isCreating}
+                      className="mt-1 w-full text-left pl-1 text-xs text-amber-700 hover:text-amber-900 underline disabled:opacity-50 transition-colors"
+                    >
+                      {isCreating ? `Creating…` : `${missing.length} employee${missing.length === 1 ? '' : 's'} not on file for ${code} — create from this upload`}
+                    </button>
                   )}
                 </div>
               );
