@@ -246,9 +246,15 @@ export default function BursPage() {
         .filter(hh => BURS_HOTEL_CODES.includes(hh.short_code));
       setHotels(hotelList);
 
+      // Deliberately NOT filtered to status='active' — a terminated employee
+      // can still have a real payroll line this period (a final payslip),
+      // and if their DB record has an Omang on file it should still be used
+      // rather than falling back to a blank ID. Confirmed live: Bahenyi
+      // Mopako (CSL) has a real Omang stored but is marked terminated, which
+      // silently excluded her from matching entirely before this fix.
       const hotelIds = hotelList.map(hh => hh.id);
       const { data: e } = hotelIds.length
-        ? await sb.from('employees').select('*').in('hotel_id', hotelIds).eq('status', 'active')
+        ? await sb.from('employees').select('*').in('hotel_id', hotelIds)
         : { data: [] };
       setEmployees((e ?? []) as Employee[]);
       setLoading(false);
@@ -482,7 +488,7 @@ export default function BursPage() {
 
       const hotelIds = hotels.map(h => h.id);
       const { data: e } = hotelIds.length
-        ? await sb.from('employees').select('*').in('hotel_id', hotelIds).eq('status', 'active')
+        ? await sb.from('employees').select('*').in('hotel_id', hotelIds)
         : { data: [] };
       setEmployees((e ?? []) as Employee[]);
     } catch (err) {
