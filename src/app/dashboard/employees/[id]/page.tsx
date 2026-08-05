@@ -30,6 +30,7 @@ export default function EmployeeDetailPage() {
     employee_code: '',
     surname: '',
     first_name: '',
+    id_number: '',
     job_title: '',
     department_code: '',
     grade_label: '',
@@ -68,6 +69,7 @@ export default function EmployeeDetailPage() {
           employee_code: e.employee_code ?? '',
           surname: e.surname ?? '',
           first_name: e.first_name ?? '',
+          id_number: e.id_number ?? '',
           job_title: e.job_title ?? '',
           department_code: e.department_code ?? '',
           grade_label: e.grade_label ?? '',
@@ -107,6 +109,7 @@ export default function EmployeeDetailPage() {
     const { error } = await sb.from('employees').update({
       ...form,
       employee_code:   form.employee_code || null,
+      id_number:       form.id_number || null,
       grade_label:     form.grade_label || null,
       employment_date: form.employment_date || null,
       aka:             form.aka || null,
@@ -118,7 +121,7 @@ export default function EmployeeDetailPage() {
       setSaveError(error.message);
       return;
     }
-    setEmp(prev => prev ? { ...prev, employee_code: form.employee_code, surname: form.surname, first_name: form.first_name } : prev);
+    setEmp(prev => prev ? { ...prev, employee_code: form.employee_code, surname: form.surname, first_name: form.first_name, id_number: form.id_number || null } : prev);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -205,6 +208,17 @@ export default function EmployeeDetailPage() {
               placeholder="e.g. SMI001"
             />
           </Field>
+
+          {hotel && isBotswana(hotel.country) && (
+            <Field label="Omang / ID Number">
+              <input
+                value={form.id_number}
+                onChange={e => setForm(f => ({ ...f, id_number: e.target.value }))}
+                className="w-full rounded-md border border-input px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-ring"
+                placeholder="e.g. 123456789"
+              />
+            </Field>
+          )}
 
           <Field label="Surname">
             <input
