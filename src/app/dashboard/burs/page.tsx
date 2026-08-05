@@ -16,7 +16,15 @@ const COMBINED_CODES = ['CSL', 'NL', 'CFEM', 'PomPom'];
 const EMPLOYER_INFO_KEY = 'ihg-salary-burs-employer-info';
 
 // ITW8 PAYE template — exact column order/labels from itw8_paye_template.csv.
-// Every row (including the two header rows) is padded to 25 columns.
+// CONFIRMED TWICE from the BURS portal, and the two downloads disagreed with
+// each other (`;` CRLF padded-to-25-everywhere vs `,` LF unpadded) — this is
+// the SECOND, freshly re-pulled download, treated as authoritative since it's
+// the most recent confirmed source. Row shape is NOT uniform: the metadata
+// row (TaxYear/TaxMonth/EmployerTin/EmployerName) and its values row have
+// exactly 4 fields each, un-padded — only the column-header row and each
+// employee data row are the fixed 25-wide shape. The earlier semicolon
+// version force-padded every row (including the 4-field metadata rows) out
+// to 25 fields, which was wrong.
 const ITW8_HEADER_LABELS = ['TaxYear', 'TaxMonth', 'EmployerTin', 'EmployerName'];
 const ITW8_COLUMNS = [
   'ID', 'TIN', 'Name', 'ResidentialStatus', 'ITW5Variation', 'SalaryWages', 'BonusCommission',
@@ -26,17 +34,10 @@ const ITW8_COLUMNS = [
   'PayeTaxCalcMethod', 'TaxDeducted', 'EmployedFrom', 'EmployedTo',
 ];
 
-// Semicolon-delimited — matches BURS's own published itw8_paye_template.csv
-// exactly (header labels, column names, and structure all verified against
-// it directly). A June 2026 sample file that used commas was initially
-// assumed to be the ground truth instead, which was wrong — the official
-// template is authoritative. If BURS ever rejects a comma vs semicolon guess
-// again, get the actual template from the portal rather than inferring from
-// a filled example whose provenance isn't confirmed.
-function padRow(values: string[]): string {
-  const row = [...values];
-  while (row.length < 25) row.push('');
-  return row.slice(0, 25).join(';');
+// Comma-delimited, no padding — each row carries exactly as many fields as
+// it naturally has (4 for the metadata rows, 25 for column-header/data rows).
+function csvRow(values: string[]): string {
+  return values.join(',');
 }
 
 // Botswana's PAYE tax year runs July–June, labelled by the calendar year it
@@ -100,16 +101,16 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
   const { taxYear, taxMonth } = toBwTaxPeriod(calendarYear, calendarMonth);
   const { from, to } = periodBounds(calendarYear, calendarMonth);
   const lines: string[] = [];
-  lines.push(padRow(ITW8_HEADER_LABELS));
-  lines.push(padRow([String(taxYear), String(taxMonth), tin, employerName]));
-  lines.push(padRow(ITW8_COLUMNS));
+  lines.push(csvRow(ITW8_HEADER_LABELS));
+  lines.push(csvRow([String(taxYear), String(taxMonth), tin, employerName]));
+  lines.push(csvRow(ITW8_COLUMNS));
   for (const { line, employee } of rows) {
     // OtherPayments = variable pay (overtime, Sunday pay, tips/gratuity, leave
     // paid) = the payroll's Income Total less Basic and any bonus/commission —
     // there's no dedicated variable-pay column upstream, so this is derived.
     const bonusCommission = 0; // no data source yet — see "Fields not yet wired up" below
     const otherPayments = Math.max(0, (line.incomeTotal || 0) - (line.basic || 0) - bonusCommission);
-    lines.push(padRow([
+    lines.push(csvRow([
       employee.id_number ?? '',
       '', // TIN — not required (per-employee BURS Taxpayer ID not captured)
       `${employee.first_name} ${employee.surname}`.trim(),
@@ -132,9 +133,10 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
       to,
     ]));
   }
-  // Trailing CRLF after the last row — confirmed present in BURS's own
-  // itw8_paye_template.csv; our export was missing it.
-  return lines.join('\r\n') + '\r\n';
+  // LF line endings, no trailing newline at EOF — matching the confirmed
+  // fresh BURS template exactly (it uses neither CRLF nor a trailing blank
+  // line, unlike the earlier semicolon template download).
+  return lines.join('\n');
 }
 
 function downloadCsv(content: string, filename: string) {
