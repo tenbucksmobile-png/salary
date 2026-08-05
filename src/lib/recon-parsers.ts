@@ -708,6 +708,14 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
   const colMedAid      = col(/medical.*aid.*employee/);
   const colDedTotal    = col('total deductions');
   const colNett        = col('total net pay');
+  // BURS OtherPayments — Pom Pom has no numeric account codes (unlike
+  // CSL/NL), just plain labels. Explicit per instruction: Leave Pay +
+  // Overtime + Tip Pom Pom only. Deliberately NOT the same as `incomeTotal -
+  // basic` (= Total Allowances - Basic Pay), since that also folds in Unpaid
+  // Leave, which isn't part of this definition.
+  const colLeavePay    = col('leave pay');
+  const colOvertime    = col(/^overtime$/);
+  const colTip         = col(/tip pom pom/);
 
   function n(row: any[], c: number): number {
     return c >= 0 ? Number(row[c]) || 0 : 0;
@@ -759,6 +767,7 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
       staffLoans: 0,
       deductionTotal: n(row, colDedTotal),
       nettPay: n(row, colNett),
+      otherPayments: n(row, colLeavePay) + n(row, colOvertime) + n(row, colTip),
     });
   }
 
