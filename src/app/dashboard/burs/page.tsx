@@ -79,7 +79,7 @@ function periodBounds(calendarYear: number, calendarMonth: number): { from: stri
 
 interface TaxpayerRow {
   line: PayrollLine;
-  employee: Employee;
+  employee: Employee | null;
   hotel?: Hotel;
 }
 
@@ -103,28 +103,35 @@ function findMissingLines(parsed: ParsedPayroll | null, roster: Employee[]): Pay
 // Matches payroll lines to a roster by employee code first (CFEM/PomPom may
 // have real codes), falling back to name match (CSL/NL employee codes are
 // NULL — migration 014) — same two-pass strategy Reconciliation's Deductions
-// Check tab already uses. Only lines with paye > 0 are taxpayers; everything
-// else is out of scope for this submission.
+// Check tab already uses.
+//
+// EVERY line with paye > 0 becomes a row in `matched`, whether or not it
+// resolves to an employee — a PAYE deduction on the payroll is money owed to
+// BURS regardless of whether our own employee database happens to have a
+// matching record, and the ITW8 is extrapolated directly from the uploaded
+// payroll spreadsheets, not gated by internal roster completeness. `unmatched`
+// is the subset with no employee match — still included in the export (using
+// the payroll line's own name/idNumber, employee: null), but called out
+// separately since those rows are more likely to need a manual double-check
+// (spelling, a genuinely new hire not yet in employees, etc).
 function matchTaxpayers(
   parsed: ParsedPayroll | null,
   roster: Employee[],
-  hotelForEmployee: (e: Employee) => Hotel | undefined,
-): { matched: TaxpayerRow[]; unmatched: PayrollLine[] } {
+  hotelForEmployee: () => Hotel | undefined,
+): { matched: TaxpayerRow[]; unmatched: TaxpayerRow[] } {
   if (!parsed) return { matched: [], unmatched: [] };
   const codeMap = new Map(roster.filter(e => e.employee_code).map(e => [e.employee_code!.toUpperCase(), e]));
   const nameMap = new Map(roster.map(e => [nameKey(`${e.surname} ${e.first_name}`), e]));
 
   const matched: TaxpayerRow[] = [];
-  const unmatched: PayrollLine[] = [];
+  const unmatched: TaxpayerRow[] = [];
   for (const line of parsed.lines) {
     if (!(line.paye > 0)) continue;
     const code = line.empCode?.trim().toUpperCase();
-    const employee = (code ? codeMap.get(code) : undefined) ?? nameMap.get(nameKey(line.name));
-    if (employee) {
-      matched.push({ line, employee, hotel: hotelForEmployee(employee) });
-    } else {
-      unmatched.push(line);
-    }
+    const employee = (code ? codeMap.get(code) : undefined) ?? nameMap.get(nameKey(line.name)) ?? null;
+    const row: TaxpayerRow = { line, employee, hotel: hotelForEmployee() };
+    matched.push(row);
+    if (!employee) unmatched.push(row);
   }
   return { matched, unmatched };
 }
@@ -142,10 +149,15 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
     // there's no dedicated variable-pay column upstream, so this is derived.
     const bonusCommission = 0; // no data source yet — see "Fields not yet wired up" below
     const otherPayments = Math.max(0, (line.incomeTotal || 0) - (line.basic || 0) - bonusCommission);
+    // A PAYE deduction is owed to BURS regardless of whether our own
+    // employee database has a matching record — fall back to the payroll
+    // line's own name/idNumber when there's no employee to enrich from.
+    const idNumber = employee?.id_number || line.idNumber || '';
+    const name = employee ? `${employee.first_name} ${employee.surname}`.trim() : line.name;
     lines.push(csvRow([
-      employee.id_number ?? '',
+      idNumber,
       '', // TIN — not required (per-employee BURS Taxpayer ID not captured)
-      `${employee.first_name} ${employee.surname}`.trim(),
+      name,
       'R',
       'N',
       String(line.basic || 0),
@@ -320,7 +332,7 @@ export default function BursPage() {
   // One matchTaxpayers() pass per hotel, each against that hotel's own
   // roster only, then combined for the export and the summary table below.
   const combinedTaxpayersByHotel = useMemo(() => {
-    const result: Record<string, { matched: TaxpayerRow[]; unmatched: PayrollLine[] }> = {};
+    const result: Record<string, { matched: TaxpayerRow[]; unmatched: TaxpayerRow[] }> = {};
     for (const code of COMBINED_CODES) {
       const parsed = (combinedUploadRows[code]?.parsed_data as ParsedPayroll | undefined) ?? null;
       const hotel = combinedHotels.find(h => h.short_code === code);
@@ -400,21 +412,23 @@ export default function BursPage() {
   // groups export separately anyway.
   const [taxpayerTab, setTaxpayerTab] = useState<'ilg' | 'combined'>('ilg');
 
+  const rowSurname = (r: TaxpayerRow) => r.employee?.surname ?? r.line.name;
+
   const ilgTaxpayerRows = useMemo(
-    () => [...ilgTaxpayers.matched].sort((a, b) => a.employee.surname.localeCompare(b.employee.surname)),
+    () => [...ilgTaxpayers.matched].sort((a, b) => rowSurname(a).localeCompare(rowSurname(b))),
     [ilgTaxpayers],
   );
   const combinedTaxpayerRows = useMemo(
     () => [...combinedMatched].sort((a, b) => {
       const hc = (a.hotel?.short_code ?? '').localeCompare(b.hotel?.short_code ?? '');
-      return hc !== 0 ? hc : a.employee.surname.localeCompare(b.employee.surname);
+      return hc !== 0 ? hc : rowSurname(a).localeCompare(rowSurname(b));
     }),
     [combinedMatched],
   );
   const activeTaxpayerRows = taxpayerTab === 'ilg' ? ilgTaxpayerRows : combinedTaxpayerRows;
   const activeUnmatched = taxpayerTab === 'ilg' ? ilgTaxpayers.unmatched : combinedUnmatched;
 
-  const missingOmangAmongTaxpayers = activeTaxpayerRows.filter(r => !r.employee.id_number || !r.employee.id_number.trim());
+  const missingOmangAmongTaxpayers = activeTaxpayerRows.filter(r => !(r.employee?.id_number || r.line.idNumber || '').trim());
 
   function updateEmployerInfo(group: 'ilg' | 'combined', field: 'tin' | 'name', value: string) {
     setEmployerInfo(prev => ({ ...prev, [group]: { ...prev[group], [field]: value } }));
@@ -562,7 +576,7 @@ export default function BursPage() {
                       disabled={isCreating}
                       className="mt-1 w-full text-left pl-1 text-xs text-amber-700 hover:text-amber-900 underline disabled:opacity-50 transition-colors"
                     >
-                      {isCreating ? `Creating…` : `${missing.length} employee${missing.length === 1 ? '' : 's'} not on file for ${code} — create from this upload`}
+                      {isCreating ? `Creating…` : `${missing.length} employee${missing.length === 1 ? '' : 's'} not on file for ${code} — already included in the export; create from this upload to add Omang and speed up next month's matching`}
                     </button>
                   )}
                 </div>
@@ -602,11 +616,15 @@ export default function BursPage() {
         <div className="mb-8 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <div className="flex items-center gap-2 font-medium mb-1">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            {activeUnmatched.length} payroll line(s) with tax deducted could not be matched to an employee
+            {activeUnmatched.length} payroll line(s) with tax deducted have no matching employee record
           </div>
+          <p className="text-xs mb-2">
+            Still included in the export below (using the payroll file's own name/ID) — a PAYE deduction is owed to
+            BURS regardless of our own roster. Worth a manual check for a spelling mismatch or a genuinely new hire.
+          </p>
           <ul className="text-xs space-y-0.5 mt-2">
-            {activeUnmatched.map((l, i) => (
-              <li key={i}>{l.name || l.empCode || '(unnamed)'} — tax {l.paye}</li>
+            {activeUnmatched.map(({ line }, i) => (
+              <li key={i}>{line.name || line.empCode || '(unnamed)'} — tax {line.paye}</li>
             ))}
           </ul>
         </div>
@@ -653,36 +671,32 @@ export default function BursPage() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {activeTaxpayerRows.map(({ line, employee, hotel }, i) => (
-                <tr key={`${employee.id}-${i}`}>
-                  <td className="px-5 py-2.5 text-muted-foreground">{hotel?.short_code ?? '—'}</td>
-                  <td className="px-5 py-2.5 font-medium">{employee.surname}</td>
-                  <td className="px-5 py-2.5">{employee.first_name}</td>
-                  <td className={`px-5 py-2.5 font-mono text-xs ${employee.id_number ? 'text-muted-foreground' : 'text-red-600 font-medium'}`}>
-                    {employee.id_number || 'missing'}
-                  </td>
-                  <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{line.basic.toLocaleString('en-ZA')}</td>
-                  <td className="px-5 py-2.5 text-right font-mono">{line.paye.toLocaleString('en-ZA')}</td>
-                </tr>
-              ))}
+              {activeTaxpayerRows.map(({ line, employee, hotel }, i) => {
+                const idNumber = employee?.id_number || line.idNumber || '';
+                return (
+                  <tr key={`${employee?.id ?? line.empCode}-${i}`} className={!employee ? 'bg-amber-50/50' : undefined}>
+                    <td className="px-5 py-2.5 text-muted-foreground">{hotel?.short_code ?? '—'}</td>
+                    <td className="px-5 py-2.5 font-medium">
+                      {employee?.surname ?? <span title="No matching employee record">{line.name || '—'}</span>}
+                    </td>
+                    <td className="px-5 py-2.5">{employee?.first_name ?? ''}</td>
+                    <td className={`px-5 py-2.5 font-mono text-xs ${idNumber ? 'text-muted-foreground' : 'text-red-600 font-medium'}`}>
+                      {idNumber || 'missing'}
+                    </td>
+                    <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{line.basic.toLocaleString('en-ZA')}</td>
+                    <td className="px-5 py-2.5 text-right font-mono">{line.paye.toLocaleString('en-ZA')}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
         {missingOmangAmongTaxpayers.length > 0 && (
           <div className="px-5 py-3 border-t bg-red-50 text-xs text-red-700">
-            {missingOmangAmongTaxpayers.length} of this month's taxpayers are missing an Omang — fill via Import HR List before exporting.
+            {missingOmangAmongTaxpayers.length} of this month's taxpayers are missing an Omang — still included in the
+            export below with a blank ID field; fill it in via Import HR List or the Employees page if BURS requires it.
           </div>
         )}
-      </div>
-
-      <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-        <strong>Fields not yet wired up</strong> — TIN (per-employee BURS Taxpayer ID), BonusCommission, Benefits
-        (Housing/MotorCar/Furniture/Other), SeverancePayGratuity, Retrenchment, Pension Cashout, and ExemptionAmount all
-        export as blank/0 until those data sources exist. SalaryWages and TaxDeducted come from the uploaded payroll
-        spreadsheet's Basic and PAYE columns; PaymentsToApprovedFund comes from its Pension EE column; OtherPayments is
-        derived as Income Total − Basic (the variable pay not captured in Basic or Bonus/Commission); TaxYear/TaxMonth
-        are converted to Botswana's July–June PAYE tax year, and EmployedFrom/EmployedTo are the selected period's own
-        first/last day (not each employee's hire date) — all confirmed against a real submitted ILG export.
       </div>
     </div>
   );
