@@ -55,6 +55,14 @@ function csvRow(values: string[]): string {
   return values.join(',');
 }
 
+// Every monetary ITW8 field, fixed to exactly 2 decimal places — BURS
+// rejects values with more (floating-point arithmetic on payroll figures,
+// e.g. incomeTotal - basic, routinely produces 12+ decimal digits like
+// 1027.0499999999993).
+function money(n: number): string {
+  return (n || 0).toFixed(2);
+}
+
 // Botswana's PAYE tax year runs July–June, labelled by the calendar year it
 // ENDS in — confirmed against a real ILG ITW8 export for June 2026, which
 // carries TaxYear 2026 / TaxMonth 12 (June = the 12th month of a July-start
@@ -171,19 +179,19 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
       name,
       'R',
       'N',
-      String(line.basic || 0),
-      String(bonusCommission),
+      money(line.basic),
+      money(bonusCommission),
       '0', '0', '0', '0',
-      String(severanceNonTaxable),
+      money(severanceNonTaxable),
       severanceDate,
       '', // RetrenchmentPaymentDate
       '0', '0', '0',
       '', // PensionPaymentDate
-      String(otherPayments),
-      String(line.pensionEe || 0),
+      money(otherPayments),
+      money(line.pensionEe),
       '0',
       'ANNUALIZATION',
-      String(line.paye || 0),
+      money(line.paye),
       from,
       to,
     ]));
