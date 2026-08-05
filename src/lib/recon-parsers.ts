@@ -741,6 +741,48 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
   return { lines, totals, fileName };
 }
 
+// ── CFEM RPRT739 Deductions Report (plain-text, saved as .csv) ───────────────
+// A narrow deductions-only export — one row per employee: code, name (surname
+// + truncated first-name), current PAYE, current Pension. No salary/gross
+// figure at all (CFEM's payroll is confidential — see the Reconciliation
+// section — so this report only ever carries the two deduction columns BURS
+// needs). Basic salary must come from elsewhere (the employees table) —
+// callers enrich `basic`/`incomeTotal` themselves; this parser only returns
+// the raw {empCode, name, paye, pensionEe} rows.
+
+export interface Rprt739Entry {
+  empCode: string;
+  name: string;
+  paye: number;
+  pensionEe: number;
+}
+
+export function isRprt739File(firstLine: string): boolean {
+  const l = firstLine.toLowerCase();
+  return l.includes('emp number') && l.includes('paye') && l.includes('pension');
+}
+
+export function parseRprt739(text: string): Rprt739Entry[] {
+  const entries: Rprt739Entry[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const trimmed = raw.trim();
+    if (!trimmed || /^_+$/.test(trimmed)) continue;
+    if (/^emp number/i.test(trimmed) || /^current\b/i.test(trimmed) || /^total\b/i.test(trimmed)) continue;
+    const tokens = trimmed.split(/\s+/);
+    if (tokens.length < 3) continue;
+    const paye = parseFloat(tokens[tokens.length - 2]);
+    const pensionEe = parseFloat(tokens[tokens.length - 1]);
+    if (isNaN(paye) || isNaN(pensionEe)) continue;
+    entries.push({
+      empCode: tokens[0],
+      name: tokens.slice(1, tokens.length - 2).join(' '),
+      paye,
+      pensionEe,
+    });
+  }
+  return entries;
+}
+
 // ── ILG "12 Month Analysis Report" (plain-text, saved as .csv) ───────────────
 // Not a real delimited CSV — a fixed-width text export from ILG's own payroll
 // system. Each employee is a block: a header line (Code, Name, then a bracketed

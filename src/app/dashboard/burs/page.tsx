@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, BursUpload } from '@/types/database';
 import { sortHotels, MONTH_NAMES } from '@/lib/utils';
-import { parsePayrollXlsx, isIlgAnalysisReportFile, parseIlgAnalysisReport, nameKey, type ParsedPayroll, type PayrollLine } from '@/lib/recon-parsers';
+import { parsePayrollXlsx, isIlgAnalysisReportFile, parseIlgAnalysisReport, isRprt739File, parseRprt739, nameKey, type ParsedPayroll, type PayrollLine } from '@/lib/recon-parsers';
 import { Receipt, Upload, Download, AlertTriangle } from 'lucide-react';
 
 // BURS = Botswana Unified Revenue Service. Monthly PAYE submission covering
@@ -279,16 +279,65 @@ export default function BursPage() {
     return map;
   }, [employees, combinedHotels]);
 
-  async function handleUpload(uploadGroup: string, file: File, setUploading: (v: boolean) => void, errorLabel: string, onSuccess: (row: BursUpload) => void) {
+  // CFEM's RPRT739 report is deductions-only (PAYE + Pension) — no salary
+  // figure at all, since CFEM's payroll is confidential (see Reconciliation).
+  // Basic salary is pulled from the employees table instead: match each
+  // entry to a CFEM employee (code, then name) and read their LATEST
+  // salary_records.basic_salary. incomeTotal is set equal to basic (no
+  // variable-pay figure exists in this source), so OtherPayments derives to 0
+  // for these rows — accurate given there's nothing to derive it from.
+  async function enrichRprt739WithBasicSalary(entries: { empCode: string; name: string; paye: number; pensionEe: number }[], hotelId: string, fileName: string): Promise<ParsedPayroll> {
+    const { data: roster } = await sb.from('employees').select('id, employee_code, surname, first_name').eq('hotel_id', hotelId);
+    const codeMap = new Map((roster ?? []).filter(e => e.employee_code).map(e => [e.employee_code!.toUpperCase(), e]));
+    const nameMap = new Map((roster ?? []).map(e => [nameKey(`${e.surname} ${e.first_name}`), e]));
+
+    const empIds = (roster ?? []).map(e => e.id);
+    const { data: sals } = empIds.length
+      ? await sb.from('salary_records').select('employee_id, basic_salary, period_year, period_month').in('employee_id', empIds)
+      : { data: [] };
+    const latestBasic = new Map<string, { basic: number; y: number; m: number }>();
+    for (const s of sals ?? []) {
+      const cur = latestBasic.get(s.employee_id);
+      if (!cur || s.period_year > cur.y || (s.period_year === cur.y && s.period_month > cur.m)) {
+        latestBasic.set(s.employee_id, { basic: s.basic_salary ?? 0, y: s.period_year, m: s.period_month });
+      }
+    }
+
+    const lines: PayrollLine[] = entries.map(e => {
+      const code = e.empCode.trim().toUpperCase();
+      const match = codeMap.get(code) ?? nameMap.get(nameKey(e.name));
+      const basic = match ? (latestBasic.get(match.id)?.basic ?? 0) : 0;
+      return {
+        empCode: e.empCode,
+        name: e.name,
+        idNumber: '',
+        basic,
+        incomeTotal: basic,
+        furnmart: 0, cbStores: 0, bodulo: 0,
+        pensionEe: e.pensionEe,
+        paye: e.paye,
+        medAidEe: 0,
+        afritecLoans: 0, toplineLoans: 0, staffLoans: 0,
+        deductionTotal: e.paye + e.pensionEe,
+        nettPay: basic - e.paye - e.pensionEe,
+      };
+    });
+    return { lines, totals: {}, fileName };
+  }
+
+  async function handleUpload(uploadGroup: string, file: File, setUploading: (v: boolean) => void, errorLabel: string, onSuccess: (row: BursUpload) => void, hotelId?: string) {
     setUploading(true);
     setUploadError(null);
     try {
       // ILG's own payroll export is a plain-text "12 Month Analysis Report"
-      // (saved with a .csv extension but not real delimited CSV) — detected
-      // by content, not extension, since every other hotel uploads a real
-      // tabular spreadsheet handled by parsePayrollXlsx.
+      // (saved with a .csv extension but not real delimited CSV); CFEM's own
+      // RPRT739 export is deductions-only and needs basic salary enriched
+      // from the employees table — both detected by content, not extension.
+      // Everything else is a real tabular spreadsheet via parsePayrollXlsx.
       const text = await file.text();
-      const parsed = isIlgAnalysisReportFile(text)
+      const parsed = isRprt739File(text)
+        ? await enrichRprt739WithBasicSalary(parseRprt739(text), hotelId ?? '', file.name)
+        : isIlgAnalysisReportFile(text)
         ? parseIlgAnalysisReport(text, file.name)
         : await parsePayrollXlsx(await file.arrayBuffer(), file.name);
       const { data, error } = await sb
@@ -309,16 +358,18 @@ export default function BursPage() {
   }
 
   function handleIlgUpload(file: File) {
-    handleUpload('ilg', file, setUploadingIlg, 'ILG', row => setIlgUploadRow(row));
+    handleUpload('ilg', file, setUploadingIlg, 'ILG', row => setIlgUploadRow(row), ilgHotel?.id);
   }
 
   function handleCombinedUpload(hotelCode: string, file: File) {
+    const hotel = combinedHotels.find(h => h.short_code === hotelCode);
     handleUpload(
       uploadGroupFor(hotelCode),
       file,
       v => setUploadingCombined(prev => ({ ...prev, [hotelCode]: v })),
       hotelCode,
       row => setCombinedUploadRows(prev => ({ ...prev, [hotelCode]: row })),
+      hotel?.id,
     );
   }
 
