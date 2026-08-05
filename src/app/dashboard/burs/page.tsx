@@ -9,9 +9,24 @@ import { Receipt, Upload, Download, AlertTriangle } from 'lucide-react';
 
 // BURS = Botswana Unified Revenue Service. Monthly PAYE submission covering
 // every taxed employee across these five properties. ILG submits its own
-// payroll spreadsheet; the other four share one combined file.
+// payroll spreadsheet. CSL/NL/CFEM/PomPom are submitted together as ONE
+// combined ITW8 export, but each has its own separate payroll upload slot —
+// a genuinely shared spreadsheet mixing all four hotels' employees was never
+// actually how the source payroll files are produced, so this matches reality
+// and also lets matching happen against each hotel's own roster only,
+// instead of the four-hotel union (fewer chances of a cross-hotel mismatch).
 const BURS_HOTEL_CODES = ['ILG', 'CSL', 'NL', 'CFEM', 'PomPom'];
-const COMBINED_CODES = ['CSL', 'NL', 'CFEM', 'PomPom'];
+// Order matters here: upload cards render in this sequence, and the combined
+// ITW8 export's employee rows are built by iterating this same order — per
+// explicit request, CFEM, then CSL, then NL, then PomPom.
+const COMBINED_CODES = ['CFEM', 'CSL', 'NL', 'PomPom'];
+
+// burs_uploads.upload_group for a combined-group hotel — lowercased short
+// code (migration 032 widened the CHECK constraint to allow these values
+// alongside the legacy 'combined' single-file group).
+function uploadGroupFor(shortCode: string): string {
+  return shortCode.toLowerCase();
+}
 
 const EMPLOYER_INFO_KEY = 'ihg-salary-burs-employer-info';
 
@@ -154,7 +169,7 @@ function downloadCsv(content: string, filename: string) {
 export default function BursPage() {
   const sb = createClient();
   const ilgFileRef = useRef<HTMLInputElement>(null);
-  const combinedFileRef = useRef<HTMLInputElement>(null);
+  const combinedFileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const [hotels, setHotels] = useState<Hotel[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -163,9 +178,9 @@ export default function BursPage() {
   const [loading, setLoading] = useState(true);
 
   const [ilgUploadRow, setIlgUploadRow] = useState<BursUpload | null>(null);
-  const [combinedUploadRow, setCombinedUploadRow] = useState<BursUpload | null>(null);
+  const [combinedUploadRows, setCombinedUploadRows] = useState<Record<string, BursUpload | null>>({});
   const [uploadingIlg, setUploadingIlg] = useState(false);
-  const [uploadingCombined, setUploadingCombined] = useState(false);
+  const [uploadingCombined, setUploadingCombined] = useState<Record<string, boolean>>({});
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   // ILG's BW TIN/name confirmed from a real submitted ITW8 export — seeded as
@@ -212,27 +227,36 @@ export default function BursPage() {
         .eq('period_month', month);
       const rows = (data ?? []) as BursUpload[];
       setIlgUploadRow(rows.find(r => r.upload_group === 'ilg') ?? null);
-      setCombinedUploadRow(rows.find(r => r.upload_group === 'combined') ?? null);
+      const byHotel: Record<string, BursUpload | null> = {};
+      for (const code of COMBINED_CODES) {
+        byHotel[code] = rows.find(r => r.upload_group === uploadGroupFor(code)) ?? null;
+      }
+      setCombinedUploadRows(byHotel);
     })();
   }, [year, month]);
 
-  const hotelMap = useMemo(() => new Map(hotels.map(h => [h.id, h])), [hotels]);
   const ilgHotel = hotels.find(h => h.short_code === 'ILG');
   const combinedHotels = hotels.filter(h => COMBINED_CODES.includes(h.short_code));
   const ilgEmployees = useMemo(() => employees.filter(e => e.hotel_id === ilgHotel?.id), [employees, ilgHotel]);
-  const combinedEmployees = useMemo(
-    () => employees.filter(e => combinedHotels.some(h => h.id === e.hotel_id)),
-    [employees, combinedHotels],
-  );
+  // Each combined-group hotel matches against its OWN roster only — separate
+  // uploads mean there's no ambiguity to resolve across hotels the way a
+  // single mixed-roster file would have needed.
+  const combinedEmployeesByHotel = useMemo(() => {
+    const map: Record<string, Employee[]> = {};
+    for (const code of COMBINED_CODES) {
+      const hotel = combinedHotels.find(h => h.short_code === code);
+      map[code] = hotel ? employees.filter(e => e.hotel_id === hotel.id) : [];
+    }
+    return map;
+  }, [employees, combinedHotels]);
 
-  async function handleUpload(group: 'ilg' | 'combined', file: File) {
-    const setUploading = group === 'ilg' ? setUploadingIlg : setUploadingCombined;
+  async function handleUpload(uploadGroup: string, file: File, setUploading: (v: boolean) => void, errorLabel: string, onSuccess: (row: BursUpload) => void) {
     setUploading(true);
     setUploadError(null);
     try {
       // ILG's own payroll export is a plain-text "12 Month Analysis Report"
       // (saved with a .csv extension but not real delimited CSV) — detected
-      // by content, not extension, since the combined group's file is a real
+      // by content, not extension, since every other hotel uploads a real
       // tabular spreadsheet handled by parsePayrollXlsx.
       const text = await file.text();
       const parsed = isIlgAnalysisReportFile(text)
@@ -241,39 +265,68 @@ export default function BursPage() {
       const { data, error } = await sb
         .from('burs_uploads')
         .upsert(
-          { period_year: year, period_month: month, upload_group: group, file_name: file.name, parsed_data: parsed, uploaded_at: new Date().toISOString() },
+          { period_year: year, period_month: month, upload_group: uploadGroup, file_name: file.name, parsed_data: parsed, uploaded_at: new Date().toISOString() },
           { onConflict: 'period_year,period_month,upload_group' },
         )
         .select()
         .single();
       if (error) throw new Error(error.message);
-      if (group === 'ilg') setIlgUploadRow(data as BursUpload);
-      else setCombinedUploadRow(data as BursUpload);
+      onSuccess(data as BursUpload);
     } catch (err) {
-      setUploadError(`${group === 'ilg' ? 'ILG' : 'Combined'} upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      setUploadError(`${errorLabel} upload failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setUploading(false);
     }
   }
 
+  function handleIlgUpload(file: File) {
+    handleUpload('ilg', file, setUploadingIlg, 'ILG', row => setIlgUploadRow(row));
+  }
+
+  function handleCombinedUpload(hotelCode: string, file: File) {
+    handleUpload(
+      uploadGroupFor(hotelCode),
+      file,
+      v => setUploadingCombined(prev => ({ ...prev, [hotelCode]: v })),
+      hotelCode,
+      row => setCombinedUploadRows(prev => ({ ...prev, [hotelCode]: row })),
+    );
+  }
+
   const ilgParsed = (ilgUploadRow?.parsed_data as ParsedPayroll | undefined) ?? null;
-  const combinedParsed = (combinedUploadRow?.parsed_data as ParsedPayroll | undefined) ?? null;
 
   const ilgTaxpayers = useMemo(
     () => matchTaxpayers(ilgParsed, ilgEmployees, () => ilgHotel),
     [ilgParsed, ilgEmployees, ilgHotel],
   );
-  const combinedTaxpayers = useMemo(
-    () => matchTaxpayers(combinedParsed, combinedEmployees, e => hotelMap.get(e.hotel_id)),
-    [combinedParsed, combinedEmployees, hotelMap],
+
+  // One matchTaxpayers() pass per hotel, each against that hotel's own
+  // roster only, then combined for the export and the summary table below.
+  const combinedTaxpayersByHotel = useMemo(() => {
+    const result: Record<string, { matched: TaxpayerRow[]; unmatched: PayrollLine[] }> = {};
+    for (const code of COMBINED_CODES) {
+      const parsed = (combinedUploadRows[code]?.parsed_data as ParsedPayroll | undefined) ?? null;
+      const hotel = combinedHotels.find(h => h.short_code === code);
+      result[code] = matchTaxpayers(parsed, combinedEmployeesByHotel[code] ?? [], () => hotel);
+    }
+    return result;
+  }, [combinedUploadRows, combinedEmployeesByHotel, combinedHotels]);
+
+  const combinedMatched = useMemo(
+    () => COMBINED_CODES.flatMap(code => combinedTaxpayersByHotel[code]?.matched ?? []),
+    [combinedTaxpayersByHotel],
+  );
+  const combinedUnmatched = useMemo(
+    () => COMBINED_CODES.flatMap(code => combinedTaxpayersByHotel[code]?.unmatched ?? []),
+    [combinedTaxpayersByHotel],
   );
 
   const allTaxpayerRows = useMemo(
-    () => [...ilgTaxpayers.matched, ...combinedTaxpayers.matched].sort((a, b) => {
+    () => [...ilgTaxpayers.matched, ...combinedMatched].sort((a, b) => {
       const hc = (a.hotel?.short_code ?? '').localeCompare(b.hotel?.short_code ?? '');
       return hc !== 0 ? hc : a.employee.surname.localeCompare(b.employee.surname);
     }),
-    [ilgTaxpayers, combinedTaxpayers],
+    [ilgTaxpayers, combinedMatched],
   );
 
   const missingOmangAmongTaxpayers = allTaxpayerRows.filter(r => !r.employee.id_number || !r.employee.id_number.trim());
@@ -283,7 +336,7 @@ export default function BursPage() {
   }
 
   function handleExport(group: 'ilg' | 'combined') {
-    const rows = group === 'ilg' ? ilgTaxpayers.matched : combinedTaxpayers.matched;
+    const rows = group === 'ilg' ? ilgTaxpayers.matched : combinedMatched;
     const info = employerInfo[group];
     const csv = buildItw8Csv(rows, year, month, info.tin, info.name);
     const label = group === 'ilg' ? 'ILG' : 'Combined';
@@ -344,7 +397,7 @@ export default function BursPage() {
             Indaba Lodge Gaborone is submitted on its own payroll file, separate from the other four properties.
           </p>
           <input ref={ilgFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload('ilg', f); e.target.value = ''; }} />
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleIlgUpload(f); e.target.value = ''; }} />
           <button
             onClick={() => ilgFileRef.current?.click()}
             disabled={uploadingIlg}
@@ -383,28 +436,43 @@ export default function BursPage() {
           </button>
         </div>
 
-        {/* Combined group */}
+        {/* Combined group — one export, but a separate upload per hotel */}
         <div className="bg-white rounded-xl border p-5">
-          <h2 className="text-sm font-semibold mb-1">Combined — {combinedHotels.map(h => h.short_code).join(' / ')}</h2>
+          <h2 className="text-sm font-semibold mb-1">Combined — {COMBINED_CODES.join(' / ')}</h2>
           <p className="text-xs text-muted-foreground mb-4">
-            These four properties are submitted together on one shared payroll spreadsheet.
+            These four properties are submitted together as one ITW8 export, but each has its own payroll upload —
+            matched against its own roster. Rows are combined into the export in this order: {COMBINED_CODES.join(', ')}.
           </p>
-          <input ref={combinedFileRef} type="file" accept=".xlsx,.xls" className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload('combined', f); e.target.value = ''; }} />
-          <button
-            onClick={() => combinedFileRef.current?.click()}
-            disabled={uploadingCombined}
-            className="w-full flex items-center justify-center gap-2 rounded-md border border-dashed px-4 py-3 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            {uploadingCombined ? 'Uploading…' : combinedUploadRow ? `Replace (${combinedUploadRow.file_name})` : 'Upload Combined Payroll Spreadsheet'}
-          </button>
-          {combinedUploadRow && (
-            <p className="text-xs text-muted-foreground mt-2">
-              {combinedTaxpayers.matched.length} taxpayer{combinedTaxpayers.matched.length === 1 ? '' : 's'} found
-              {combinedTaxpayers.unmatched.length > 0 && `, ${combinedTaxpayers.unmatched.length} unmatched`}
-            </p>
-          )}
+          <div className="space-y-2.5">
+            {COMBINED_CODES.map(code => {
+              const uploadRow = combinedUploadRows[code];
+              const taxpayers = combinedTaxpayersByHotel[code];
+              const isUploading = !!uploadingCombined[code];
+              return (
+                <div key={code}>
+                  <input
+                    ref={el => { combinedFileRefs.current[code] = el; }}
+                    type="file" accept=".xlsx,.xls,.csv" className="hidden"
+                    onChange={e => { const f = e.target.files?.[0]; if (f) handleCombinedUpload(code, f); e.target.value = ''; }}
+                  />
+                  <button
+                    onClick={() => combinedFileRefs.current[code]?.click()}
+                    disabled={isUploading}
+                    className="w-full flex items-center justify-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    {isUploading ? `Uploading ${code}…` : uploadRow ? `${code}: Replace (${uploadRow.file_name})` : `Upload ${code} Payroll Spreadsheet`}
+                  </button>
+                  {uploadRow && taxpayers && (
+                    <p className="text-xs text-muted-foreground mt-1 pl-1">
+                      {taxpayers.matched.length} taxpayer{taxpayers.matched.length === 1 ? '' : 's'} found
+                      {taxpayers.unmatched.length > 0 && `, ${taxpayers.unmatched.length} unmatched`}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
           <div className="grid grid-cols-2 gap-2 mt-4">
             <input
               type="text" placeholder="EmployerTin"
@@ -421,27 +489,27 @@ export default function BursPage() {
           </div>
           <button
             onClick={() => handleExport('combined')}
-            disabled={combinedTaxpayers.matched.length === 0}
+            disabled={combinedMatched.length === 0}
             className="w-full flex items-center justify-center gap-2 mt-3 rounded-md bg-primary text-primary-foreground px-4 py-2 text-xs font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
           >
             <Download className="h-3.5 w-3.5" />
             Export ITW8 CSV
           </button>
           <p className="text-[11px] text-muted-foreground mt-2">
-            One EmployerTin/EmployerName is shared across all four hotels for now — the combined file isn't split into
+            One EmployerTin/EmployerName is shared across all four hotels for now — the export isn't split into
             separate per-hotel submissions yet.
           </p>
         </div>
       </div>
 
-      {(ilgTaxpayers.unmatched.length > 0 || combinedTaxpayers.unmatched.length > 0) && (
+      {(ilgTaxpayers.unmatched.length > 0 || combinedUnmatched.length > 0) && (
         <div className="mb-8 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <div className="flex items-center gap-2 font-medium mb-1">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            {ilgTaxpayers.unmatched.length + combinedTaxpayers.unmatched.length} payroll line(s) with tax deducted could not be matched to an employee
+            {ilgTaxpayers.unmatched.length + combinedUnmatched.length} payroll line(s) with tax deducted could not be matched to an employee
           </div>
           <ul className="text-xs space-y-0.5 mt-2">
-            {[...ilgTaxpayers.unmatched, ...combinedTaxpayers.unmatched].map((l, i) => (
+            {[...ilgTaxpayers.unmatched, ...combinedUnmatched].map((l, i) => (
               <li key={i}>{l.name || l.empCode || '(unnamed)'} — tax {l.paye}</li>
             ))}
           </ul>
@@ -455,7 +523,7 @@ export default function BursPage() {
         </div>
         {allTaxpayerRows.length === 0 ? (
           <div className="p-8 text-center text-sm text-muted-foreground">
-            No taxpayers yet — upload the ILG and/or Combined payroll spreadsheet for {MONTH_NAMES[month - 1]} {year} above.
+            No taxpayers yet — upload ILG's and/or the combined-group hotels' payroll spreadsheets for {MONTH_NAMES[month - 1]} {year} above.
           </div>
         ) : (
           <table className="w-full text-sm">
