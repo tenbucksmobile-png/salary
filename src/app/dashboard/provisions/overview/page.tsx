@@ -30,9 +30,6 @@ export default function ProvisionsOverviewPage() {
 
   const fmt = (n: number, hotel: ProvisionsSummaryRow['hotel']) => fmtCurrency(n, hotel.country);
 
-  const grandTotalCost = rows.reduce((s, r) => s + r.totalCost, 0);
-  const grandTotalBook = rows.reduce((s, r) => s + r.totalBook, 0);
-
   if (loading) {
     return <div className="p-8 text-sm text-muted-foreground">Loading…</div>;
   }
@@ -83,12 +80,8 @@ export default function ProvisionsOverviewPage() {
                 <th colSpan={3} className="text-center px-4 py-2 font-medium text-muted-foreground border-l">Leave</th>
                 <th colSpan={3} className="text-center px-4 py-2 font-medium text-muted-foreground border-l">Bonus</th>
                 <th colSpan={3} className="text-center px-4 py-2 font-medium text-muted-foreground border-l">Severance</th>
-                <th colSpan={3} className="text-center px-4 py-2 font-medium text-muted-foreground border-l">Total</th>
               </tr>
               <tr className="border-b bg-muted/20 text-xs">
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground border-l">Required</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">On Books</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Adjustment</th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground border-l">Required</th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground">On Books</th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground">Adjustment</th>
@@ -101,7 +94,7 @@ export default function ProvisionsOverviewPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ hotel, leave, bonus, severance, totalCost, totalBook, totalAdjustment }, i) => (
+              {rows.map(({ hotel, leave, bonus, severance }, i) => (
                 <tr key={hotel.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                   <td className="px-4 py-2.5 font-medium">{hotel.name}</td>
                   {leave ? (
@@ -125,20 +118,9 @@ export default function ProvisionsOverviewPage() {
                       <td className={`px-3 py-2.5 text-right font-mono font-medium ${severance.adjustment === 0 ? 'text-muted-foreground' : severance.adjustment < 0 ? 'text-red-600' : 'text-amber-600'}`}>{fmt(severance.adjustment, hotel)}</td>
                     </>
                   ) : (<><td className="px-3 py-2.5 text-right text-muted-foreground border-l">—</td><td className="px-3 py-2.5 text-right text-muted-foreground">—</td><td className="px-3 py-2.5 text-right text-muted-foreground">—</td></>)}
-                  <td className="px-3 py-2.5 text-right font-mono font-medium border-l">{fmt(totalCost, hotel)}</td>
-                  <td className="px-3 py-2.5 text-right font-mono font-medium">{fmt(totalBook, hotel)}</td>
-                  <td className={`px-3 py-2.5 text-right font-mono font-bold ${totalAdjustment === 0 ? 'text-muted-foreground' : totalAdjustment < 0 ? 'text-red-600' : 'text-amber-600'}`}>{fmt(totalAdjustment, hotel)}</td>
                 </tr>
               ))}
             </tbody>
-            <tfoot>
-              <tr className="border-t bg-muted/20 font-medium">
-                <td className="px-4 py-3" colSpan={10}>Grand Total (mixed currency — see per-hotel rows)</td>
-                <td className="px-3 py-3 text-right font-mono border-l">{grandTotalCost.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}</td>
-                <td className="px-3 py-3 text-right font-mono">{grandTotalBook.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}</td>
-                <td className="px-3 py-3" />
-              </tr>
-            </tfoot>
           </table>
         </div>
       )}

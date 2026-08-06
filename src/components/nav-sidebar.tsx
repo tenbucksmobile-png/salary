@@ -50,9 +50,9 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: 'Overview',   href: '/dashboard/provisions/overview',   icon: LayoutList,   key: 'provisionsOverview' },
       { label: 'Leave',      href: '/dashboard/leave-provision', icon: CalendarClock, key: 'leaveProvision' },
-      { label: 'WCA',        href: '/dashboard/provisions/wca',        icon: ShieldCheck, key: 'wca' },
       { label: 'Bonus',      href: '/dashboard/provisions/bonus',      icon: Gift,         key: 'bonus' },
       { label: 'Severance',  href: '/dashboard/provisions/severance',  icon: HandCoins,    key: 'severance' },
+      { label: 'WCA',        href: '/dashboard/provisions/wca',        icon: ShieldCheck, key: 'wca' },
     ],
   },
   {

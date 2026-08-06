@@ -141,6 +141,12 @@ function groupHdrBlank() {
   return { v: '', t: 's', s: { fill: { patternType: 'solid', fgColor: { rgb: DBLUE } } } };
 }
 
+// Adds a left border to an existing cell — used to mark the boundary between
+// segment column blocks (Employee | Leave | Bonus | Severance | Total).
+function withLeftBorder(c: any) {
+  return { ...c, s: { ...(c.s ?? {}), border: { ...(c.s?.border ?? {}), left: { style: 'medium', color: { rgb: '888888' } } } } };
+}
+
 // ── Data types ─────────────────────────────────────────────────────────────
 
 interface LeaveRow { employee: Employee; provision: LeaveProvision; hotel: Hotel }
@@ -208,9 +214,11 @@ function buildHotelSheet(
   const groupRow: any[] = [];
   const colHeaderRow: any[] = [];
   const merges: any[] = [];
+  const groupBoundaries: number[] = []; // start column of every group after the first
   let col = 0;
   for (const g of groups) {
     const start = col;
+    if (start > 0) groupBoundaries.push(start);
     groupRow.push(groupHdr(g.label));
     for (let i = 1; i < g.headers.length; i++) groupRow.push(groupHdrBlank());
     for (const h of g.headers) colHeaderRow.push(hdr(h));
@@ -218,6 +226,13 @@ function buildHotelSheet(
     if (g.headers.length > 1) merges.push({ s: { r: 0, c: start }, e: { r: 0, c: col - 1 } });
   }
   const totalCols = col;
+
+  // Mark each segment boundary with a left border on the group/header row and
+  // on the first column of that segment in every data/totals row.
+  for (const b of groupBoundaries) {
+    groupRow[b] = withLeftBorder(groupRow[b]);
+    colHeaderRow[b] = withLeftBorder(colHeaderRow[b]);
+  }
 
   const dataRows = combined.map(row => {
     const cells: any[] = [
@@ -251,6 +266,8 @@ function buildHotelSheet(
 
     const total = (row.leave?.provision.provision_value ?? 0) + (row.bonus?.provisionBalance ?? 0) + (row.severance?.provisionBalance ?? 0);
     cells.push(num(total, true));
+
+    for (const b of groupBoundaries) cells[b] = withLeftBorder(cells[b]);
     return cells;
   });
 
@@ -266,6 +283,7 @@ function buildHotelSheet(
     totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(sumSeverance));
   }
   totRow.push(tot(sumTotal));
+  for (const b of groupBoundaries) totRow[b] = withLeftBorder(totRow[b]);
 
   const aoa = [groupRow, colHeaderRow, ...dataRows, totRow];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -287,7 +305,6 @@ function buildOverviewSheet(
     ovHdr('Leave — Required'), ovHdr('Leave — On Books'), ovHdr('Leave — Adjustment'),
     ovHdr('Bonus — Required'), ovHdr('Bonus — On Books'), ovHdr('Bonus — Adjustment'),
     ovHdr('Severance — Required'), ovHdr('Severance — On Books'), ovHdr('Severance — Adjustment'),
-    ovHdr('Total — Required'), ovHdr('Total — On Books'), ovHdr('Total — Adjustment'),
   ];
 
   const rows = hotels.map(h => {
@@ -296,26 +313,20 @@ function buildOverviewSheet(
     const b = bonusAdj.get(h.id);
     const s = severanceAdj.get(h.id);
 
-    const totalCost = (l?.cost ?? 0) + (b?.cost ?? 0) + (s?.cost ?? 0);
-    const totalBook = (l?.book ?? 0) + (b?.book ?? 0) + (s?.book ?? 0);
-    const totalAdjustment = Math.floor((totalCost - totalBook) / 100) * 100;
-
     return [
       str(h.name, true),
       { v: bw ? 'BWP (P)' : 'ZAR (R)', t: 's', s: { alignment: { horizontal: 'center' } } },
       l ? num(l.cost) : blankCell(), l ? num(l.book) : blankCell(), l ? adjCell(l.adjustment) : blankCell(),
       b ? num(b.cost) : blankCell(), b ? num(b.book) : blankCell(), b ? adjCell(b.adjustment) : blankCell(),
       s ? num(s.cost) : blankCell(), s ? num(s.book) : blankCell(), s ? adjCell(s.adjustment) : blankCell(),
-      num(totalCost, true), num(totalBook, true), adjCell(totalAdjustment),
     ];
   });
 
   const aoa = [[sectionHdr('PROVISIONS OVERVIEW')], [], headers, ...rows];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 13 } }];
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 10 } }];
   ws['!cols'] = [
     { wch: 26 }, { wch: 12 },
-    { wch: 15 }, { wch: 15 }, { wch: 15 },
     { wch: 15 }, { wch: 15 }, { wch: 15 },
     { wch: 15 }, { wch: 15 }, { wch: 15 },
     { wch: 15 }, { wch: 15 }, { wch: 15 },
