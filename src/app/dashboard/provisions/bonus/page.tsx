@@ -438,7 +438,7 @@ export default function BonusProvisionPage() {
           <div className="px-4 py-3 border-b bg-muted/40">
             <h2 className="text-sm font-semibold">Book Adjustment — {year}</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Cost of Bonus Provision (monthly total × {accrualMonths} accrual months, including Incentive) less Current Provision on Books = Adjustment Required, rounded down to the nearest 100.
+              Cost of Bonus Provision (Dec Bonus Required × {accrualMonths}/11 accrual months, plus Incentive at its monthly rate × {accrualMonths}) less Current Provision on Books = Adjustment Required, rounded down to the nearest 100.
             </p>
           </div>
           <table className="w-full text-sm whitespace-nowrap">
