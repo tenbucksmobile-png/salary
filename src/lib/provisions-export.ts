@@ -122,6 +122,25 @@ function adjCell(v: number | null) {
   return { v, t: 'n', z: '#,##0.00', s: { alignment: { horizontal: 'right' }, font: { bold: true, color: { rgb: color } } } };
 }
 
+// Group-header cell — the top row spanning each segment's column block.
+// Non-anchor cells in the same merged range get the blank variant so the
+// fill colour still shows through the whole merged region, not just the
+// top-left cell.
+function groupHdr(v: string) {
+  return {
+    v, t: 's',
+    s: {
+      font:      { bold: true, color: { rgb: 'FFFFFF' } },
+      fill:      { patternType: 'solid', fgColor: { rgb: DBLUE } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+    },
+  };
+}
+
+function groupHdrBlank() {
+  return { v: '', t: 's', s: { fill: { patternType: 'solid', fgColor: { rgb: DBLUE } } } };
+}
+
 // ── Data types ─────────────────────────────────────────────────────────────
 
 interface LeaveRow { employee: Employee; provision: LeaveProvision; hotel: Hotel }
@@ -133,8 +152,36 @@ interface SeveranceRow {
 
 interface HotelAdjustment { cost: number; book: number; adjustment: number }
 
+interface CombinedRow {
+  employee: Employee;
+  leave?: LeaveRow;
+  bonus?: BonusRow;
+  severance?: SeveranceRow;
+}
+
+// Merges the three segments' per-employee rows into one row per employee —
+// an employee present in only one or two segments still gets a single row,
+// with the missing segment's cells rendered as blanks.
+function combineRows(leaveRows: LeaveRow[], bonusRows: BonusRow[], severanceRows: SeveranceRow[]): CombinedRow[] {
+  const map = new Map<string, CombinedRow>();
+  for (const r of leaveRows) map.set(r.employee.id, { employee: r.employee, leave: r });
+  for (const r of bonusRows) {
+    const ex = map.get(r.employee.id);
+    if (ex) ex.bonus = r; else map.set(r.employee.id, { employee: r.employee, bonus: r });
+  }
+  for (const r of severanceRows) {
+    const ex = map.get(r.employee.id);
+    if (ex) ex.severance = r; else map.set(r.employee.id, { employee: r.employee, severance: r });
+  }
+  return [...map.values()].sort((a, b) => a.employee.surname.localeCompare(b.employee.surname));
+}
+
 // ── Sheet builders ─────────────────────────────────────────────────────────
 
+// One row per employee — Leave, Bonus, and (ILG only) Severance columns sit
+// side by side on that same row rather than in stacked per-segment tables,
+// so an employee's figures across all applicable provisions read left to
+// right. Grade is intentionally omitted.
 function buildHotelSheet(
   hotel: Hotel,
   leaveRows: LeaveRow[],
@@ -145,82 +192,86 @@ function buildHotelSheet(
 ): any {
   const bw = isBotswana(hotel.country);
   const sym = bw ? 'P' : 'R';
-  const aoa: any[][] = [];
+  const hasSeverance = SEVERANCE_HOTEL_CODES.includes(hotel.short_code);
+  const combined = combineRows(leaveRows, bonusRows, severanceRows);
 
-  // ── Leave Provision section ────────────────────────────────────────────
-  aoa.push([sectionHdr(`LEAVE PROVISION (${sym})`)]);
-  aoa.push([
-    hdr('Emp Code'), hdr('Surname'), hdr('First Name'), hdr('Grade'),
-    hdr('Actual Leave Balance'), hdr('Capped Leave Balance'), hdr('Daily Rate'), hdr('Provision Value'),
-  ]);
-  let leaveTotal = 0;
-  for (const r of leaveRows) {
-    leaveTotal += r.provision.provision_value;
-    aoa.push([
-      str(r.employee.employee_code ?? '—'), str(r.employee.surname), str(r.employee.first_name),
-      str(r.employee.grade_label ?? 'Unclassified'),
-      num(r.provision.leave_balance_days), num(Math.min(r.provision.leave_balance_days, leaveProvisionCapDays(hotel.short_code))),
-      num(r.provision.daily_rate), num(r.provision.provision_value),
-    ]);
-  }
-  aoa.push([tot(`Total (${leaveRows.length} employees)`, false), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(leaveTotal)]);
-  aoa.push([]);
-
-  // ── Bonus Provision section ────────────────────────────────────────────
-  aoa.push([sectionHdr(`BONUS PROVISION incl. INCENTIVE (${sym}) — Accrual Months: ${accrualMonths}`)]);
-  aoa.push([
-    hdr('Emp Code'), hdr('Surname'), hdr('First Name'), hdr('Grade'),
-    hdr('Gross Salary'), hdr('Bonus Provision'), hdr('Incentive'), hdr('Provision Balance'),
-  ]);
-  let bonusTotal = 0;
-  for (const r of bonusRows) {
-    bonusTotal += r.provisionBalance;
-    aoa.push([
-      str(r.employee.employee_code ?? '—'), str(r.employee.surname), str(r.employee.first_name),
-      str(r.employee.grade_label ?? 'Unclassified'),
-      num(r.gross), num(r.bonusProvision), num(r.incentive), num(r.provisionBalance),
-    ]);
-  }
-  aoa.push([tot(`Total (${bonusRows.length} employees)`, false), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(bonusTotal)]);
-
-  // ── Severance Provision section (ILG only) ─────────────────────────────
-  if (severanceRows.length > 0 || SEVERANCE_HOTEL_CODES.includes(hotel.short_code)) {
-    aoa.push([]);
-    aoa.push([sectionHdr(`SEVERANCE PROVISION (${sym})`)]);
-    aoa.push([
-      hdr('Emp Code'), hdr('Surname'), hdr('First Name'), hdr('Grade'),
-      hdr('Basic Salary'), hdr('Yrs Service'), hdr('Daily Rate'), hdr('Days/Month'),
-      hdr('Monthly Rate'), hdr('Months Accrued'), hdr('Provision Balance'),
-    ]);
-    let severanceTotal = 0;
-    for (const r of severanceRows) {
-      severanceTotal += r.provisionBalance;
-      aoa.push([
-        str(r.employee.employee_code ?? '—'), str(r.employee.surname), str(r.employee.first_name),
-        str(r.employee.grade_label ?? 'Unclassified'),
-        num(r.basic), num(r.yrs), num(r.dailyRate), num(r.daysPerMonth),
-        num(r.monthlyRate), num(r.monthsAccrued), num(r.provisionBalance),
-      ]);
-    }
-    aoa.push([
-      tot(`Total (${severanceRows.length} employees)`, false), totBlank(), totBlank(), totBlank(),
-      totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(severanceTotal),
-    ]);
-  }
-
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [
-    { wch: 12 }, { wch: 18 }, { wch: 16 }, { wch: 14 },
-    { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 },
-    { wch: 14 }, { wch: 14 }, { wch: 16 },
+  const groups: { label: string; headers: string[] }[] = [
+    { label: 'EMPLOYEE', headers: ['Emp Code', 'Surname', 'First Name'] },
+    { label: `LEAVE PROVISION (${sym})`, headers: ['Actual Leave Balance', 'Capped Leave Balance', 'Daily Rate', 'Provision Value'] },
+    { label: `BONUS PROVISION incl. INCENTIVE (${sym}) — Accrual Months: ${accrualMonths}`, headers: ['Gross Salary', 'Bonus Provision', 'Incentive', 'Provision Balance'] },
   ];
-  ws['!merges'] = (ws['!merges'] ?? []);
-  // Merge each section-header row across the widest column count used (11)
-  aoa.forEach((row, i) => {
-    if (row.length === 1 && row[0]?.s?.fill?.fgColor?.rgb === DBLUE) {
-      ws['!merges'].push({ s: { r: i, c: 0 }, e: { r: i, c: 10 } });
+  if (hasSeverance) {
+    groups.push({ label: `SEVERANCE PROVISION (${sym})`, headers: ['Basic Salary', 'Yrs Service', 'Daily Rate', 'Days/Month', 'Monthly Rate', 'Months Accrued', 'Provision Balance'] });
+  }
+  groups.push({ label: 'TOTAL', headers: [`Provision Balance (${sym})`] });
+
+  const groupRow: any[] = [];
+  const colHeaderRow: any[] = [];
+  const merges: any[] = [];
+  let col = 0;
+  for (const g of groups) {
+    const start = col;
+    groupRow.push(groupHdr(g.label));
+    for (let i = 1; i < g.headers.length; i++) groupRow.push(groupHdrBlank());
+    for (const h of g.headers) colHeaderRow.push(hdr(h));
+    col += g.headers.length;
+    if (g.headers.length > 1) merges.push({ s: { r: 0, c: start }, e: { r: 0, c: col - 1 } });
+  }
+  const totalCols = col;
+
+  const dataRows = combined.map(row => {
+    const cells: any[] = [
+      str(row.employee.employee_code ?? '—'), str(row.employee.surname), str(row.employee.first_name),
+    ];
+
+    if (row.leave) {
+      const capped = Math.min(row.leave.provision.leave_balance_days, leaveProvisionCapDays(hotel.short_code));
+      cells.push(num(row.leave.provision.leave_balance_days), num(capped), num(row.leave.provision.daily_rate), num(row.leave.provision.provision_value));
+    } else {
+      cells.push(blankCell(), blankCell(), blankCell(), blankCell());
     }
+
+    if (row.bonus) {
+      cells.push(num(row.bonus.gross), num(row.bonus.bonusProvision), num(row.bonus.incentive), num(row.bonus.provisionBalance));
+    } else {
+      cells.push(blankCell(), blankCell(), blankCell(), blankCell());
+    }
+
+    if (hasSeverance) {
+      if (row.severance) {
+        cells.push(
+          num(row.severance.basic), num(row.severance.yrs), num(row.severance.dailyRate),
+          num(row.severance.daysPerMonth), num(row.severance.monthlyRate), num(row.severance.monthsAccrued),
+          num(row.severance.provisionBalance),
+        );
+      } else {
+        cells.push(blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell());
+      }
+    }
+
+    const total = (row.leave?.provision.provision_value ?? 0) + (row.bonus?.provisionBalance ?? 0) + (row.severance?.provisionBalance ?? 0);
+    cells.push(num(total, true));
+    return cells;
   });
+
+  const sumLeave = combined.reduce((s, r) => s + (r.leave?.provision.provision_value ?? 0), 0);
+  const sumBonus = combined.reduce((s, r) => s + (r.bonus?.provisionBalance ?? 0), 0);
+  const sumSeverance = hasSeverance ? combined.reduce((s, r) => s + (r.severance?.provisionBalance ?? 0), 0) : 0;
+  const sumTotal = sumLeave + sumBonus + sumSeverance;
+
+  const totRow: any[] = [tot(`Total (${combined.length} employees)`, false), totBlank(), totBlank()];
+  totRow.push(totBlank(), totBlank(), totBlank(), tot(sumLeave));
+  totRow.push(totBlank(), totBlank(), totBlank(), tot(sumBonus));
+  if (hasSeverance) {
+    totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(sumSeverance));
+  }
+  totRow.push(tot(sumTotal));
+
+  const aoa = [groupRow, colHeaderRow, ...dataRows, totRow];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = merges;
+  ws['!cols'] = Array.from({ length: totalCols }, (_, i) => (i < 3 ? { wch: 14 } : { wch: 15 }));
+  ws['!freeze'] = { xSplit: 0, ySplit: 2 };
   return ws;
 }
 
