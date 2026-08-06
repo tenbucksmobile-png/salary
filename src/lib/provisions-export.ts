@@ -58,23 +58,30 @@ function periodOfAccrualMonths(startDate: string, year: number): number {
   return Math.max(0, months);
 }
 
-function yearsOfService(date: string | null): number {
+// All tenure calcs in this export are anchored to 31 July of the selected
+// Year (`asOf`), not "today" — a fixed, reproducible snapshot date matching
+// Gratuity's own existing 31-July anchor (periodOfAccrualMonths) — except
+// Bonus's Mths Service (Dec)/payout factor, which stays anchored to 31
+// December (monthsOfServiceAtDec, below). Every caller in this file passes
+// the same `asOf` date so the displayed Years/Months Service formulas and
+// the actual Severance Days/Month threshold and Months Accrued figures they
+// sit next to never disagree.
+function yearsOfService(date: string | null, asOf: Date): number {
   if (!date) return 0;
-  const ms = Date.now() - new Date(date).getTime();
+  const ms = asOf.getTime() - new Date(date).getTime();
   return Math.floor(ms / (1000 * 60 * 60 * 24 * 365.25) * 10) / 10;
 }
 
-function monthsOfService(date: string | null): number {
+function monthsOfService(date: string | null, asOf: Date): number {
   if (!date) return 0;
   const start = new Date(date);
-  const now = new Date();
-  let months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
-  if (now.getDate() < start.getDate()) months -= 1;
+  let months = (asOf.getFullYear() - start.getFullYear()) * 12 + (asOf.getMonth() - start.getMonth());
+  if (asOf.getDate() < start.getDate()) months -= 1;
   return Math.max(0, months);
 }
 
-function monthsSinceLastPayoutThreshold(date: string | null): number {
-  const totalMonths = monthsOfService(date);
+function monthsSinceLastPayoutThreshold(date: string | null, asOf: Date): number {
+  const totalMonths = monthsOfService(date, asOf);
   const lastThresholdMonths = Math.floor(totalMonths / 60) * 60;
   return totalMonths - lastThresholdMonths;
 }
@@ -295,6 +302,7 @@ function buildHotelSheet(
   // Mths Service (Dec) (matches Bonus's own Dec-31 payout-factor anchor).
   const julyAnchor = `DATE(${year},7,31)`;
   const decAnchor = `DATE(${year},12,31)`;
+  const julyAnchorDate = new Date(year, 6, 31);
   // Leave's Daily Rate divisor is hotel-configurable (falls back to 26 for
   // Botswana / 30.42 for South Africa, matching payroll-calc's own default);
   // Severance's is always a fixed 26, per the Basic ÷ 26 formula.
@@ -360,8 +368,8 @@ function buildHotelSheet(
       dateCell(row.employee.employment_date), str(row.employee.job_title ?? '—'),
       // Years/Months Service anchored to 31 July of the selected year rather
       // than "today" — a fixed, reproducible snapshot date for this workbook.
-      fml(`ROUND(DATEDIF(${startCell},${julyAnchor},"d")/365.25,1)`, yearsOfService(row.employee.employment_date)),
-      fml(`DATEDIF(${startCell},${julyAnchor},"m")`, monthsOfService(row.employee.employment_date)),
+      fml(`ROUND(DATEDIF(${startCell},${julyAnchor},"d")/365.25,1)`, yearsOfService(row.employee.employment_date, julyAnchorDate)),
+      fml(`DATEDIF(${startCell},${julyAnchor},"m")`, monthsOfService(row.employee.employment_date, julyAnchorDate)),
       empGross != null ? num(empGross) : blankCell(),
       empNewGross != null ? num(empNewGross) : blankCell(),
     ];
@@ -538,6 +546,10 @@ interface ProvisionsData {
 
 async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   const sb = createClient();
+  // Fixed anchor date for every tenure calc in this export except Bonus's
+  // Dec-31-anchored Mths Service (Dec) — see the comment on
+  // yearsOfService()/monthsOfService() above.
+  const julyAnchorDate = new Date(year, 6, 31);
 
   const { data: h } = await sb.from('hotels').select('*');
   const allHotels = sortHotels((h ?? []) as Hotel[]);
@@ -682,10 +694,10 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
     if (!hotel || !salary) continue;
     const hasSeverance = employee.severance_applicable;
     const hasGratuity = employee.gratuity_applicable;
-    const yrs = yearsOfService(employee.employment_date);
+    const yrs = yearsOfService(employee.employment_date, julyAnchorDate);
     const daysPerMonth = yrs >= SEVERANCE_SENIOR_YEARS ? 2 : 1;
     const dailyRate = Math.round(((salary.basic_salary ?? 0) / 26) * 100) / 100;
-    const monthsAccrued = hasSeverance ? monthsSinceLastPayoutThreshold(employee.employment_date) : 0;
+    const monthsAccrued = hasSeverance ? monthsSinceLastPayoutThreshold(employee.employment_date, julyAnchorDate) : 0;
     const severanceBalance = hasSeverance ? Math.round((salary.severance ?? 0) * monthsAccrued * 100) / 100 : 0;
     const accrualStart = employee.employee_code ? GRATUITY_ACCRUAL_START[employee.employee_code] : undefined;
     const gratuityGross = salary.total_earnings ?? 0;
