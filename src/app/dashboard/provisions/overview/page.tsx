@@ -42,7 +42,7 @@ export default function ProvisionsOverviewPage() {
           <h1 className="text-2xl font-bold text-foreground">Provisions Overview</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          Combined Leave, Bonus (incl. Incentive) and Severance provisions — Required, On Books and Adjustment per hotel, pulled from each provision page's own Book Adjustment figures. ILG, IH, ILRB and APA only; WCA is not a per-employee provision and is excluded.
+          Combined Leave, Bonus (incl. Incentive), Severance and Gratuity provisions — Required, On Books and Adjustment per hotel, pulled from each provision page's own Book Adjustment figures. Leave and Bonus cover ILG, IH, ILRB, APA, CSL, NL and CFEM; Severance and Gratuity cover ILG, CSL, NL and CFEM. Gratuity has no book-balance table of its own (matches the standalone Severance & Gratuity page), so only its Required figure is shown. WCA is not a per-employee provision and is excluded.
         </p>
       </div>
 
@@ -80,6 +80,7 @@ export default function ProvisionsOverviewPage() {
                 <th colSpan={3} className="text-center px-4 py-2 font-medium text-muted-foreground border-l">Leave</th>
                 <th colSpan={3} className="text-center px-4 py-2 font-medium text-muted-foreground border-l">Bonus</th>
                 <th colSpan={3} className="text-center px-4 py-2 font-medium text-muted-foreground border-l">Severance</th>
+                <th rowSpan={2} className="text-right px-3 py-2 font-medium text-muted-foreground border-l align-bottom">Gratuity<br />Required</th>
               </tr>
               <tr className="border-b bg-muted/20 text-xs">
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground border-l">Required</th>
@@ -94,7 +95,7 @@ export default function ProvisionsOverviewPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ hotel, leave, bonus, severance }, i) => (
+              {rows.map(({ hotel, leave, bonus, severance, gratuity }, i) => (
                 <tr key={hotel.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                   <td className="px-4 py-2.5 font-medium">{hotel.name}</td>
                   {leave ? (
@@ -118,6 +119,11 @@ export default function ProvisionsOverviewPage() {
                       <td className={`px-3 py-2.5 text-right font-mono font-medium ${severance.adjustment === 0 ? 'text-muted-foreground' : severance.adjustment < 0 ? 'text-red-600' : 'text-amber-600'}`}>{fmt(severance.adjustment, hotel)}</td>
                     </>
                   ) : (<><td className="px-3 py-2.5 text-right text-muted-foreground border-l">—</td><td className="px-3 py-2.5 text-right text-muted-foreground">—</td><td className="px-3 py-2.5 text-right text-muted-foreground">—</td></>)}
+                  {gratuity ? (
+                    <td className="px-3 py-2.5 text-right font-mono text-muted-foreground border-l">{fmt(gratuity.cost, hotel)}</td>
+                  ) : (
+                    <td className="px-3 py-2.5 text-right text-muted-foreground border-l">—</td>
+                  )}
                 </tr>
               ))}
             </tbody>

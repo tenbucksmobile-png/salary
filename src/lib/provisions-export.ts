@@ -1,10 +1,13 @@
 // Combined Provisions export — one workbook covering Leave, Bonus (incl.
-// Incentive), and Severance across the hotels each segment applies to, plus
-// an Overview sheet aggregating each segment's Book Adjustment figures.
+// Incentive), Severance and Gratuity across the hotels each segment applies
+// to, plus an Overview sheet aggregating each segment's Book Adjustment
+// figures.
 //
 // Scope: Leave and Bonus cover ILG/IH/ILRB/APA/CSL/NL/CFEM, matching the
-// standalone Leave and Bonus Provision pages' own hotel scope. Severance
-// stays ILG-only. WCA is omitted entirely (not a per-employee provision).
+// standalone Leave and Bonus Provision pages' own hotel scope. Severance and
+// Gratuity cover ILG/CSL/NL/CFEM, matching the standalone Severance &
+// Gratuity Provision page's own scope (widened from ILG-only). WCA is
+// omitted entirely (not a per-employee provision).
 //
 // Reuses each source page's own live settings rather than introducing new
 // export-time inputs: the Bonus accrual-months value comes from the same
@@ -22,7 +25,10 @@ import { sortHotels } from '@/lib/utils';
 import { fetchScenarioLineMap } from '@/lib/scenario-lines';
 
 const LEAVE_BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA', 'CSL', 'NL', 'CFEM'];
-const SEVERANCE_HOTEL_CODES = ['ILG'];
+// Matches the standalone Severance & Gratuity Provision page's own scope —
+// widened from ILG-only. A hotel/employee can have either, both, or neither
+// of Severance and Gratuity; the two are independent employee flags.
+const SEVERANCE_HOTEL_CODES = ['ILG', 'CSL', 'NL', 'CFEM'];
 // CSL/NL/CFEM's Bonus Required (Dec) is halved relative to the standard New
 // Gross Salary × factor formula — per explicit instruction, mirrors the
 // standalone Bonus Provision page's own HALF_RATE_HOTEL_CODES. Excludes
@@ -31,6 +37,26 @@ const BONUS_HALF_RATE_HOTEL_CODES = ['CSL', 'NL', 'CFEM'];
 const ACCRUAL_MONTHS_KEY = 'ihg-salary-bonus-accrual-months';
 const DEFAULT_ACCRUAL_MONTHS = 7;
 const SEVERANCE_SENIOR_YEARS = 5;
+
+// One-off override: FRE001/FRE002 (Diane & James French, CFEM) accrue
+// gratuity from their LOA start date rather than a straight Gross × Rate%,
+// mirroring the standalone Severance & Gratuity Provision page's own
+// GRATUITY_ACCRUAL_START — every other gratuity_applicable employee keeps
+// the straight formula.
+const GRATUITY_ACCRUAL_START: Record<string, string> = {
+  FRE001: '2024-10-01',
+  FRE002: '2024-10-01',
+};
+
+// Whole calendar months from the accrual start date to 31 July of the
+// selected Year (e.g. 1 Oct 2024 → 31 Jul 2026 = 21 months).
+function periodOfAccrualMonths(startDate: string, year: number): number {
+  const start = new Date(startDate);
+  const end = new Date(year, 6, 31); // 31 July
+  let months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+  if (end.getDate() < start.getDate()) months -= 1;
+  return Math.max(0, months);
+}
 
 function yearsOfService(date: string | null): number {
   if (!date) return 0;
@@ -203,11 +229,18 @@ interface BonusRow {
   decBonusRequired: number; incentive: number; provisionBalance: number;
 }
 interface SeveranceRow {
-  employee: Employee; hotel: Hotel; basic: number; yrs: number; dailyRate: number;
-  daysPerMonth: number; monthlyRate: number; monthsAccrued: number; provisionBalance: number;
+  employee: Employee; hotel: Hotel;
+  hasSeverance: boolean; hasGratuity: boolean;
+  basic: number; yrs: number; dailyRate: number;
+  daysPerMonth: number; monthlyRate: number; monthsAccrued: number; severanceBalance: number;
+  gratuityGross: number; gratuityRate: number; gratuityBalance: number;
+  provisionBalance: number; // severanceBalance + gratuityBalance
 }
 
 interface HotelAdjustment { cost: number; book: number; adjustment: number }
+// Gratuity has no book-balance table of its own (matches the standalone
+// page's own Book Adjustment, which stays Severance-only) — Required-only.
+interface HotelCostOnly { cost: number }
 
 interface CombinedRow {
   employee: Employee;
@@ -235,10 +268,10 @@ function combineRows(leaveRows: LeaveRow[], bonusRows: BonusRow[], severanceRows
 
 // ── Sheet builders ─────────────────────────────────────────────────────────
 
-// One row per employee — Leave, Bonus, and (ILG only) Severance columns sit
-// side by side on that same row rather than in stacked per-segment tables,
-// so an employee's figures across all applicable provisions read left to
-// right. Grade is intentionally omitted.
+// One row per employee — Leave, Bonus, and (ILG/CSL/NL/CFEM) Severance and
+// Gratuity columns sit side by side on that same row rather than in stacked
+// per-segment tables, so an employee's figures across all applicable
+// provisions read left to right. Grade is intentionally omitted.
 function buildHotelSheet(
   hotel: Hotel,
   leaveRows: LeaveRow[],
@@ -268,6 +301,7 @@ function buildHotelSheet(
   ];
   if (hasSeverance) {
     groups.push({ label: `SEVERANCE PROVISION (${sym})`, headers: ['Basic Salary', 'Yrs Service', 'Daily Rate', 'Days/Month', 'Monthly Rate', 'Months Accrued', 'Provision Balance'] });
+    groups.push({ label: `GRATUITY PROVISION (${sym})`, headers: ['Gross Salary', 'Gratuity Rate', 'Provision Balance'] });
   }
   groups.push({ label: 'TOTAL', headers: [`Provision Balance (${sym})`] });
 
@@ -295,10 +329,11 @@ function buildHotelSheet(
   }
 
   // Column offsets for formula references — fixed per this hotel's layout
-  // (severance only present when hasSeverance).
+  // (severance/gratuity only present when hasSeverance).
   const leaveStart = employeeHeaders.length;
   const bonusStart = leaveStart + 4;
   const severanceStart = hasSeverance ? bonusStart + 5 : -1;
+  const gratuityStart = hasSeverance ? severanceStart + 7 : -1;
   const totalCol = totalCols - 1;
   const colLetter = (i: number) => XLSX.utils.encode_col(i);
 
@@ -353,16 +388,29 @@ function buildHotelSheet(
     }
 
     if (hasSeverance) {
-      if (row.severance) {
+      if (row.severance?.hasSeverance) {
         const rateCol = colLetter(severanceStart + 4);
         const monthsAccruedCol = colLetter(severanceStart + 5);
         cells.push(
           num(row.severance.basic), num(row.severance.yrs), num(row.severance.dailyRate),
           num(row.severance.daysPerMonth), num(row.severance.monthlyRate), num(row.severance.monthsAccrued),
-          fml(`${rateCol}${r}*${monthsAccruedCol}${r}`, row.severance.provisionBalance),
+          fml(`${rateCol}${r}*${monthsAccruedCol}${r}`, row.severance.severanceBalance),
         );
       } else {
         cells.push(blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell());
+      }
+
+      // Gratuity Provision Balance stays a static value, not a formula — its
+      // derivation branches on the FRE001/FRE002 period-of-accrual override,
+      // which isn't exposed as its own column here (mirrors Bonus Required
+      // (Dec)'s same static-value treatment above).
+      if (row.severance?.hasGratuity) {
+        cells.push(
+          num(row.severance.gratuityGross), num(row.severance.gratuityRate),
+          num(row.severance.gratuityBalance),
+        );
+      } else {
+        cells.push(blankCell(), blankCell(), blankCell());
       }
     }
 
@@ -370,7 +418,7 @@ function buildHotelSheet(
     const sumRefs = [
       colLetter(leaveStart + 3) + r,
       colLetter(bonusStart + 4) + r,
-      ...(hasSeverance ? [colLetter(severanceStart + 6) + r] : []),
+      ...(hasSeverance ? [colLetter(severanceStart + 6) + r, colLetter(gratuityStart + 2) + r] : []),
     ];
     cells.push(fml(`SUM(${sumRefs.join(',')})`, total, true));
 
@@ -380,8 +428,9 @@ function buildHotelSheet(
 
   const sumLeave = combined.reduce((s, r) => s + (r.leave?.provision.provision_value ?? 0), 0);
   const sumBonus = combined.reduce((s, r) => s + (r.bonus?.provisionBalance ?? 0), 0);
-  const sumSeverance = hasSeverance ? combined.reduce((s, r) => s + (r.severance?.provisionBalance ?? 0), 0) : 0;
-  const sumTotal = sumLeave + sumBonus + sumSeverance;
+  const sumSeverance = hasSeverance ? combined.reduce((s, r) => s + (r.severance?.severanceBalance ?? 0), 0) : 0;
+  const sumGratuity = hasSeverance ? combined.reduce((s, r) => s + (r.severance?.gratuityBalance ?? 0), 0) : 0;
+  const sumTotal = sumLeave + sumBonus + sumSeverance + sumGratuity;
 
   const firstDataRow = 3;
   const lastDataRow = 2 + combined.length;
@@ -392,6 +441,7 @@ function buildHotelSheet(
   totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totFml(rangeSum(bonusStart + 4), sumBonus));
   if (hasSeverance) {
     totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totFml(rangeSum(severanceStart + 6), sumSeverance));
+    totRow.push(totBlank(), totBlank(), totFml(rangeSum(gratuityStart + 2), sumGratuity));
   }
   totRow.push(totFml(rangeSum(totalCol), sumTotal));
   for (const b of groupBoundaries) totRow[b] = withLeftBorder(totRow[b]);
@@ -409,6 +459,7 @@ function buildOverviewSheet(
   leaveAdj: Map<string, HotelAdjustment>,
   bonusAdj: Map<string, HotelAdjustment>,
   severanceAdj: Map<string, HotelAdjustment>,
+  gratuityAdj: Map<string, HotelCostOnly>,
   XLSX: any,
 ): any {
   const headers = [
@@ -416,6 +467,9 @@ function buildOverviewSheet(
     ovHdr('Leave — Required'), ovHdr('Leave — On Books'), ovHdr('Leave — Adjustment'),
     ovHdr('Bonus — Required'), ovHdr('Bonus — On Books'), ovHdr('Bonus — Adjustment'),
     ovHdr('Severance — Required'), ovHdr('Severance — On Books'), ovHdr('Severance — Adjustment'),
+    // Gratuity has no book-balance table of its own — Required only, matching
+    // the standalone Severance & Gratuity page's own Book Adjustment scope.
+    ovHdr('Gratuity — Required'),
   ];
 
   // Data rows start at Excel row 4 (row1=section header, row2=blank, row3=headers).
@@ -425,6 +479,7 @@ function buildOverviewSheet(
     const l = leaveAdj.get(h.id);
     const b = bonusAdj.get(h.id);
     const s = severanceAdj.get(h.id);
+    const g = gratuityAdj.get(h.id);
 
     return [
       str(h.name, true),
@@ -432,17 +487,19 @@ function buildOverviewSheet(
       l ? num(l.cost) : blankCell(), l ? num(l.book) : blankCell(), l ? adjFml(`FLOOR.MATH(C${r}-D${r},100)`, l.adjustment) : blankCell(),
       b ? num(b.cost) : blankCell(), b ? num(b.book) : blankCell(), b ? adjFml(`FLOOR.MATH(F${r}-G${r},100)`, b.adjustment) : blankCell(),
       s ? num(s.cost) : blankCell(), s ? num(s.book) : blankCell(), s ? adjFml(`FLOOR.MATH(I${r}-J${r},100)`, s.adjustment) : blankCell(),
+      g ? num(g.cost) : blankCell(),
     ];
   });
 
   const aoa = [[sectionHdr('PROVISIONS OVERVIEW')], [], headers, ...rows];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 10 } }];
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 11 } }];
   ws['!cols'] = [
     { wch: 26 }, { wch: 12 },
     { wch: 15 }, { wch: 15 }, { wch: 15 },
     { wch: 15 }, { wch: 15 }, { wch: 15 },
     { wch: 15 }, { wch: 15 }, { wch: 15 },
+    { wch: 15 },
   ];
   ws['!freeze'] = { xSplit: 0, ySplit: 3 };
   return ws;
@@ -458,6 +515,7 @@ interface ProvisionsData {
   leaveAdj: Map<string, HotelAdjustment>;
   bonusAdj: Map<string, HotelAdjustment>;
   severanceAdj: Map<string, HotelAdjustment>;
+  gratuityAdj: Map<string, HotelCostOnly>;
   accrualMonths: number;
   latestSalaryMap: Map<string, SalaryRecord>;
   newGrossMap: Map<string, number>;
@@ -497,11 +555,13 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   ]);
   const bonusEmployees = (bonusEmp ?? []) as Employee[];
 
-  // Severance: active + severance_applicable, ILG only
+  // Severance/Gratuity: active + (severance_applicable OR gratuity_applicable),
+  // ILG/CSL/NL/CFEM — matches the standalone Severance & Gratuity page.
   const severanceHotelIds = exportHotels.filter(hh => SEVERANCE_HOTEL_CODES.includes(hh.short_code)).map(hh => hh.id);
   const [{ data: severanceEmp }, { data: severanceBook }] = await Promise.all([
     severanceHotelIds.length
-      ? sb.from('employees').select('*').in('hotel_id', severanceHotelIds).eq('status', 'active').eq('severance_applicable', true)
+      ? sb.from('employees').select('*').in('hotel_id', severanceHotelIds).eq('status', 'active')
+          .or('severance_applicable.eq.true,gratuity_applicable.eq.true')
       : Promise.resolve({ data: [] as Employee[] }),
     severanceHotelIds.length
       ? sb.from('severance_provision_book_balances').select('*').in('hotel_id', severanceHotelIds).eq('period_year', year)
@@ -593,21 +653,38 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   }
   for (const rows of bonusByHotel.values()) rows.sort((a, b) => a.employee.surname.localeCompare(b.employee.surname));
 
+  // A row can be severance-applicable, gratuity-applicable, or both. Gratuity
+  // Balance is a straight Gross × Rate% (from salary_records.gratuity, which
+  // calculateBurden() already computes) — no 5-year payout threshold, EXCEPT
+  // the GRATUITY_ACCRUAL_START override (FRE001/FRE002), which multiplies by
+  // the whole-months period of accrual instead. Mirrors the standalone
+  // Severance & Gratuity Provision page's own row-building exactly.
   const severanceByHotel = new Map<string, SeveranceRow[]>();
   for (const employee of severanceEmployees) {
     if (employee.grade_label === 'ANO') continue;
     const hotel = hotelMap.get(employee.hotel_id);
     const salary = latestSalaryMap.get(employee.id);
     if (!hotel || !salary) continue;
+    const hasSeverance = employee.severance_applicable;
+    const hasGratuity = employee.gratuity_applicable;
     const yrs = yearsOfService(employee.employment_date);
     const daysPerMonth = yrs >= SEVERANCE_SENIOR_YEARS ? 2 : 1;
     const dailyRate = Math.round(((salary.basic_salary ?? 0) / 26) * 100) / 100;
-    const monthsAccrued = monthsSinceLastPayoutThreshold(employee.employment_date);
-    const provisionBalance = Math.round((salary.severance ?? 0) * monthsAccrued * 100) / 100;
+    const monthsAccrued = hasSeverance ? monthsSinceLastPayoutThreshold(employee.employment_date) : 0;
+    const severanceBalance = hasSeverance ? Math.round((salary.severance ?? 0) * monthsAccrued * 100) / 100 : 0;
+    const accrualStart = employee.employee_code ? GRATUITY_ACCRUAL_START[employee.employee_code] : undefined;
+    const gratuityGross = salary.total_earnings ?? 0;
+    const gratuityBalance = !hasGratuity ? 0
+      : accrualStart
+        ? Math.round(gratuityGross * ((employee.gratuity_rate ?? 0) / 100) * periodOfAccrualMonths(accrualStart, year) * 100) / 100
+        : (salary.gratuity ?? 0);
+    const provisionBalance = severanceBalance + gratuityBalance;
     if (!severanceByHotel.has(hotel.id)) severanceByHotel.set(hotel.id, []);
     severanceByHotel.get(hotel.id)!.push({
-      employee, hotel, basic: salary.basic_salary ?? 0, yrs, dailyRate, daysPerMonth,
-      monthlyRate: salary.severance ?? 0, monthsAccrued, provisionBalance,
+      employee, hotel, hasSeverance, hasGratuity, basic: salary.basic_salary ?? 0, yrs, dailyRate, daysPerMonth,
+      monthlyRate: salary.severance ?? 0, monthsAccrued, severanceBalance,
+      gratuityGross, gratuityRate: employee.gratuity_rate ?? 0, gratuityBalance,
+      provisionBalance,
     });
   }
   for (const rows of severanceByHotel.values()) rows.sort((a, b) => a.employee.surname.localeCompare(b.employee.surname));
@@ -631,9 +708,20 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
     leaveBookMap,
   );
   const bonusAdj = adjustmentsFor(bonusByHotel, bonusBookMap);
-  const severanceAdj = adjustmentsFor(severanceByHotel, severanceBookMap);
+  // Severance's own Book Adjustment stays severance-only, matching the
+  // standalone page and the severance_provision_book_balances table it
+  // reconciles against — gratuity has no book table, so it's summed
+  // separately below as Required-only (no On Books/Adjustment concept).
+  const severanceAdj = adjustmentsFor(
+    new Map([...severanceByHotel].map(([id, rows]) => [id, rows.map(r => ({ provisionBalance: r.severanceBalance }))])),
+    severanceBookMap,
+  );
+  const gratuityAdj = new Map<string, HotelCostOnly>();
+  for (const [hotelId, rows] of severanceByHotel) {
+    gratuityAdj.set(hotelId, { cost: rows.reduce((sum, r) => sum + r.gratuityBalance, 0) });
+  }
 
-  return { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths, latestSalaryMap, newGrossMap };
+  return { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, gratuityAdj, accrualMonths, latestSalaryMap, newGrossMap };
 }
 
 // ── Public: on-screen summary (Overview page) ───────────────────────────────
@@ -643,6 +731,7 @@ export interface ProvisionsSummaryRow {
   leave: HotelAdjustment | null;
   bonus: HotelAdjustment | null;
   severance: HotelAdjustment | null;
+  gratuity: HotelCostOnly | null;
   totalCost: number;
   totalBook: number;
   totalAdjustment: number;
@@ -654,10 +743,11 @@ export async function loadProvisionsSummary(year: number): Promise<ProvisionsSum
     const leave = d.leaveAdj.get(hotel.id) ?? null;
     const bonus = d.bonusAdj.get(hotel.id) ?? null;
     const severance = d.severanceAdj.get(hotel.id) ?? null;
-    const totalCost = (leave?.cost ?? 0) + (bonus?.cost ?? 0) + (severance?.cost ?? 0);
+    const gratuity = d.gratuityAdj.get(hotel.id) ?? null;
+    const totalCost = (leave?.cost ?? 0) + (bonus?.cost ?? 0) + (severance?.cost ?? 0) + (gratuity?.cost ?? 0);
     const totalBook = (leave?.book ?? 0) + (bonus?.book ?? 0) + (severance?.book ?? 0);
     const totalAdjustment = Math.floor((totalCost - totalBook) / 100) * 100;
-    return { hotel, leave, bonus, severance, totalCost, totalBook, totalAdjustment };
+    return { hotel, leave, bonus, severance, gratuity, totalCost, totalBook, totalAdjustment };
   });
 }
 
@@ -669,10 +759,10 @@ export async function exportAllProvisions(year: number): Promise<void> {
     import('xlsx-js-style'),
   ]);
   const XLSX = XLSXmod.default ?? XLSXmod;
-  const { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths, latestSalaryMap, newGrossMap } = d;
+  const { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, gratuityAdj, accrualMonths, latestSalaryMap, newGrossMap } = d;
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, buildOverviewSheet(exportHotels, leaveAdj, bonusAdj, severanceAdj, XLSX), 'Overview');
+  XLSX.utils.book_append_sheet(wb, buildOverviewSheet(exportHotels, leaveAdj, bonusAdj, severanceAdj, gratuityAdj, XLSX), 'Overview');
 
   for (const hotel of exportHotels) {
     const leaveRows = leaveByHotel.get(hotel.id) ?? [];
