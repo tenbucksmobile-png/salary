@@ -102,6 +102,22 @@ function num(v: number, bold = false) {
   };
 }
 
+// Formula cell — Excel recalculates `f` on open; `v` is the pre-computed
+// value so viewers that don't auto-recalc still show the right figure.
+function fml(formula: string, value: number, bold = false) {
+  return {
+    f: formula, v: value, t: 'n', z: '#,##0.00',
+    s: { alignment: { horizontal: 'right' }, ...(bold ? { font: { bold: true } } : {}) },
+  };
+}
+
+function totFml(formula: string, value: number) {
+  return {
+    f: formula, v: value, t: 'n', z: '#,##0.00',
+    s: { fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, font: { bold: true }, alignment: { horizontal: 'right' } },
+  };
+}
+
 function blankCell() {
   return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, font: { color: { rgb: 'CCCCCC' } } } };
 }
@@ -132,6 +148,14 @@ function adjCell(v: number | null) {
   if (v === null) return blankCell();
   const color = v === 0 ? '666666' : v < 0 ? 'C0392B' : 'B7791F';
   return { v, t: 'n', z: '#,##0.00', s: { alignment: { horizontal: 'right' }, font: { bold: true, color: { rgb: color } } } };
+}
+
+// Adjustment as a live formula — floors (Required − On Books) down to the
+// nearest 100 exactly like the standalone provision pages' own JS, so
+// editing either input cell in Excel recalculates Adjustment automatically.
+function adjFml(formula: string, v: number) {
+  const color = v === 0 ? '666666' : v < 0 ? 'C0392B' : 'B7791F';
+  return { f: formula, v, t: 'n', z: '#,##0.00', s: { alignment: { horizontal: 'right' }, font: { bold: true, color: { rgb: color } } } };
 }
 
 // Group-header cell — the top row spanning each segment's column block.
@@ -249,21 +273,40 @@ function buildHotelSheet(
     colHeaderRow[b] = withLeftBorder(colHeaderRow[b]);
   }
 
-  const dataRows = combined.map(row => {
+  // Column offsets for formula references — fixed per this hotel's layout
+  // (severance only present when hasSeverance).
+  const leaveStart = 3;
+  const bonusStart = 7;
+  const severanceStart = hasSeverance ? 13 : -1;
+  const totalCol = totalCols - 1;
+  const colLetter = (i: number) => XLSX.utils.encode_col(i);
+
+  const dataRows = combined.map((row, i) => {
+    const r = i + 3; // Excel row number (group row=1, header row=2, first data row=3)
     const cells: any[] = [
       str(row.employee.employee_code ?? '—'), str(row.employee.surname), str(row.employee.first_name),
     ];
 
     if (row.leave) {
       const capped = Math.min(row.leave.provision.leave_balance_days, leaveProvisionCapDays(hotel.short_code));
-      cells.push(num(row.leave.provision.leave_balance_days), num(capped), num(row.leave.provision.daily_rate), num(row.leave.provision.provision_value));
+      const cappedCol = colLetter(leaveStart + 1);
+      const rateCol = colLetter(leaveStart + 2);
+      cells.push(
+        num(row.leave.provision.leave_balance_days),
+        num(capped),
+        num(row.leave.provision.daily_rate),
+        fml(`${rateCol}${r}*${cappedCol}${r}`, row.leave.provision.provision_value),
+      );
     } else {
       cells.push(blankCell(), blankCell(), blankCell(), blankCell());
     }
 
     if (row.bonus) {
+      const monthsCol = colLetter(bonusStart + 1);
       cells.push(
-        num(row.bonus.gross), num(row.bonus.monthsOfService), num(+(row.bonus.factor * 100).toFixed(1)),
+        num(row.bonus.gross),
+        num(row.bonus.monthsOfService),
+        fml(`MIN(${monthsCol}${r},12)/12`, +(row.bonus.factor * 100).toFixed(1)),
         num(row.bonus.decBonusRequired), num(row.bonus.incentive), num(row.bonus.provisionBalance),
       );
     } else {
@@ -272,10 +315,12 @@ function buildHotelSheet(
 
     if (hasSeverance) {
       if (row.severance) {
+        const rateCol = colLetter(severanceStart + 4);
+        const monthsAccruedCol = colLetter(severanceStart + 5);
         cells.push(
           num(row.severance.basic), num(row.severance.yrs), num(row.severance.dailyRate),
           num(row.severance.daysPerMonth), num(row.severance.monthlyRate), num(row.severance.monthsAccrued),
-          num(row.severance.provisionBalance),
+          fml(`${rateCol}${r}*${monthsAccruedCol}${r}`, row.severance.provisionBalance),
         );
       } else {
         cells.push(blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell());
@@ -283,7 +328,12 @@ function buildHotelSheet(
     }
 
     const total = (row.leave?.provision.provision_value ?? 0) + (row.bonus?.provisionBalance ?? 0) + (row.severance?.provisionBalance ?? 0);
-    cells.push(num(total, true));
+    const sumRefs = [
+      colLetter(leaveStart + 3) + r,
+      colLetter(bonusStart + 5) + r,
+      ...(hasSeverance ? [colLetter(severanceStart + 6) + r] : []),
+    ];
+    cells.push(fml(`SUM(${sumRefs.join(',')})`, total, true));
 
     for (const b of groupBoundaries) cells[b] = withLeftBorder(cells[b]);
     return cells;
@@ -294,13 +344,17 @@ function buildHotelSheet(
   const sumSeverance = hasSeverance ? combined.reduce((s, r) => s + (r.severance?.provisionBalance ?? 0), 0) : 0;
   const sumTotal = sumLeave + sumBonus + sumSeverance;
 
+  const firstDataRow = 3;
+  const lastDataRow = 2 + combined.length;
+  const rangeSum = (colIdx: number) => `SUM(${colLetter(colIdx)}${firstDataRow}:${colLetter(colIdx)}${lastDataRow})`;
+
   const totRow: any[] = [tot(`Total (${combined.length} employees)`, false), totBlank(), totBlank()];
-  totRow.push(totBlank(), totBlank(), totBlank(), tot(sumLeave));
-  totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(sumBonus));
+  totRow.push(totBlank(), totBlank(), totBlank(), totFml(rangeSum(leaveStart + 3), sumLeave));
+  totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totFml(rangeSum(bonusStart + 5), sumBonus));
   if (hasSeverance) {
-    totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(sumSeverance));
+    totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totFml(rangeSum(severanceStart + 6), sumSeverance));
   }
-  totRow.push(tot(sumTotal));
+  totRow.push(totFml(rangeSum(totalCol), sumTotal));
   for (const b of groupBoundaries) totRow[b] = withLeftBorder(totRow[b]);
 
   const aoa = [groupRow, colHeaderRow, ...dataRows, totRow];
@@ -325,7 +379,9 @@ function buildOverviewSheet(
     ovHdr('Severance — Required'), ovHdr('Severance — On Books'), ovHdr('Severance — Adjustment'),
   ];
 
-  const rows = hotels.map(h => {
+  // Data rows start at Excel row 4 (row1=section header, row2=blank, row3=headers).
+  const rows = hotels.map((h, i) => {
+    const r = i + 4;
     const bw = isBotswana(h.country);
     const l = leaveAdj.get(h.id);
     const b = bonusAdj.get(h.id);
@@ -334,9 +390,9 @@ function buildOverviewSheet(
     return [
       str(h.name, true),
       { v: bw ? 'BWP (P)' : 'ZAR (R)', t: 's', s: { alignment: { horizontal: 'center' } } },
-      l ? num(l.cost) : blankCell(), l ? num(l.book) : blankCell(), l ? adjCell(l.adjustment) : blankCell(),
-      b ? num(b.cost) : blankCell(), b ? num(b.book) : blankCell(), b ? adjCell(b.adjustment) : blankCell(),
-      s ? num(s.cost) : blankCell(), s ? num(s.book) : blankCell(), s ? adjCell(s.adjustment) : blankCell(),
+      l ? num(l.cost) : blankCell(), l ? num(l.book) : blankCell(), l ? adjFml(`FLOOR.MATH(C${r}-D${r},100)`, l.adjustment) : blankCell(),
+      b ? num(b.cost) : blankCell(), b ? num(b.book) : blankCell(), b ? adjFml(`FLOOR.MATH(F${r}-G${r},100)`, b.adjustment) : blankCell(),
+      s ? num(s.cost) : blankCell(), s ? num(s.book) : blankCell(), s ? adjFml(`FLOOR.MATH(I${r}-J${r},100)`, s.adjustment) : blankCell(),
     ];
   });
 

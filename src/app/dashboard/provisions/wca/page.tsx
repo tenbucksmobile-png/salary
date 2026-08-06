@@ -5,9 +5,13 @@ import { createClient } from '@/lib/supabase/client';
 import {
   Hotel, WcaAnnualConsolidation,
   WcaManualEntry, WcaManualEntryType, WcaManualEntryStatus, WcaRoeRate, WcaProvisionCalc,
+  Employee, SalaryRecord,
 } from '@/types/database';
 import { fmtCurrency, sortHotels } from '@/lib/utils';
 import { ShieldCheck, Plus, Pencil, Trash2, X } from 'lucide-react';
+
+const WCA_RATE_DEFAULT = 0.005; // 0.50% — fallback when hotels.wca_rate isn't set
+const APA_PROVISION_MONTHS = 5;
 
 // WCA reconciliation is being built hotel by hotel — each hotel gets its own
 // separate reconciliation (same schema, own data).
@@ -99,6 +103,12 @@ export default function WcaProvisionPage() {
   const [roeRateInput, setRoeRateInput] = useState('');
   const [provisionForm, setProvisionForm] = useState<ReturnType<typeof emptyProvisionForm> | null>(null);
 
+  // APA-only: live monthly WCA provision from current employees, since APA
+  // (unlike IH/ILRB) has no historical dispute pattern to reconcile against —
+  // see apaProvision below.
+  const [apaEmployees, setApaEmployees] = useState<Employee[]>([]);
+  const [apaSalary, setApaSalary] = useState<SalaryRecord[]>([]);
+
   async function load() {
     const [{ data: h }, meRes] = await Promise.all([
       sb.from('hotels').select('*'),
@@ -150,6 +160,41 @@ export default function WcaProvisionPage() {
 
   const selectedHotel = hotels.find(h => h.id === hotelId);
   const fmt = (n: number) => fmtCurrency(n, selectedHotel?.country ?? 'South Africa');
+
+  useEffect(() => {
+    if (selectedHotel?.short_code !== 'APA') { setApaEmployees([]); setApaSalary([]); return; }
+    (async () => {
+      const { data: e } = await sb.from('employees').select('*').eq('hotel_id', selectedHotel.id).eq('status', 'active');
+      const empList = (e ?? []) as Employee[];
+      const empIds = empList.map(emp => emp.id);
+      const { data: s } = empIds.length
+        ? await sb.from('salary_records').select('*').in('employee_id', empIds)
+        : { data: [] };
+      setApaEmployees(empList);
+      setApaSalary((s ?? []) as SalaryRecord[]);
+    })();
+  }, [selectedHotel?.id, selectedHotel?.short_code]);
+
+  // Monthly WCA = sum of (Gross Salary × WCA Rate) across APA's active
+  // employees; Provision Required projects that monthly figure across
+  // APA_PROVISION_MONTHS (5 — months elapsed since the last actual invoice).
+  const apaProvision = useMemo(() => {
+    if (selectedHotel?.short_code !== 'APA') return null;
+    const rate = selectedHotel.wca_rate ?? WCA_RATE_DEFAULT;
+    const latestByEmployee = new Map<string, SalaryRecord>();
+    for (const s of apaSalary) {
+      const ex = latestByEmployee.get(s.employee_id);
+      if (!ex || s.period_year > ex.period_year || (s.period_year === ex.period_year && s.period_month > ex.period_month)) {
+        latestByEmployee.set(s.employee_id, s);
+      }
+    }
+    const monthly = apaEmployees.reduce((sum, emp) => {
+      const gross = latestByEmployee.get(emp.id)?.total_earnings ?? 0;
+      return sum + gross * rate;
+    }, 0);
+    const required = monthly * APA_PROVISION_MONTHS;
+    return { rate, employeeCount: apaEmployees.length, monthly, required };
+  }, [selectedHotel, apaEmployees, apaSalary]);
 
   // Running closing balance per year, in period_year order.
   const rowsWithClosing = useMemo(() => {
@@ -404,6 +449,7 @@ export default function WcaProvisionPage() {
               provisionForm={provisionForm}
               setProvisionForm={setProvisionForm}
               saveProvision={saveProvision}
+              apaProvision={apaProvision}
             />
           )}
 
@@ -556,7 +602,7 @@ function ConsolidationTab({
 
 function ReconciliationTab({
   entries, fmt, entryForm, setEntryForm, saveEntry, deleteEntry, toggleEntryStatus, reconciliation, closingBalance, hotelId,
-  latestProvision, provisionCalc, provisionForm, setProvisionForm, saveProvision,
+  latestProvision, provisionCalc, provisionForm, setProvisionForm, saveProvision, apaProvision,
 }: {
   entries: WcaManualEntry[];
   fmt: (n: number) => string;
@@ -573,9 +619,27 @@ function ReconciliationTab({
   provisionForm: ReturnType<typeof emptyProvisionForm> | null;
   setProvisionForm: (f: ReturnType<typeof emptyProvisionForm> | null) => void;
   saveProvision: () => void;
+  apaProvision: { rate: number; employeeCount: number; monthly: number; required: number } | null;
 }) {
   return (
     <div className="space-y-6">
+      {apaProvision && (
+        <div className="bg-white rounded-xl border overflow-hidden">
+          <div className="px-4 py-3 border-b bg-muted/40">
+            <h2 className="text-sm font-semibold">APA Provision Required</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              No historical disputes on this account — provision is calculated directly from current payroll instead: sum of (Gross Salary × WCA Rate) across APA's active employees, projected across {APA_PROVISION_MONTHS} months (elapsed since the last actual invoice).
+            </p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
+            <div><div className="text-xs text-muted-foreground mb-1">Active Employees</div><div className="font-mono text-sm font-medium">{apaProvision.employeeCount}</div></div>
+            <div><div className="text-xs text-muted-foreground mb-1">WCA Rate</div><div className="font-mono text-sm font-medium">{(apaProvision.rate * 100).toFixed(2)}%</div></div>
+            <div><div className="text-xs text-muted-foreground mb-1">Monthly WCA (Σ Gross × Rate)</div><div className="font-mono text-sm font-medium">{fmt(apaProvision.monthly)}</div></div>
+            <div><div className="text-xs text-muted-foreground mb-1">Provision Required (× {APA_PROVISION_MONTHS} months)</div><div className="font-mono text-sm font-bold">{fmt(apaProvision.required)}</div></div>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl border overflow-hidden">
         <div className="px-4 py-3 border-b bg-muted/40">
           <h2 className="text-sm font-semibold">Adjusted Balance</h2>
