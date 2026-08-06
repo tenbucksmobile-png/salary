@@ -79,14 +79,6 @@ function monthsSinceLastPayoutThreshold(date: string | null): number {
   return totalMonths - lastThresholdMonths;
 }
 
-function fmtDateDDMMYYYY(date: string | null): string {
-  if (!date) return '—';
-  const d = new Date(date);
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  return `${dd}-${mm}-${d.getFullYear()}`;
-}
-
 // Whole calendar months of service projected forward to 31 Dec of the
 // selected bonus year — the 13th-cheque payout factor's basis. Mirrors the
 // Bonus Provision page's own copy of this helper.
@@ -131,6 +123,17 @@ function sectionHdr(v: string) {
 
 function str(v: string, bold = false) {
   return { v: v || '—', t: 's', s: { alignment: { horizontal: 'left' }, ...(bold ? { font: { bold: true } } : {}) } };
+}
+
+// Excel's date epoch is 1899-12-30 (serial 0) — writing a real numeric date
+// cell (rather than a display string) is what lets DATEDIF() formulas
+// elsewhere on the sheet reference this cell directly.
+const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
+function dateCell(dateStr: string | null) {
+  if (!dateStr) return blankCell();
+  const d = new Date(dateStr);
+  const serial = Math.round((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - EXCEL_EPOCH_UTC) / 86400000);
+  return { v: serial, t: 'n', z: 'dd-mm-yyyy', s: { alignment: { horizontal: 'left' } } };
 }
 
 function num(v: number, bold = false) {
@@ -278,6 +281,7 @@ function buildHotelSheet(
   bonusRows: BonusRow[],
   severanceRows: SeveranceRow[],
   accrualMonths: number,
+  year: number,
   latestSalaryMap: Map<string, SalaryRecord>,
   newGrossMap: Map<string, number>,
   XLSX: any,
@@ -286,6 +290,15 @@ function buildHotelSheet(
   const sym = bw ? 'P' : 'R';
   const hasSeverance = SEVERANCE_HOTEL_CODES.includes(hotel.short_code);
   const combined = combineRows(leaveRows, bonusRows, severanceRows);
+  // Fixed anchor dates for the live tenure formulas below — 31 July of the
+  // selected year for general Years/Months Service, 31 December for Bonus's
+  // Mths Service (Dec) (matches Bonus's own Dec-31 payout-factor anchor).
+  const julyAnchor = `DATE(${year},7,31)`;
+  const decAnchor = `DATE(${year},12,31)`;
+  // Leave's Daily Rate divisor is hotel-configurable (falls back to 26 for
+  // Botswana / 30.42 for South Africa, matching payroll-calc's own default);
+  // Severance's is always a fixed 26, per the Basic ÷ 26 formula.
+  const leaveDivisor = hotel.leave_provision_divisor ?? (bw ? 26 : 30.42);
 
   // New Gross Salary (post-increase, from Salary Review) sits right after
   // Gross Salary in the shared Employee block — not duplicated into the
@@ -303,7 +316,6 @@ function buildHotelSheet(
     groups.push({ label: `SEVERANCE PROVISION (${sym})`, headers: ['Basic Salary', 'Yrs Service', 'Daily Rate', 'Days/Month', 'Monthly Rate', 'Months Accrued', 'Provision Balance'] });
     groups.push({ label: `GRATUITY PROVISION (${sym})`, headers: ['Gross Salary', 'Gratuity Rate', 'Provision Balance'] });
   }
-  groups.push({ label: 'TOTAL', headers: [`Provision Balance (${sym})`] });
 
   const groupRow: any[] = [];
   const colHeaderRow: any[] = [];
@@ -330,21 +342,26 @@ function buildHotelSheet(
 
   // Column offsets for formula references — fixed per this hotel's layout
   // (severance/gratuity only present when hasSeverance).
+  const startDateCol = 3; // Employee block's Start Date column
   const leaveStart = employeeHeaders.length;
   const bonusStart = leaveStart + 4;
   const severanceStart = hasSeverance ? bonusStart + 5 : -1;
   const gratuityStart = hasSeverance ? severanceStart + 7 : -1;
-  const totalCol = totalCols - 1;
   const colLetter = (i: number) => XLSX.utils.encode_col(i);
 
   const dataRows = combined.map((row, i) => {
     const r = i + 3; // Excel row number (group row=1, header row=2, first data row=3)
     const empGross = latestSalaryMap.get(row.employee.id)?.total_earnings;
     const empNewGross = newGrossMap.get(row.employee.id);
+    const startCell = colLetter(startDateCol) + r;
+    const grossCell = colLetter(7) + r; // Employee block's own Gross Salary column
     const cells: any[] = [
       str(row.employee.employee_code ?? '—'), str(row.employee.surname), str(row.employee.first_name),
-      str(fmtDateDDMMYYYY(row.employee.employment_date)), str(row.employee.job_title ?? '—'),
-      num(yearsOfService(row.employee.employment_date)), num(monthsOfService(row.employee.employment_date)),
+      dateCell(row.employee.employment_date), str(row.employee.job_title ?? '—'),
+      // Years/Months Service anchored to 31 July of the selected year rather
+      // than "today" — a fixed, reproducible snapshot date for this workbook.
+      fml(`ROUND(DATEDIF(${startCell},${julyAnchor},"d")/365.25,1)`, yearsOfService(row.employee.employment_date)),
+      fml(`DATEDIF(${startCell},${julyAnchor},"m")`, monthsOfService(row.employee.employment_date)),
       empGross != null ? num(empGross) : blankCell(),
       empNewGross != null ? num(empNewGross) : blankCell(),
     ];
@@ -356,7 +373,8 @@ function buildHotelSheet(
       cells.push(
         num(row.leave.provision.leave_balance_days),
         num(capped),
-        num(row.leave.provision.daily_rate),
+        // Daily Rate = Gross Salary ÷ this hotel's Leave Provision divisor.
+        fml(`${grossCell}/${leaveDivisor}`, row.leave.provision.daily_rate),
         fml(`${rateCol}${r}*${cappedCol}${r}`, row.leave.provision.provision_value),
       );
     } else {
@@ -376,7 +394,9 @@ function buildHotelSheet(
       const isIncentive = row.bonus.employee.incentive_applicable;
       const halfRate = BONUS_HALF_RATE_HOTEL_CODES.includes(hotel.short_code);
       cells.push(
-        num(row.bonus.monthsOfService),
+        // Mths Service (Dec) anchored to 31 December of the selected year —
+        // the 13th-cheque payout factor's own basis.
+        fml(`DATEDIF(${startCell},${decAnchor},"m")`, row.bonus.monthsOfService),
         fml(`MIN(${monthsCol}${r},12)/12`, +(row.bonus.factor * 100).toFixed(1)),
         isIncentive
           ? num(row.bonus.decBonusRequired)
@@ -389,10 +409,15 @@ function buildHotelSheet(
 
     if (hasSeverance) {
       if (row.severance?.hasSeverance) {
-        const rateCol = colLetter(severanceStart + 4);
+        const basicCol = colLetter(severanceStart);
+        const rateCol = colLetter(severanceStart + 2);
         const monthsAccruedCol = colLetter(severanceStart + 5);
         cells.push(
-          num(row.severance.basic), num(row.severance.yrs), num(row.severance.dailyRate),
+          num(row.severance.basic),
+          // Yrs Service — same 31-July-anchored formula as the Employee
+          // block's own Years Service, referencing the same Start Date cell.
+          fml(`ROUND(DATEDIF(${startCell},${julyAnchor},"d")/365.25,1)`, row.severance.yrs),
+          fml(`${basicCol}${r}/26`, row.severance.dailyRate),
           num(row.severance.daysPerMonth), num(row.severance.monthlyRate), num(row.severance.monthsAccrued),
           fml(`${rateCol}${r}*${monthsAccruedCol}${r}`, row.severance.severanceBalance),
         );
@@ -414,14 +439,6 @@ function buildHotelSheet(
       }
     }
 
-    const total = (row.leave?.provision.provision_value ?? 0) + (row.bonus?.provisionBalance ?? 0) + (row.severance?.provisionBalance ?? 0);
-    const sumRefs = [
-      colLetter(leaveStart + 3) + r,
-      colLetter(bonusStart + 4) + r,
-      ...(hasSeverance ? [colLetter(severanceStart + 6) + r, colLetter(gratuityStart + 2) + r] : []),
-    ];
-    cells.push(fml(`SUM(${sumRefs.join(',')})`, total, true));
-
     for (const b of groupBoundaries) cells[b] = withLeftBorder(cells[b]);
     return cells;
   });
@@ -430,7 +447,6 @@ function buildHotelSheet(
   const sumBonus = combined.reduce((s, r) => s + (r.bonus?.provisionBalance ?? 0), 0);
   const sumSeverance = hasSeverance ? combined.reduce((s, r) => s + (r.severance?.severanceBalance ?? 0), 0) : 0;
   const sumGratuity = hasSeverance ? combined.reduce((s, r) => s + (r.severance?.gratuityBalance ?? 0), 0) : 0;
-  const sumTotal = sumLeave + sumBonus + sumSeverance + sumGratuity;
 
   const firstDataRow = 3;
   const lastDataRow = 2 + combined.length;
@@ -443,7 +459,6 @@ function buildHotelSheet(
     totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totFml(rangeSum(severanceStart + 6), sumSeverance));
     totRow.push(totBlank(), totBlank(), totFml(rangeSum(gratuityStart + 2), sumGratuity));
   }
-  totRow.push(totFml(rangeSum(totalCol), sumTotal));
   for (const b of groupBoundaries) totRow[b] = withLeftBorder(totRow[b]);
 
   const aoa = [groupRow, colHeaderRow, ...dataRows, totRow];
@@ -770,7 +785,7 @@ export async function exportAllProvisions(year: number): Promise<void> {
     const severanceRows = severanceByHotel.get(hotel.id) ?? [];
     if (leaveRows.length === 0 && bonusRows.length === 0 && severanceRows.length === 0) continue;
     const sheetName = (hotel.short_code || hotel.name).replace(/[:\\/?\*\[\]']/g, '').slice(0, 31);
-    XLSX.utils.book_append_sheet(wb, buildHotelSheet(hotel, leaveRows, bonusRows, severanceRows, accrualMonths, latestSalaryMap, newGrossMap, XLSX), sheetName);
+    XLSX.utils.book_append_sheet(wb, buildHotelSheet(hotel, leaveRows, bonusRows, severanceRows, accrualMonths, year, latestSalaryMap, newGrossMap, XLSX), sheetName);
   }
 
   XLSX.writeFile(wb, `Provisions_Overview_${year}.xlsx`);
