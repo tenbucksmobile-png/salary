@@ -1,6 +1,8 @@
 // VIP Premier Report 710 (Payslip Register) parser
 // Format: fixed-width text, employees separated by ====...==== lines
 
+import { nameTokens } from './recon-parsers';
+
 export interface VipEmployee {
   employeeCode: string;
   fullName: string;
@@ -423,10 +425,18 @@ export function parseLeaveBalanceFile(text: string): { employees: LeaveBalanceEn
     let surname = get('surname');
     let firstName = get('firstName');
     if (!surname && !firstName) {
-      const full = get('fullName').trim();
-      const tokens = full.split(/\s+/).filter(Boolean);
-      surname = tokens[0] ?? '';
-      firstName = tokens.slice(1).join(' ');
+      // Combined "Name" columns in these files run Title FirstName Surname
+      // (e.g. "MISS Masego Maxao") — same convention as
+      // reconciliation's splitNameForNewEmployee: strip the salutation,
+      // last token is the surname, everything before it is the first name.
+      const toTitle = (s: string) => s.split(' ').filter(Boolean).map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
+      const tokens = nameTokens(get('fullName'));
+      if (tokens.length === 1) {
+        surname = toTitle(tokens[0]);
+      } else if (tokens.length > 1) {
+        surname = toTitle(tokens[tokens.length - 1]);
+        firstName = toTitle(tokens.slice(0, -1).join(' '));
+      }
     }
     if (!surname) continue;
     employees.push({

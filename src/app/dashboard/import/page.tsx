@@ -291,6 +291,31 @@ export default function ImportPage() {
         (existing ?? []).filter((e: any) => e.employee_code).map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string])
       );
 
+      // A source file can list the same employee code on two different rows
+      // for two different people (a mistyped code, not a real duplicate) —
+      // confirmed live on an NL file (e.g. "MOS001" tagged to both the real
+      // MOS001 owner and an unrelated name with no code of her own at all).
+      // Blindly taking whichever row appears first would silently attach the
+      // wrong person's leave days to the real employee. When a code is
+      // shared by multiple rows, prefer whichever row's own parsed name
+      // actually matches the DB record already on file for that code; only
+      // fall back to "first row wins" when none of them do.
+      const codeGroups = new Map<string, typeof emps>();
+      for (const emp of emps) {
+        const codeKey = emp.employeeCode ? emp.employeeCode.toUpperCase() : '';
+        if (!codeKey) continue;
+        let group = codeGroups.get(codeKey);
+        if (!group) { group = []; codeGroups.set(codeKey, group); }
+        group.push(emp);
+      }
+      const codeWinner = new Map<(typeof emps)[number], string>();
+      for (const [codeKey, rows] of codeGroups) {
+        const employeeId = codeMap.get(codeKey);
+        if (!employeeId) continue;
+        const nameConfirmed = rows.find(r => nameMap.get(`${r.surname.toLowerCase()}|${r.firstName.toLowerCase()}`) === employeeId);
+        codeWinner.set(nameConfirmed ?? rows[0], employeeId);
+      }
+
       // Code matches are authoritative and claimed first; a second file row
       // whose code or name resolves to an employee another row already
       // claimed is left unmatched (flagged) rather than assigned — a single
@@ -300,8 +325,7 @@ export default function ImportPage() {
       // import whenever the source file had a duplicated employee code.
       const seenEmployeeIds = new Set<string>();
       const matched = emps.map(emp => {
-        const codeKey = emp.employeeCode ? emp.employeeCode.toUpperCase() : '';
-        const codeMatchId = codeKey ? codeMap.get(codeKey) ?? null : null;
+        const codeMatchId = codeWinner.get(emp) ?? null;
         if (codeMatchId && !seenEmployeeIds.has(codeMatchId)) {
           seenEmployeeIds.add(codeMatchId);
           return { ...emp, employeeId: codeMatchId };
