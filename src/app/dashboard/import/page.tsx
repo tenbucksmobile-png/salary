@@ -291,20 +291,21 @@ export default function ImportPage() {
         (existing ?? []).filter((e: any) => e.employee_code).map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string])
       );
 
-      // Code matches are authoritative and claimed first; a name-fallback match
-      // that would collide with an employee another row already claims is left
-      // unmatched (flagged) rather than assigned — a single upsert statement
-      // can't touch the same target row twice, which silently failed the whole
-      // batch when two file rows resolved to one employee.
+      // Code matches are authoritative and claimed first; a second file row
+      // whose code or name resolves to an employee another row already
+      // claimed is left unmatched (flagged) rather than assigned — a single
+      // upsert statement can't touch the same target row twice (Postgres
+      // rejects the whole batch with "ON CONFLICT DO UPDATE command cannot
+      // affect row a second time"), which previously failed the entire
+      // import whenever the source file had a duplicated employee code.
       const seenEmployeeIds = new Set<string>();
-      const codeMatches = emps.map(emp => {
+      const matched = emps.map(emp => {
         const codeKey = emp.employeeCode ? emp.employeeCode.toUpperCase() : '';
-        const employeeId = codeKey ? codeMap.get(codeKey) ?? null : null;
-        if (employeeId) seenEmployeeIds.add(employeeId);
-        return { emp, employeeId };
-      });
-      const matched = codeMatches.map(({ emp, employeeId }) => {
-        if (employeeId) return { ...emp, employeeId };
+        const codeMatchId = codeKey ? codeMap.get(codeKey) ?? null : null;
+        if (codeMatchId && !seenEmployeeIds.has(codeMatchId)) {
+          seenEmployeeIds.add(codeMatchId);
+          return { ...emp, employeeId: codeMatchId };
+        }
         const nameKey = `${emp.surname.toLowerCase()}|${emp.firstName.toLowerCase()}`;
         const nameMatchId = nameMap.get(nameKey) ?? null;
         if (nameMatchId && !seenEmployeeIds.has(nameMatchId)) {
