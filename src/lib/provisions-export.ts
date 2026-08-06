@@ -1,0 +1,421 @@
+// Combined Provisions export — one workbook covering Leave, Bonus (incl.
+// Incentive), and Severance across the hotels each segment applies to, plus
+// an Overview sheet aggregating each segment's Book Adjustment figures.
+//
+// Scope (per explicit instruction): Leave and Bonus both cover ILG/IH/ILRB/APA
+// only for this export — Leave's wider all-hotels scope on its own standalone
+// page is deliberately narrowed here to match Bonus/Severance so every hotel
+// tab has at least two applicable segments. Severance stays ILG-only. WCA is
+// omitted entirely (not a per-employee provision).
+//
+// Reuses each source page's own live settings rather than introducing new
+// export-time inputs: the Bonus accrual-months value comes from the same
+// localStorage key the Bonus Provision page reads/writes, and each segment's
+// Book Adjustment figures come from the same *_book_balances tables the
+// standalone pages already persist to.
+
+import { createClient } from '@/lib/supabase/client';
+import {
+  Employee, Hotel, SalaryRecord, LeaveProvision,
+  LeaveProvisionBookBalance, BonusProvisionBookBalance, SeveranceProvisionBookBalance,
+} from '@/types/database';
+import { isBotswana, leaveProvisionCapDays } from '@/lib/payroll-calc';
+import { sortHotels } from '@/lib/utils';
+
+const LEAVE_BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA'];
+const SEVERANCE_HOTEL_CODES = ['ILG'];
+const ACCRUAL_MONTHS_KEY = 'ihg-salary-bonus-accrual-months';
+const DEFAULT_ACCRUAL_MONTHS = 7;
+const SEVERANCE_SENIOR_YEARS = 5;
+
+function yearsOfService(date: string | null): number {
+  if (!date) return 0;
+  const ms = Date.now() - new Date(date).getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24 * 365.25) * 10) / 10;
+}
+
+function monthsOfService(date: string | null): number {
+  if (!date) return 0;
+  const start = new Date(date);
+  const now = new Date();
+  let months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+  if (now.getDate() < start.getDate()) months -= 1;
+  return Math.max(0, months);
+}
+
+function monthsSinceLastPayoutThreshold(date: string | null): number {
+  const totalMonths = monthsOfService(date);
+  const lastThresholdMonths = Math.floor(totalMonths / 60) * 60;
+  return totalMonths - lastThresholdMonths;
+}
+
+// ── Style helpers (match reports-export.ts / excel-export.ts) ────────────────
+
+const NAVY  = '1B3A5C';
+const LGRAY = 'E8ECF0';
+const LBLUE = 'EEF2F7';
+const DBLUE = '2C4A6E';
+
+function hdr(v: string) {
+  return {
+    v, t: 's',
+    s: {
+      font:      { bold: true, color: { rgb: 'FFFFFF' } },
+      fill:      { patternType: 'solid', fgColor: { rgb: NAVY } },
+      alignment: { horizontal: 'center', wrapText: true, vertical: 'center' },
+      border:    { bottom: { style: 'thin', color: { rgb: 'AAAAAA' } } },
+    },
+  };
+}
+
+function sectionHdr(v: string) {
+  return {
+    v, t: 's',
+    s: {
+      font:      { bold: true, sz: 12, color: { rgb: 'FFFFFF' } },
+      fill:      { patternType: 'solid', fgColor: { rgb: DBLUE } },
+      alignment: { horizontal: 'left', vertical: 'center' },
+    },
+  };
+}
+
+function str(v: string, bold = false) {
+  return { v: v || '—', t: 's', s: { alignment: { horizontal: 'left' }, ...(bold ? { font: { bold: true } } : {}) } };
+}
+
+function num(v: number, bold = false) {
+  return {
+    v, t: 'n', z: '#,##0.00',
+    s: { alignment: { horizontal: 'right' }, ...(bold ? { font: { bold: true } } : {}) },
+  };
+}
+
+function blankCell() {
+  return { v: '—', t: 's', s: { alignment: { horizontal: 'center' }, font: { color: { rgb: 'CCCCCC' } } } };
+}
+
+function tot(v: number | string, isNum = true) {
+  const base = { fill: { patternType: 'solid', fgColor: { rgb: LGRAY } }, font: { bold: true } };
+  if (isNum) return { v: v as number, t: 'n', z: '#,##0.00', s: { ...base, alignment: { horizontal: 'right' } } };
+  return { v: v as string, t: 's', s: { ...base, alignment: { horizontal: 'left' } } };
+}
+
+function totBlank() {
+  return { v: '', t: 's', s: { fill: { patternType: 'solid', fgColor: { rgb: LGRAY } } } };
+}
+
+function ovHdr(v: string) {
+  return {
+    v, t: 's',
+    s: {
+      font:      { bold: true, color: { rgb: '444444' } },
+      fill:      { patternType: 'solid', fgColor: { rgb: LBLUE } },
+      alignment: { horizontal: 'center', wrapText: true, vertical: 'center' },
+      border:    { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } } },
+    },
+  };
+}
+
+function adjCell(v: number | null) {
+  if (v === null) return blankCell();
+  const color = v === 0 ? '666666' : v < 0 ? 'C0392B' : 'B7791F';
+  return { v, t: 'n', z: '#,##0.00', s: { alignment: { horizontal: 'right' }, font: { bold: true, color: { rgb: color } } } };
+}
+
+// ── Data types ─────────────────────────────────────────────────────────────
+
+interface LeaveRow { employee: Employee; provision: LeaveProvision; hotel: Hotel }
+interface BonusRow { employee: Employee; hotel: Hotel; gross: number; bonusProvision: number; incentive: number; provisionBalance: number }
+interface SeveranceRow {
+  employee: Employee; hotel: Hotel; basic: number; yrs: number; dailyRate: number;
+  daysPerMonth: number; monthlyRate: number; monthsAccrued: number; provisionBalance: number;
+}
+
+interface HotelAdjustment { cost: number; book: number; adjustment: number }
+
+// ── Sheet builders ─────────────────────────────────────────────────────────
+
+function buildHotelSheet(
+  hotel: Hotel,
+  leaveRows: LeaveRow[],
+  bonusRows: BonusRow[],
+  severanceRows: SeveranceRow[],
+  accrualMonths: number,
+  XLSX: any,
+): any {
+  const bw = isBotswana(hotel.country);
+  const sym = bw ? 'P' : 'R';
+  const aoa: any[][] = [];
+
+  // ── Leave Provision section ────────────────────────────────────────────
+  aoa.push([sectionHdr(`LEAVE PROVISION (${sym})`)]);
+  aoa.push([
+    hdr('Emp Code'), hdr('Surname'), hdr('First Name'), hdr('Grade'),
+    hdr('Actual Leave Balance'), hdr('Capped Leave Balance'), hdr('Daily Rate'), hdr('Provision Value'),
+  ]);
+  let leaveTotal = 0;
+  for (const r of leaveRows) {
+    leaveTotal += r.provision.provision_value;
+    aoa.push([
+      str(r.employee.employee_code ?? '—'), str(r.employee.surname), str(r.employee.first_name),
+      str(r.employee.grade_label ?? 'Unclassified'),
+      num(r.provision.leave_balance_days), num(Math.min(r.provision.leave_balance_days, leaveProvisionCapDays(hotel.short_code))),
+      num(r.provision.daily_rate), num(r.provision.provision_value),
+    ]);
+  }
+  aoa.push([tot(`Total (${leaveRows.length} employees)`, false), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(leaveTotal)]);
+  aoa.push([]);
+
+  // ── Bonus Provision section ────────────────────────────────────────────
+  aoa.push([sectionHdr(`BONUS PROVISION incl. INCENTIVE (${sym}) — Accrual Months: ${accrualMonths}`)]);
+  aoa.push([
+    hdr('Emp Code'), hdr('Surname'), hdr('First Name'), hdr('Grade'),
+    hdr('Gross Salary'), hdr('Bonus Provision'), hdr('Incentive'), hdr('Provision Balance'),
+  ]);
+  let bonusTotal = 0;
+  for (const r of bonusRows) {
+    bonusTotal += r.provisionBalance;
+    aoa.push([
+      str(r.employee.employee_code ?? '—'), str(r.employee.surname), str(r.employee.first_name),
+      str(r.employee.grade_label ?? 'Unclassified'),
+      num(r.gross), num(r.bonusProvision), num(r.incentive), num(r.provisionBalance),
+    ]);
+  }
+  aoa.push([tot(`Total (${bonusRows.length} employees)`, false), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(bonusTotal)]);
+
+  // ── Severance Provision section (ILG only) ─────────────────────────────
+  if (severanceRows.length > 0 || SEVERANCE_HOTEL_CODES.includes(hotel.short_code)) {
+    aoa.push([]);
+    aoa.push([sectionHdr(`SEVERANCE PROVISION (${sym})`)]);
+    aoa.push([
+      hdr('Emp Code'), hdr('Surname'), hdr('First Name'), hdr('Grade'),
+      hdr('Basic Salary'), hdr('Yrs Service'), hdr('Daily Rate'), hdr('Days/Month'),
+      hdr('Monthly Rate'), hdr('Months Accrued'), hdr('Provision Balance'),
+    ]);
+    let severanceTotal = 0;
+    for (const r of severanceRows) {
+      severanceTotal += r.provisionBalance;
+      aoa.push([
+        str(r.employee.employee_code ?? '—'), str(r.employee.surname), str(r.employee.first_name),
+        str(r.employee.grade_label ?? 'Unclassified'),
+        num(r.basic), num(r.yrs), num(r.dailyRate), num(r.daysPerMonth),
+        num(r.monthlyRate), num(r.monthsAccrued), num(r.provisionBalance),
+      ]);
+    }
+    aoa.push([
+      tot(`Total (${severanceRows.length} employees)`, false), totBlank(), totBlank(), totBlank(),
+      totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(severanceTotal),
+    ]);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [
+    { wch: 12 }, { wch: 18 }, { wch: 16 }, { wch: 14 },
+    { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 },
+    { wch: 14 }, { wch: 14 }, { wch: 16 },
+  ];
+  ws['!merges'] = (ws['!merges'] ?? []);
+  // Merge each section-header row across the widest column count used (11)
+  aoa.forEach((row, i) => {
+    if (row.length === 1 && row[0]?.s?.fill?.fgColor?.rgb === DBLUE) {
+      ws['!merges'].push({ s: { r: i, c: 0 }, e: { r: i, c: 10 } });
+    }
+  });
+  return ws;
+}
+
+function buildOverviewSheet(
+  hotels: Hotel[],
+  leaveAdj: Map<string, HotelAdjustment>,
+  bonusAdj: Map<string, HotelAdjustment>,
+  severanceAdj: Map<string, HotelAdjustment>,
+  XLSX: any,
+): any {
+  const headers = [
+    ovHdr('Hotel'), ovHdr('Currency'),
+    ovHdr('Leave — Required'), ovHdr('Leave — On Books'), ovHdr('Leave — Adjustment'),
+    ovHdr('Bonus — Required'), ovHdr('Bonus — On Books'), ovHdr('Bonus — Adjustment'),
+    ovHdr('Severance — Required'), ovHdr('Severance — On Books'), ovHdr('Severance — Adjustment'),
+    ovHdr('Total — Required'), ovHdr('Total — On Books'), ovHdr('Total — Adjustment'),
+  ];
+
+  const rows = hotels.map(h => {
+    const bw = isBotswana(h.country);
+    const l = leaveAdj.get(h.id);
+    const b = bonusAdj.get(h.id);
+    const s = severanceAdj.get(h.id);
+
+    const totalCost = (l?.cost ?? 0) + (b?.cost ?? 0) + (s?.cost ?? 0);
+    const totalBook = (l?.book ?? 0) + (b?.book ?? 0) + (s?.book ?? 0);
+    const totalAdjustment = Math.floor((totalCost - totalBook) / 100) * 100;
+
+    return [
+      str(h.name, true),
+      { v: bw ? 'BWP (P)' : 'ZAR (R)', t: 's', s: { alignment: { horizontal: 'center' } } },
+      l ? num(l.cost) : blankCell(), l ? num(l.book) : blankCell(), l ? adjCell(l.adjustment) : blankCell(),
+      b ? num(b.cost) : blankCell(), b ? num(b.book) : blankCell(), b ? adjCell(b.adjustment) : blankCell(),
+      s ? num(s.cost) : blankCell(), s ? num(s.book) : blankCell(), s ? adjCell(s.adjustment) : blankCell(),
+      num(totalCost, true), num(totalBook, true), adjCell(totalAdjustment),
+    ];
+  });
+
+  const aoa = [[sectionHdr('PROVISIONS OVERVIEW')], [], headers, ...rows];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 13 } }];
+  ws['!cols'] = [
+    { wch: 26 }, { wch: 12 },
+    { wch: 15 }, { wch: 15 }, { wch: 15 },
+    { wch: 15 }, { wch: 15 }, { wch: 15 },
+    { wch: 15 }, { wch: 15 }, { wch: 15 },
+    { wch: 15 }, { wch: 15 }, { wch: 15 },
+  ];
+  ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+  return ws;
+}
+
+// ── Public export function ────────────────────────────────────────────────
+
+export async function exportAllProvisions(year: number): Promise<void> {
+  const sb = createClient();
+  const XLSX = (await import('xlsx-js-style')).default ?? (await import('xlsx-js-style'));
+
+  const { data: h } = await sb.from('hotels').select('*');
+  const allHotels = sortHotels((h ?? []) as Hotel[]);
+  const exportHotels = allHotels.filter(hh => LEAVE_BONUS_HOTEL_CODES.includes(hh.short_code));
+  const hotelIds = exportHotels.map(hh => hh.id);
+  const hotelMap = new Map(exportHotels.map(hh => [hh.id, hh]));
+
+  let accrualMonths = DEFAULT_ACCRUAL_MONTHS;
+  try {
+    const saved = localStorage.getItem(ACCRUAL_MONTHS_KEY);
+    if (saved) {
+      const n = parseFloat(saved);
+      if (!isNaN(n) && n > 0) accrualMonths = n;
+    }
+  } catch {}
+
+  // Leave: employees unfiltered by status (matches the Leave Provision page)
+  const [{ data: leaveEmp }, { data: provisions }, { data: leaveBook }] = await Promise.all([
+    sb.from('employees').select('*').in('hotel_id', hotelIds),
+    sb.from('leave_provisions').select('*').in('hotel_id', hotelIds).eq('period_year', year),
+    sb.from('leave_provision_book_balances').select('*').in('hotel_id', hotelIds).eq('period_year', year),
+  ]);
+  const leaveEmpMap = new Map(((leaveEmp ?? []) as Employee[]).map(e => [e.id, e]));
+
+  // Bonus: active employees only
+  const [{ data: bonusEmp }, { data: bonusBook }] = await Promise.all([
+    sb.from('employees').select('*').in('hotel_id', hotelIds).eq('status', 'active'),
+    sb.from('bonus_provision_book_balances').select('*').in('hotel_id', hotelIds).eq('period_year', year),
+  ]);
+  const bonusEmployees = (bonusEmp ?? []) as Employee[];
+
+  // Severance: active + severance_applicable, ILG only
+  const severanceHotelIds = exportHotels.filter(hh => SEVERANCE_HOTEL_CODES.includes(hh.short_code)).map(hh => hh.id);
+  const [{ data: severanceEmp }, { data: severanceBook }] = await Promise.all([
+    severanceHotelIds.length
+      ? sb.from('employees').select('*').in('hotel_id', severanceHotelIds).eq('status', 'active').eq('severance_applicable', true)
+      : Promise.resolve({ data: [] as Employee[] }),
+    severanceHotelIds.length
+      ? sb.from('severance_provision_book_balances').select('*').in('hotel_id', severanceHotelIds).eq('period_year', year)
+      : Promise.resolve({ data: [] as SeveranceProvisionBookBalance[] }),
+  ]);
+  const severanceEmployees = (severanceEmp ?? []) as Employee[];
+
+  // Salary records for the union of every employee id referenced above
+  const empIdSet = new Set<string>([
+    ...bonusEmployees.map(e => e.id),
+    ...severanceEmployees.map(e => e.id),
+  ]);
+  const { data: sal } = empIdSet.size
+    ? await sb.from('salary_records').select('*').in('employee_id', [...empIdSet])
+    : { data: [] as SalaryRecord[] };
+  const salaryRecords = (sal ?? []) as SalaryRecord[];
+  const latestSalaryMap = new Map<string, SalaryRecord>();
+  for (const s of salaryRecords) {
+    const ex = latestSalaryMap.get(s.employee_id);
+    if (!ex || s.period_year > ex.period_year || (s.period_year === ex.period_year && s.period_month > ex.period_month)) {
+      latestSalaryMap.set(s.employee_id, s);
+    }
+  }
+
+  // ── Build per-hotel row sets ────────────────────────────────────────────
+  const leaveByHotel = new Map<string, LeaveRow[]>();
+  for (const p of (provisions ?? []) as LeaveProvision[]) {
+    const employee = leaveEmpMap.get(p.employee_id);
+    const hotel = hotelMap.get(p.hotel_id);
+    if (!employee || !hotel) continue;
+    if (!leaveByHotel.has(hotel.id)) leaveByHotel.set(hotel.id, []);
+    leaveByHotel.get(hotel.id)!.push({ employee, provision: p, hotel });
+  }
+  for (const rows of leaveByHotel.values()) rows.sort((a, b) => a.employee.surname.localeCompare(b.employee.surname));
+
+  const bonusByHotel = new Map<string, BonusRow[]>();
+  for (const employee of bonusEmployees) {
+    const hotel = hotelMap.get(employee.hotel_id);
+    const salary = latestSalaryMap.get(employee.id);
+    if (!hotel || !salary) continue;
+    const isAno = employee.grade_label === 'ANO';
+    const bonusProvision = isAno ? 0 : (salary.bonus_provision ?? 0);
+    const incentive = isAno ? 0 : (salary.incentive ?? 0);
+    const provisionBalance = Math.round((bonusProvision + incentive) * accrualMonths * 100) / 100;
+    if (!bonusByHotel.has(hotel.id)) bonusByHotel.set(hotel.id, []);
+    bonusByHotel.get(hotel.id)!.push({
+      employee, hotel, gross: salary.total_earnings ?? 0, bonusProvision, incentive, provisionBalance,
+    });
+  }
+  for (const rows of bonusByHotel.values()) rows.sort((a, b) => a.employee.surname.localeCompare(b.employee.surname));
+
+  const severanceByHotel = new Map<string, SeveranceRow[]>();
+  for (const employee of severanceEmployees) {
+    const hotel = hotelMap.get(employee.hotel_id);
+    const salary = latestSalaryMap.get(employee.id);
+    if (!hotel || !salary) continue;
+    const yrs = yearsOfService(employee.employment_date);
+    const daysPerMonth = yrs >= SEVERANCE_SENIOR_YEARS ? 2 : 1;
+    const dailyRate = Math.round(((salary.basic_salary ?? 0) / 26) * 100) / 100;
+    const monthsAccrued = monthsSinceLastPayoutThreshold(employee.employment_date);
+    const provisionBalance = Math.round((salary.severance ?? 0) * monthsAccrued * 100) / 100;
+    if (!severanceByHotel.has(hotel.id)) severanceByHotel.set(hotel.id, []);
+    severanceByHotel.get(hotel.id)!.push({
+      employee, hotel, basic: salary.basic_salary ?? 0, yrs, dailyRate, daysPerMonth,
+      monthlyRate: salary.severance ?? 0, monthsAccrued, provisionBalance,
+    });
+  }
+  for (const rows of severanceByHotel.values()) rows.sort((a, b) => a.employee.surname.localeCompare(b.employee.surname));
+
+  // ── Book Adjustment aggregates per hotel (Required / On Books / Adjustment) ─
+  const leaveBookMap = new Map((leaveBook ?? []).map((b: LeaveProvisionBookBalance) => [b.hotel_id, b]));
+  const bonusBookMap = new Map((bonusBook ?? []).map((b: BonusProvisionBookBalance) => [b.hotel_id, b]));
+  const severanceBookMap = new Map((severanceBook ?? []).map((b: SeveranceProvisionBookBalance) => [b.hotel_id, b]));
+
+  function adjustmentsFor(byHotel: Map<string, { provisionBalance: number }[]>, bookMap: Map<string, { book_provision: number }>): Map<string, HotelAdjustment> {
+    const out = new Map<string, HotelAdjustment>();
+    for (const [hotelId, rows] of byHotel) {
+      const cost = rows.reduce((sum, r) => sum + r.provisionBalance, 0);
+      const book = bookMap.get(hotelId)?.book_provision ?? 0;
+      out.set(hotelId, { cost, book, adjustment: Math.floor((cost - book) / 100) * 100 });
+    }
+    return out;
+  }
+  const leaveAdj = adjustmentsFor(
+    new Map([...leaveByHotel].map(([id, rows]) => [id, rows.map(r => ({ provisionBalance: r.provision.provision_value }))])),
+    leaveBookMap,
+  );
+  const bonusAdj = adjustmentsFor(bonusByHotel, bonusBookMap);
+  const severanceAdj = adjustmentsFor(severanceByHotel, severanceBookMap);
+
+  // ── Build workbook ──────────────────────────────────────────────────────
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, buildOverviewSheet(exportHotels, leaveAdj, bonusAdj, severanceAdj, XLSX), 'Overview');
+
+  for (const hotel of exportHotels) {
+    const leaveRows = leaveByHotel.get(hotel.id) ?? [];
+    const bonusRows = bonusByHotel.get(hotel.id) ?? [];
+    const severanceRows = severanceByHotel.get(hotel.id) ?? [];
+    if (leaveRows.length === 0 && bonusRows.length === 0 && severanceRows.length === 0) continue;
+    const sheetName = (hotel.short_code || hotel.name).replace(/[:\\/?\*\[\]']/g, '').slice(0, 31);
+    XLSX.utils.book_append_sheet(wb, buildHotelSheet(hotel, leaveRows, bonusRows, severanceRows, accrualMonths, XLSX), sheetName);
+  }
+
+  XLSX.writeFile(wb, `Provisions_Overview_${year}.xlsx`);
+}

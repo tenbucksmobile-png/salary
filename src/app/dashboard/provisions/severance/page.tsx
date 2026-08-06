@@ -6,7 +6,8 @@ import { Employee, Hotel, SalaryRecord, SeveranceProvisionBookBalance } from '@/
 import { fmtCurrency, sortHotels } from '@/lib/utils';
 import { calculateBurden, isBotswana } from '@/lib/payroll-calc';
 import { exportReport, type ReportSheet } from '@/lib/reports-export';
-import { RefreshCw, Download, HandCoins } from 'lucide-react';
+import { exportAllProvisions } from '@/lib/provisions-export';
+import { RefreshCw, Download, HandCoins, FileSpreadsheet } from 'lucide-react';
 
 const HOTEL_FILTER_KEY = 'ihg-salary-severance-hotel';
 const ALL = 'ALL';
@@ -55,6 +56,7 @@ export default function SeveranceProvisionPage() {
   const [loading, setLoading] = useState(true);
   const [recalculating, setRecalculating] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportingAll, setExportingAll] = useState(false);
 
   async function load() {
     const [{ data: h }, meRes] = await Promise.all([
@@ -333,6 +335,15 @@ export default function SeveranceProvisionPage() {
     }
   }
 
+  async function handleExportAll() {
+    setExportingAll(true);
+    try {
+      await exportAllProvisions(year);
+    } finally {
+      setExportingAll(false);
+    }
+  }
+
   if (loading) {
     return <div className="p-8 text-sm text-muted-foreground">Loading…</div>;
   }
@@ -386,6 +397,15 @@ export default function SeveranceProvisionPage() {
         >
           <Download className="h-4 w-4" />
           {exporting ? 'Exporting…' : 'Export to Excel'}
+        </button>
+        <button
+          onClick={handleExportAll}
+          disabled={exportingAll}
+          className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-colors"
+          title="Combined Leave, Bonus & Severance provisions across all applicable hotels"
+        >
+          <FileSpreadsheet className="h-4 w-4" />
+          {exportingAll ? 'Exporting…' : 'Export All Provisions'}
         </button>
       </div>
 
