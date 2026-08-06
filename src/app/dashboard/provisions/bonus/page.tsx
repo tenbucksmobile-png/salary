@@ -16,6 +16,11 @@ const DEFAULT_ACCRUAL_MONTHS = 7; // monthly total accrued to end July
 
 const BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA', 'CSL', 'NL', 'CFEM'];
 
+// CSL/NL/CFEM's Bonus Required (Dec) is halved relative to the standard
+// New Gross Salary × factor formula — per explicit instruction, excludes
+// incentive-scheme employees (already unaffected by the base formula too).
+const HALF_RATE_HOTEL_CODES = ['CSL', 'NL', 'CFEM'];
+
 function yearsOfService(date: string | null): number {
   if (!date) return 0;
   const ms = Date.now() - new Date(date).getTime();
@@ -139,6 +144,7 @@ export default function BonusProvisionPage() {
     return employees
       .map(employee => {
         const salary = latestSalaryMap.get(employee.id);
+        const hotel = hotelMap.get(employee.hotel_id);
         // ANO = an unfilled/vacant position, not a real employee — never
         // carries a bonus or incentive provision regardless of what's on
         // its placeholder salary record.
@@ -154,11 +160,13 @@ export default function BonusProvisionPage() {
         // 13th-cheque (non-incentive) employees: months of service projected
         // to 31 Dec of the selected year, capped at 12, drives a payout
         // factor (months/12). Under 6 months' service this cycle forfeits
-        // the bonus entirely. Dec Bonus Required = New Gross Salary × factor.
+        // the bonus entirely. Dec Bonus Required = New Gross Salary × factor,
+        // halved for CSL/NL/CFEM.
         const monthsOfService = isAno ? 0 : monthsOfServiceAtDec(employee.employment_date, year);
         const factor = Math.min(monthsOfService, 12) / 12;
+        const bonusRateMultiplier = hotel && HALF_RATE_HOTEL_CODES.includes(hotel.short_code) ? 0.5 : 1;
         const decBonusRequired = (!isAno && !employee.incentive_applicable && monthsOfService >= 6)
-          ? Math.round(newGross * factor * 100) / 100
+          ? Math.round(newGross * factor * bonusRateMultiplier * 100) / 100
           : 0;
 
         // Incentive-scheme employees are unaffected by the above — their
@@ -176,7 +184,7 @@ export default function BonusProvisionPage() {
             : Math.round((decBonusRequired / 11) * accrualMonths * 100) / 100;
 
         return {
-          employee, salary, hotel: hotelMap.get(employee.hotel_id), isAno,
+          employee, salary, hotel, isAno,
           gross, newGross, monthsOfService, factor, decBonusRequired, incentiveMonthly, provisionBalance,
         };
       })
@@ -386,7 +394,7 @@ export default function BonusProvisionPage() {
           <h1 className="text-2xl font-bold text-foreground">Bonus Provision</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          13th-cheque bonus provision — months of service projected to 31 Dec {year} (capped at 12) drives a payout factor (months ÷ 12); under 6 months forfeits the bonus entirely. Bonus Required (Dec) = New Gross Salary × factor, where New Gross Salary is the post-increase figure from Salary Review (falls back to current Gross Salary when no increase applies). Accrual to the selected month spreads that Dec figure across the 11-month Jan–Nov accrual window. Employees ticked for incentive bonus on the Employee page use their Incentive rate instead (unaffected by New Gross Salary). ANO (vacant) positions always show "—". ILG, IH, ILRB, APA, CSL, NL and CFEM.
+          13th-cheque bonus provision — months of service projected to 31 Dec {year} (capped at 12) drives a payout factor (months ÷ 12); under 6 months forfeits the bonus entirely. Bonus Required (Dec) = New Gross Salary × factor, where New Gross Salary is the post-increase figure from Salary Review (falls back to current Gross Salary when no increase applies) — halved for CSL, NL and CFEM. Accrual to the selected month spreads that Dec figure across the 11-month Jan–Nov accrual window. Employees ticked for incentive bonus on the Employee page use their Incentive rate instead (unaffected by New Gross Salary or the CSL/NL/CFEM halving). ANO (vacant) positions always show "—". ILG, IH, ILRB, APA, CSL, NL and CFEM.
         </p>
       </div>
 

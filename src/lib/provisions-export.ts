@@ -23,6 +23,11 @@ import { fetchScenarioLineMap } from '@/lib/scenario-lines';
 
 const LEAVE_BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA', 'CSL', 'NL', 'CFEM'];
 const SEVERANCE_HOTEL_CODES = ['ILG'];
+// CSL/NL/CFEM's Bonus Required (Dec) is halved relative to the standard New
+// Gross Salary × factor formula — per explicit instruction, mirrors the
+// standalone Bonus Provision page's own HALF_RATE_HOTEL_CODES. Excludes
+// incentive-scheme employees (already unaffected by the base formula too).
+const BONUS_HALF_RATE_HOTEL_CODES = ['CSL', 'NL', 'CFEM'];
 const ACCRUAL_MONTHS_KEY = 'ihg-salary-bonus-accrual-months';
 const DEFAULT_ACCRUAL_MONTHS = 7;
 const SEVERANCE_SENIOR_YEARS = 5;
@@ -327,17 +332,20 @@ function buildHotelSheet(
       // Bonus Required (Dec) reads directly from the Employee block's New
       // Gross Salary column via formula, not a duplicated Gross Salary cell
       // in this segment — except incentive-scheme employees, who are always
-      // 0 here (unaffected, they use their Incentive rate instead).
+      // 0 here (unaffected, they use their Incentive rate instead). CSL/NL/
+      // CFEM's formula carries an explicit ×0.5 so it stays correct if the
+      // user edits an upstream cell and Excel recalculates.
       const monthsCol = colLetter(bonusStart);
       const payoutFactorCol = colLetter(bonusStart + 1);
       const newGrossCol = colLetter(employeeHeaders.length - 1);
       const isIncentive = row.bonus.employee.incentive_applicable;
+      const halfRate = BONUS_HALF_RATE_HOTEL_CODES.includes(hotel.short_code);
       cells.push(
         num(row.bonus.monthsOfService),
         fml(`MIN(${monthsCol}${r},12)/12`, +(row.bonus.factor * 100).toFixed(1)),
         isIncentive
           ? num(row.bonus.decBonusRequired)
-          : fml(`${newGrossCol}${r}*${payoutFactorCol}${r}`, row.bonus.decBonusRequired),
+          : fml(`${newGrossCol}${r}*${payoutFactorCol}${r}${halfRate ? '*0.5' : ''}`, row.bonus.decBonusRequired),
         num(row.bonus.incentive), num(row.bonus.provisionBalance),
       );
     } else {
@@ -566,11 +574,13 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
     const monthsOfService = monthsOfServiceAtDec(employee.employment_date, year);
     const factor = Math.min(monthsOfService, 12) / 12;
     // Bonus Required (Dec) uses the post-increase New Gross Salary (falls
-    // back to current Gross Salary when no increase applies) — incentive-
-    // scheme employees are unaffected, they use their incentive rate instead.
+    // back to current Gross Salary when no increase applies), halved for
+    // CSL/NL/CFEM — incentive-scheme employees are unaffected, they use
+    // their incentive rate instead.
     const effectiveGross = newGrossMap.get(employee.id) ?? gross;
+    const bonusRateMultiplier = BONUS_HALF_RATE_HOTEL_CODES.includes(hotel.short_code) ? 0.5 : 1;
     const decBonusRequired = (!employee.incentive_applicable && monthsOfService >= 6)
-      ? Math.round(effectiveGross * factor * 100) / 100
+      ? Math.round(effectiveGross * factor * bonusRateMultiplier * 100) / 100
       : 0;
     const incentive = employee.incentive_applicable ? (salary.incentive ?? 0) : 0;
     const provisionBalance = employee.incentive_applicable
