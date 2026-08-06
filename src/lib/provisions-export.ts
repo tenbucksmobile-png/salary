@@ -273,11 +273,21 @@ function buildOverviewSheet(
   return ws;
 }
 
-// ── Public export function ────────────────────────────────────────────────
+// ── Shared data fetch (used by both the on-screen summary and the export) ──
 
-export async function exportAllProvisions(year: number): Promise<void> {
+interface ProvisionsData {
+  exportHotels: Hotel[];
+  leaveByHotel: Map<string, LeaveRow[]>;
+  bonusByHotel: Map<string, BonusRow[]>;
+  severanceByHotel: Map<string, SeveranceRow[]>;
+  leaveAdj: Map<string, HotelAdjustment>;
+  bonusAdj: Map<string, HotelAdjustment>;
+  severanceAdj: Map<string, HotelAdjustment>;
+  accrualMonths: number;
+}
+
+async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   const sb = createClient();
-  const XLSX = (await import('xlsx-js-style')).default ?? (await import('xlsx-js-style'));
 
   const { data: h } = await sb.from('hotels').select('*');
   const allHotels = sortHotels((h ?? []) as Hotel[]);
@@ -404,7 +414,44 @@ export async function exportAllProvisions(year: number): Promise<void> {
   const bonusAdj = adjustmentsFor(bonusByHotel, bonusBookMap);
   const severanceAdj = adjustmentsFor(severanceByHotel, severanceBookMap);
 
-  // ── Build workbook ──────────────────────────────────────────────────────
+  return { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths };
+}
+
+// ── Public: on-screen summary (Overview page) ───────────────────────────────
+
+export interface ProvisionsSummaryRow {
+  hotel: Hotel;
+  leave: HotelAdjustment | null;
+  bonus: HotelAdjustment | null;
+  severance: HotelAdjustment | null;
+  totalCost: number;
+  totalBook: number;
+  totalAdjustment: number;
+}
+
+export async function loadProvisionsSummary(year: number): Promise<ProvisionsSummaryRow[]> {
+  const d = await fetchProvisionsData(year);
+  return d.exportHotels.map(hotel => {
+    const leave = d.leaveAdj.get(hotel.id) ?? null;
+    const bonus = d.bonusAdj.get(hotel.id) ?? null;
+    const severance = d.severanceAdj.get(hotel.id) ?? null;
+    const totalCost = (leave?.cost ?? 0) + (bonus?.cost ?? 0) + (severance?.cost ?? 0);
+    const totalBook = (leave?.book ?? 0) + (bonus?.book ?? 0) + (severance?.book ?? 0);
+    const totalAdjustment = Math.floor((totalCost - totalBook) / 100) * 100;
+    return { hotel, leave, bonus, severance, totalCost, totalBook, totalAdjustment };
+  });
+}
+
+// ── Public: export workbook ─────────────────────────────────────────────────
+
+export async function exportAllProvisions(year: number): Promise<void> {
+  const [d, XLSXmod] = await Promise.all([
+    fetchProvisionsData(year),
+    import('xlsx-js-style'),
+  ]);
+  const XLSX = XLSXmod.default ?? XLSXmod;
+  const { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths } = d;
+
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildOverviewSheet(exportHotels, leaveAdj, bonusAdj, severanceAdj, XLSX), 'Overview');
 
