@@ -49,6 +49,18 @@ function monthsSinceLastPayoutThreshold(date: string | null): number {
   return totalMonths - lastThresholdMonths;
 }
 
+// Whole calendar months of service projected forward to 31 Dec of the
+// selected bonus year — the 13th-cheque payout factor's basis. Mirrors the
+// Bonus Provision page's own copy of this helper.
+function monthsOfServiceAtDec(employmentDate: string | null, year: number): number {
+  if (!employmentDate) return 0;
+  const start = new Date(employmentDate);
+  const ref = new Date(year, 11, 31);
+  let months = (ref.getFullYear() - start.getFullYear()) * 12 + (ref.getMonth() - start.getMonth());
+  if (ref.getDate() < start.getDate()) months -= 1;
+  return Math.max(0, months);
+}
+
 // ── Style helpers (match reports-export.ts / excel-export.ts) ────────────────
 
 const NAVY  = '1B3A5C';
@@ -150,7 +162,10 @@ function withLeftBorder(c: any) {
 // ── Data types ─────────────────────────────────────────────────────────────
 
 interface LeaveRow { employee: Employee; provision: LeaveProvision; hotel: Hotel }
-interface BonusRow { employee: Employee; hotel: Hotel; gross: number; bonusProvision: number; incentive: number; provisionBalance: number }
+interface BonusRow {
+  employee: Employee; hotel: Hotel; gross: number; monthsOfService: number; factor: number;
+  decBonusRequired: number; incentive: number; provisionBalance: number;
+}
 interface SeveranceRow {
   employee: Employee; hotel: Hotel; basic: number; yrs: number; dailyRate: number;
   daysPerMonth: number; monthlyRate: number; monthsAccrued: number; provisionBalance: number;
@@ -204,7 +219,7 @@ function buildHotelSheet(
   const groups: { label: string; headers: string[] }[] = [
     { label: 'EMPLOYEE', headers: ['Emp Code', 'Surname', 'First Name'] },
     { label: `LEAVE PROVISION (${sym})`, headers: ['Actual Leave Balance', 'Capped Leave Balance', 'Daily Rate', 'Provision Value'] },
-    { label: `BONUS PROVISION incl. INCENTIVE (${sym}) — Accrual Months: ${accrualMonths}`, headers: ['Gross Salary', 'Bonus Provision', 'Incentive', 'Provision Balance'] },
+    { label: `BONUS PROVISION incl. INCENTIVE (${sym}) — Accrual Months: ${accrualMonths}`, headers: ['Gross Salary', 'Mths Service (Dec)', 'Payout Factor', 'Bonus Required (Dec)', 'Incentive', 'Provision Balance'] },
   ];
   if (hasSeverance) {
     groups.push({ label: `SEVERANCE PROVISION (${sym})`, headers: ['Basic Salary', 'Yrs Service', 'Daily Rate', 'Days/Month', 'Monthly Rate', 'Months Accrued', 'Provision Balance'] });
@@ -247,9 +262,12 @@ function buildHotelSheet(
     }
 
     if (row.bonus) {
-      cells.push(num(row.bonus.gross), num(row.bonus.bonusProvision), num(row.bonus.incentive), num(row.bonus.provisionBalance));
+      cells.push(
+        num(row.bonus.gross), num(row.bonus.monthsOfService), num(+(row.bonus.factor * 100).toFixed(1)),
+        num(row.bonus.decBonusRequired), num(row.bonus.incentive), num(row.bonus.provisionBalance),
+      );
     } else {
-      cells.push(blankCell(), blankCell(), blankCell(), blankCell());
+      cells.push(blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell());
     }
 
     if (hasSeverance) {
@@ -278,7 +296,7 @@ function buildHotelSheet(
 
   const totRow: any[] = [tot(`Total (${combined.length} employees)`, false), totBlank(), totBlank()];
   totRow.push(totBlank(), totBlank(), totBlank(), tot(sumLeave));
-  totRow.push(totBlank(), totBlank(), totBlank(), tot(sumBonus));
+  totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(sumBonus));
   if (hasSeverance) {
     totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), tot(sumSeverance));
   }
@@ -423,18 +441,30 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   }
   for (const rows of leaveByHotel.values()) rows.sort((a, b) => a.employee.surname.localeCompare(b.employee.surname));
 
+  // Non-incentive employees: months of service projected to 31 Dec of `year`
+  // (capped at 12) drives a payout factor (months/12); under 6 months
+  // forfeits the bonus entirely. Dec Bonus Required = Gross × factor, then
+  // spread across the 11-month Jan–Nov accrual window. Incentive-scheme
+  // employees are unaffected — their monthly rate × accrualMonths, as before.
   const bonusByHotel = new Map<string, BonusRow[]>();
   for (const employee of bonusEmployees) {
     if (employee.grade_label === 'ANO') continue;
     const hotel = hotelMap.get(employee.hotel_id);
     const salary = latestSalaryMap.get(employee.id);
     if (!hotel || !salary) continue;
-    const bonusProvision = salary.bonus_provision ?? 0;
-    const incentive = salary.incentive ?? 0;
-    const provisionBalance = Math.round((bonusProvision + incentive) * accrualMonths * 100) / 100;
+    const gross = salary.total_earnings ?? 0;
+    const monthsOfService = monthsOfServiceAtDec(employee.employment_date, year);
+    const factor = Math.min(monthsOfService, 12) / 12;
+    const decBonusRequired = (!employee.incentive_applicable && monthsOfService >= 6)
+      ? Math.round(gross * factor * 100) / 100
+      : 0;
+    const incentive = employee.incentive_applicable ? (salary.incentive ?? 0) : 0;
+    const provisionBalance = employee.incentive_applicable
+      ? Math.round(incentive * accrualMonths * 100) / 100
+      : Math.round((decBonusRequired / 11) * accrualMonths * 100) / 100;
     if (!bonusByHotel.has(hotel.id)) bonusByHotel.set(hotel.id, []);
     bonusByHotel.get(hotel.id)!.push({
-      employee, hotel, gross: salary.total_earnings ?? 0, bonusProvision, incentive, provisionBalance,
+      employee, hotel, gross, monthsOfService, factor, decBonusRequired, incentive, provisionBalance,
     });
   }
   for (const rows of bonusByHotel.values()) rows.sort((a, b) => a.employee.surname.localeCompare(b.employee.surname));
