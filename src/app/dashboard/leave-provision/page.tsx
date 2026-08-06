@@ -213,7 +213,7 @@ export default function LeaveProvisionPage() {
     try {
       const headers = [
         ...(isAll ? ['Hotel'] : []),
-        'Emp Code', 'Surname', 'First Name', 'Grade',
+        'Emp Code', 'Surname', 'First Name',
         'Actual Leave Balance', 'Capped Leave Balance', 'Daily Rate', 'Provision Value', 'Imported',
       ];
       const dataRows = rows.map(({ provision, employee, hotel }) => [
@@ -221,7 +221,6 @@ export default function LeaveProvisionPage() {
         employee!.employee_code ?? '—',
         employee!.surname,
         employee!.first_name,
-        employee!.grade_label ?? 'Unclassified',
         provision.leave_balance_days,
         Math.min(provision.leave_balance_days, leaveProvisionCapDays(hotel?.short_code)),
         provision.daily_rate,
@@ -230,7 +229,7 @@ export default function LeaveProvisionPage() {
       ]);
       const totalsRow = [
         ...(isAll ? [''] : []),
-        `Total (${rows.length} employees)`, '', '', '', '', '', '',
+        `Total (${rows.length} employees)`, '', '', '', '', '',
         [...totalsByCountry.entries()].map(([cur, v]) => `${cur} ${v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}`).join(' / '),
         '',
       ];
@@ -360,7 +359,6 @@ export default function LeaveProvisionPage() {
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">Emp Code</th>
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">Surname</th>
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">First Name</th>
-                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Grade</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Actual Leave Balance</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Capped Leave Balance</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Daily Rate</th>
@@ -375,7 +373,6 @@ export default function LeaveProvisionPage() {
                   <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{employee!.employee_code ?? '—'}</td>
                   <td className="px-4 py-2.5 font-medium">{employee!.surname}</td>
                   <td className="px-4 py-2.5">{employee!.first_name}</td>
-                  <td className="px-4 py-2.5 text-muted-foreground">{employee!.grade_label ?? 'Unclassified'}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{provision.leave_balance_days}</td>
                   <td className="px-4 py-2.5 text-right font-mono">{Math.min(provision.leave_balance_days, leaveProvisionCapDays(hotel?.short_code))}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(provision.daily_rate, hotel)}</td>
@@ -386,7 +383,7 @@ export default function LeaveProvisionPage() {
             </tbody>
             <tfoot>
               <tr className="border-t bg-muted/20 font-medium">
-                <td className="px-4 py-3" colSpan={isAll ? 5 : 4}>Total ({rows.length} employees)</td>
+                <td className="px-4 py-3" colSpan={isAll ? 4 : 3}>Total ({rows.length} employees)</td>
                 <td className="px-4 py-3" />
                 <td className="px-4 py-3" />
                 <td className="px-4 py-3" />

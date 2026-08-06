@@ -47,6 +47,14 @@ function monthsSinceLastPayoutThreshold(date: string | null): number {
   return totalMonths - lastThresholdMonths;
 }
 
+function fmtDateDDMMYYYY(date: string | null): string {
+  if (!date) return '—';
+  const d = new Date(date);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${d.getFullYear()}`;
+}
+
 // Whole calendar months of service projected forward to 31 Dec of the
 // selected bonus year — the 13th-cheque payout factor's basis. Mirrors the
 // Bonus Provision page's own copy of this helper.
@@ -231,6 +239,7 @@ function buildHotelSheet(
   bonusRows: BonusRow[],
   severanceRows: SeveranceRow[],
   accrualMonths: number,
+  latestSalaryMap: Map<string, SalaryRecord>,
   XLSX: any,
 ): any {
   const bw = isBotswana(hotel.country);
@@ -238,8 +247,12 @@ function buildHotelSheet(
   const hasSeverance = SEVERANCE_HOTEL_CODES.includes(hotel.short_code);
   const combined = combineRows(leaveRows, bonusRows, severanceRows);
 
+  const employeeHeaders = [
+    'Emp Code', 'Surname', 'First Name', 'Start Date (dd-mm-yyyy)', 'Job Title',
+    'Years Service', 'Months Service', 'Gross Salary',
+  ];
   const groups: { label: string; headers: string[] }[] = [
-    { label: 'EMPLOYEE', headers: ['Emp Code', 'Surname', 'First Name'] },
+    { label: 'EMPLOYEE', headers: employeeHeaders },
     { label: `LEAVE PROVISION (${sym})`, headers: ['Actual Leave Balance', 'Capped Leave Balance', 'Daily Rate', 'Provision Value'] },
     { label: `BONUS PROVISION incl. INCENTIVE (${sym}) — Accrual Months: ${accrualMonths}`, headers: ['Gross Salary', 'Mths Service (Dec)', 'Payout Factor', 'Bonus Required (Dec)', 'Incentive', 'Provision Balance'] },
   ];
@@ -273,16 +286,20 @@ function buildHotelSheet(
 
   // Column offsets for formula references — fixed per this hotel's layout
   // (severance only present when hasSeverance).
-  const leaveStart = 3;
-  const bonusStart = 7;
-  const severanceStart = hasSeverance ? 13 : -1;
+  const leaveStart = employeeHeaders.length;
+  const bonusStart = leaveStart + 4;
+  const severanceStart = hasSeverance ? bonusStart + 6 : -1;
   const totalCol = totalCols - 1;
   const colLetter = (i: number) => XLSX.utils.encode_col(i);
 
   const dataRows = combined.map((row, i) => {
     const r = i + 3; // Excel row number (group row=1, header row=2, first data row=3)
+    const empGross = latestSalaryMap.get(row.employee.id)?.total_earnings;
     const cells: any[] = [
       str(row.employee.employee_code ?? '—'), str(row.employee.surname), str(row.employee.first_name),
+      str(fmtDateDDMMYYYY(row.employee.employment_date)), str(row.employee.job_title ?? '—'),
+      num(yearsOfService(row.employee.employment_date)), num(monthsOfService(row.employee.employment_date)),
+      empGross != null ? num(empGross) : blankCell(),
     ];
 
     if (row.leave) {
@@ -346,7 +363,7 @@ function buildHotelSheet(
   const lastDataRow = 2 + combined.length;
   const rangeSum = (colIdx: number) => `SUM(${colLetter(colIdx)}${firstDataRow}:${colLetter(colIdx)}${lastDataRow})`;
 
-  const totRow: any[] = [tot(`Total (${combined.length} employees)`, false), totBlank(), totBlank()];
+  const totRow: any[] = [tot(`Total (${combined.length} employees)`, false), ...Array.from({ length: employeeHeaders.length - 1 }, () => totBlank())];
   totRow.push(totBlank(), totBlank(), totBlank(), totFml(rangeSum(leaveStart + 3), sumLeave));
   totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totFml(rangeSum(bonusStart + 5), sumBonus));
   if (hasSeverance) {
@@ -358,7 +375,7 @@ function buildHotelSheet(
   const aoa = [groupRow, colHeaderRow, ...dataRows, totRow];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
-  ws['!cols'] = Array.from({ length: totalCols }, (_, i) => (i < 3 ? { wch: 14 } : { wch: 15 }));
+  ws['!cols'] = Array.from({ length: totalCols }, (_, i) => (i < employeeHeaders.length ? { wch: 14 } : { wch: 15 }));
   ws['!freeze'] = { xSplit: 0, ySplit: 2 };
   return ws;
 }
@@ -418,6 +435,7 @@ interface ProvisionsData {
   bonusAdj: Map<string, HotelAdjustment>;
   severanceAdj: Map<string, HotelAdjustment>;
   accrualMonths: number;
+  latestSalaryMap: Map<string, SalaryRecord>;
 }
 
 async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
@@ -465,8 +483,11 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   ]);
   const severanceEmployees = (severanceEmp ?? []) as Employee[];
 
-  // Salary records for the union of every employee id referenced above
+  // Salary records for the union of every employee id referenced above —
+  // includes leave-provision employees too, since Gross Salary is now a
+  // per-row Employee column shared across all three segments.
   const empIdSet = new Set<string>([
+    ...((provisions ?? []) as { employee_id: string }[]).map(p => p.employee_id),
     ...bonusEmployees.map(e => e.id),
     ...severanceEmployees.map(e => e.id),
   ]);
@@ -563,7 +584,7 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   const bonusAdj = adjustmentsFor(bonusByHotel, bonusBookMap);
   const severanceAdj = adjustmentsFor(severanceByHotel, severanceBookMap);
 
-  return { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths };
+  return { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths, latestSalaryMap };
 }
 
 // ── Public: on-screen summary (Overview page) ───────────────────────────────
@@ -599,7 +620,7 @@ export async function exportAllProvisions(year: number): Promise<void> {
     import('xlsx-js-style'),
   ]);
   const XLSX = XLSXmod.default ?? XLSXmod;
-  const { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths } = d;
+  const { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths, latestSalaryMap } = d;
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildOverviewSheet(exportHotels, leaveAdj, bonusAdj, severanceAdj, XLSX), 'Overview');
@@ -610,7 +631,7 @@ export async function exportAllProvisions(year: number): Promise<void> {
     const severanceRows = severanceByHotel.get(hotel.id) ?? [];
     if (leaveRows.length === 0 && bonusRows.length === 0 && severanceRows.length === 0) continue;
     const sheetName = (hotel.short_code || hotel.name).replace(/[:\\/?\*\[\]']/g, '').slice(0, 31);
-    XLSX.utils.book_append_sheet(wb, buildHotelSheet(hotel, leaveRows, bonusRows, severanceRows, accrualMonths, XLSX), sheetName);
+    XLSX.utils.book_append_sheet(wb, buildHotelSheet(hotel, leaveRows, bonusRows, severanceRows, accrualMonths, latestSalaryMap, XLSX), sheetName);
   }
 
   XLSX.writeFile(wb, `Provisions_Overview_${year}.xlsx`);
