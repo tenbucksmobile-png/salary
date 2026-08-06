@@ -14,7 +14,7 @@
 
 import { createClient } from '@/lib/supabase/client';
 import {
-  Employee, Hotel, SalaryRecord, LeaveProvision,
+  Employee, Hotel, SalaryRecord, LeaveProvision, ScenarioLine,
   LeaveProvisionBookBalance, BonusProvisionBookBalance, SeveranceProvisionBookBalance,
 } from '@/types/database';
 import { isBotswana, leaveProvisionCapDays } from '@/lib/payroll-calc';
@@ -53,6 +53,46 @@ function fmtDateDDMMYYYY(date: string | null): string {
   const dd = String(d.getDate()).padStart(2, '0');
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   return `${dd}-${mm}-${d.getFullYear()}`;
+}
+
+// Per-hotel scenario resolution, mirroring SalarySummaryTable's own draft-vs-
+// committed priority: a hotel's draft scenario wins if one exists; otherwise
+// its own most recent approved/applied/committed scenario. Unlike the
+// dashboard's single global fallback, this resolves independently per hotel
+// so every hotel in this multi-hotel export gets its own correct scenario,
+// not just whichever hotel happens to have the single most recent commit.
+async function fetchScenarioLineMap(sb: ReturnType<typeof createClient>, hotelIds: string[]): Promise<Map<string, ScenarioLine>> {
+  if (hotelIds.length === 0) return new Map();
+
+  const { data: draftScenarios } = await sb
+    .from('increase_scenarios')
+    .select('id, hotel_id')
+    .eq('status', 'draft')
+    .not('hotel_id', 'is', null)
+    .in('hotel_id', hotelIds);
+
+  const draftHotelIds = new Set((draftScenarios ?? []).map((s: { hotel_id: string }) => s.hotel_id));
+  const scenarioIds: string[] = (draftScenarios ?? []).map((s: { id: string }) => s.id);
+
+  const missingHotelIds = hotelIds.filter(id => !draftHotelIds.has(id));
+  if (missingHotelIds.length > 0) {
+    const { data: committed } = await sb
+      .from('increase_scenarios')
+      .select('id, hotel_id, committed_at')
+      .in('hotel_id', missingHotelIds)
+      .in('status', ['approved', 'applied', 'committed'])
+      .order('committed_at', { ascending: false });
+    const seen = new Set<string>();
+    for (const s of (committed ?? []) as { id: string; hotel_id: string }[]) {
+      if (seen.has(s.hotel_id)) continue;
+      seen.add(s.hotel_id);
+      scenarioIds.push(s.id);
+    }
+  }
+
+  if (scenarioIds.length === 0) return new Map();
+  const { data: lines } = await sb.from('scenario_lines').select('*').in('scenario_id', scenarioIds);
+  return new Map(((lines ?? []) as ScenarioLine[]).map(l => [l.employee_id, l]));
 }
 
 // Whole calendar months of service projected forward to 31 Dec of the
@@ -240,6 +280,7 @@ function buildHotelSheet(
   severanceRows: SeveranceRow[],
   accrualMonths: number,
   latestSalaryMap: Map<string, SalaryRecord>,
+  newGrossMap: Map<string, number>,
   XLSX: any,
 ): any {
   const bw = isBotswana(hotel.country);
@@ -247,9 +288,12 @@ function buildHotelSheet(
   const hasSeverance = SEVERANCE_HOTEL_CODES.includes(hotel.short_code);
   const combined = combineRows(leaveRows, bonusRows, severanceRows);
 
+  // New Gross Salary (post-increase, from Salary Review) sits right after
+  // Gross Salary in the shared Employee block — not duplicated into the
+  // Leave/Bonus segment blocks, even though Bonus's own calc uses it.
   const employeeHeaders = [
     'Emp Code', 'Surname', 'First Name', 'Start Date (dd-mm-yyyy)', 'Job Title',
-    'Years Service', 'Months Service', 'Gross Salary',
+    'Years Service', 'Months Service', 'Gross Salary', 'New Gross Salary',
   ];
   const groups: { label: string; headers: string[] }[] = [
     { label: 'EMPLOYEE', headers: employeeHeaders },
@@ -295,11 +339,13 @@ function buildHotelSheet(
   const dataRows = combined.map((row, i) => {
     const r = i + 3; // Excel row number (group row=1, header row=2, first data row=3)
     const empGross = latestSalaryMap.get(row.employee.id)?.total_earnings;
+    const empNewGross = newGrossMap.get(row.employee.id);
     const cells: any[] = [
       str(row.employee.employee_code ?? '—'), str(row.employee.surname), str(row.employee.first_name),
       str(fmtDateDDMMYYYY(row.employee.employment_date)), str(row.employee.job_title ?? '—'),
       num(yearsOfService(row.employee.employment_date)), num(monthsOfService(row.employee.employment_date)),
       empGross != null ? num(empGross) : blankCell(),
+      empNewGross != null ? num(empNewGross) : blankCell(),
     ];
 
     if (row.leave) {
@@ -436,6 +482,7 @@ interface ProvisionsData {
   severanceAdj: Map<string, HotelAdjustment>;
   accrualMonths: number;
   latestSalaryMap: Map<string, SalaryRecord>;
+  newGrossMap: Map<string, number>;
 }
 
 async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
@@ -457,10 +504,11 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   } catch {}
 
   // Leave: employees unfiltered by status (matches the Leave Provision page)
-  const [{ data: leaveEmp }, { data: provisions }, { data: leaveBook }] = await Promise.all([
+  const [{ data: leaveEmp }, { data: provisions }, { data: leaveBook }, scenarioLineMap] = await Promise.all([
     sb.from('employees').select('*').in('hotel_id', hotelIds),
     sb.from('leave_provisions').select('*').in('hotel_id', hotelIds).eq('period_year', year),
     sb.from('leave_provision_book_balances').select('*').in('hotel_id', hotelIds).eq('period_year', year),
+    fetchScenarioLineMap(sb, hotelIds),
   ]);
   const leaveEmpMap = new Map(((leaveEmp ?? []) as Employee[]).map(e => [e.id, e]));
 
@@ -503,6 +551,23 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
     }
   }
 
+  // New Gross Salary (post-increase) per employee — from the winning Salary
+  // Review scenario line for their hotel (draft, else latest committed),
+  // reconstructed the same way SalarySummaryTable does (scenario_lines stores
+  // basic only, so the structure allowance is added back). Falls back to the
+  // employee's current Gross Salary when no increase applies to them.
+  const newGrossMap = new Map<string, number>();
+  for (const [empId, sal] of latestSalaryMap) {
+    const currentGross = sal.total_earnings ?? 0;
+    const sl = scenarioLineMap.get(empId);
+    if (sl) {
+      const structure = sal.allowances?.structure ?? 0;
+      newGrossMap.set(empId, sl.new_basic + structure);
+    } else {
+      newGrossMap.set(empId, currentGross);
+    }
+  }
+
   // ── Build per-hotel row sets ────────────────────────────────────────────
   // ANO (vacant position) employees are excluded entirely from every segment —
   // not a real employee, so they never belong in a provisions export.
@@ -530,8 +595,12 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
     const gross = salary.total_earnings ?? 0;
     const monthsOfService = monthsOfServiceAtDec(employee.employment_date, year);
     const factor = Math.min(monthsOfService, 12) / 12;
+    // Bonus Required (Dec) uses the post-increase New Gross Salary (falls
+    // back to current Gross Salary when no increase applies) — incentive-
+    // scheme employees are unaffected, they use their incentive rate instead.
+    const effectiveGross = newGrossMap.get(employee.id) ?? gross;
     const decBonusRequired = (!employee.incentive_applicable && monthsOfService >= 6)
-      ? Math.round(gross * factor * 100) / 100
+      ? Math.round(effectiveGross * factor * 100) / 100
       : 0;
     const incentive = employee.incentive_applicable ? (salary.incentive ?? 0) : 0;
     const provisionBalance = employee.incentive_applicable
@@ -584,7 +653,7 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   const bonusAdj = adjustmentsFor(bonusByHotel, bonusBookMap);
   const severanceAdj = adjustmentsFor(severanceByHotel, severanceBookMap);
 
-  return { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths, latestSalaryMap };
+  return { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths, latestSalaryMap, newGrossMap };
 }
 
 // ── Public: on-screen summary (Overview page) ───────────────────────────────
@@ -620,7 +689,7 @@ export async function exportAllProvisions(year: number): Promise<void> {
     import('xlsx-js-style'),
   ]);
   const XLSX = XLSXmod.default ?? XLSXmod;
-  const { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths, latestSalaryMap } = d;
+  const { exportHotels, leaveByHotel, bonusByHotel, severanceByHotel, leaveAdj, bonusAdj, severanceAdj, accrualMonths, latestSalaryMap, newGrossMap } = d;
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildOverviewSheet(exportHotels, leaveAdj, bonusAdj, severanceAdj, XLSX), 'Overview');
@@ -631,7 +700,7 @@ export async function exportAllProvisions(year: number): Promise<void> {
     const severanceRows = severanceByHotel.get(hotel.id) ?? [];
     if (leaveRows.length === 0 && bonusRows.length === 0 && severanceRows.length === 0) continue;
     const sheetName = (hotel.short_code || hotel.name).replace(/[:\\/?\*\[\]']/g, '').slice(0, 31);
-    XLSX.utils.book_append_sheet(wb, buildHotelSheet(hotel, leaveRows, bonusRows, severanceRows, accrualMonths, latestSalaryMap, XLSX), sheetName);
+    XLSX.utils.book_append_sheet(wb, buildHotelSheet(hotel, leaveRows, bonusRows, severanceRows, accrualMonths, latestSalaryMap, newGrossMap, XLSX), sheetName);
   }
 
   XLSX.writeFile(wb, `Provisions_Overview_${year}.xlsx`);
