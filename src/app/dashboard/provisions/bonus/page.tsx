@@ -188,7 +188,7 @@ export default function BonusProvisionPage() {
           gross, newGross, monthsOfService, factor, decBonusRequired, incentiveMonthly, provisionBalance,
         };
       })
-      .filter(r => r.salary)
+      .filter(r => r.salary && !r.isAno)
       .sort((a, b) => {
         const hotelCmp = (a.hotel?.short_code ?? '').localeCompare(b.hotel?.short_code ?? '');
         return hotelCmp !== 0 ? hotelCmp : a.employee.surname.localeCompare(b.employee.surname);
@@ -394,7 +394,7 @@ export default function BonusProvisionPage() {
           <h1 className="text-2xl font-bold text-foreground">Bonus Provision</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          13th-cheque bonus provision — months of service projected to 31 Dec {year} (capped at 12) drives a payout factor (months ÷ 12); under 6 months forfeits the bonus entirely. Bonus Required (Dec) = New Gross Salary × factor, where New Gross Salary is the post-increase figure from Salary Review (falls back to current Gross Salary when no increase applies) — halved for CSL, NL and CFEM. Accrual to the selected month spreads that Dec figure across the 11-month Jan–Nov accrual window. Employees ticked for incentive bonus on the Employee page use their Incentive rate instead (unaffected by New Gross Salary or the CSL/NL/CFEM halving). ANO (vacant) positions always show "—". ILG, IH, ILRB, APA, CSL, NL and CFEM.
+          13th-cheque bonus provision — months of service projected to 31 Dec {year} (capped at 12) drives a payout factor (months ÷ 12); under 6 months forfeits the bonus entirely. Bonus Required (Dec) = New Gross Salary × factor, where New Gross Salary is the post-increase figure from Salary Review (falls back to current Gross Salary when no increase applies) — halved for CSL, NL and CFEM. Accrual to the selected month spreads that Dec figure across the 11-month Jan–Nov accrual window. Employees ticked for incentive bonus on the Employee page use their Incentive rate instead (unaffected by New Gross Salary or the CSL/NL/CFEM halving). ANO (vacant) positions are excluded from the list. ILG, IH, ILRB, APA, CSL, NL and CFEM.
         </p>
       </div>
 
