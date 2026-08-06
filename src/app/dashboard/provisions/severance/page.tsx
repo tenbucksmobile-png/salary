@@ -18,6 +18,24 @@ const ALL = 'ALL';
 const SEVERANCE_HOTEL_CODES = ['ILG', 'CSL', 'NL', 'CFEM'];
 const SEVERANCE_SENIOR_YEARS = 5; // 60 months — daily rate doubles at this tenure
 
+// One-off override: FRE001/FRE002 (Diane & James French, CFEM) accrue
+// gratuity from their LOA start date rather than a straight Gross × Rate%,
+// per explicit instruction — every other gratuity_applicable employee keeps
+// the straight formula. Not a general employee field (yet); hardcoded here.
+const GRATUITY_ACCRUAL_START: Record<string, string> = {
+  FRE001: '2024-10-01',
+  FRE002: '2024-10-01',
+};
+
+// Period of accrual = (31 July of the selected Year − accrual start date),
+// expressed as a fraction of a year (days ÷ 365.25).
+function periodOfAccrualYears(startDate: string, year: number): number {
+  const start = new Date(startDate);
+  const end = new Date(year, 6, 31); // 31 July
+  const days = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+  return Math.max(0, days / 365.25);
+}
+
 function yearsOfService(date: string | null): number {
   if (!date) return 0;
   const ms = Date.now() - new Date(date).getTime();
@@ -133,7 +151,9 @@ export default function SeveranceProvisionPage() {
   // flags are independent per employee. Gratuity's Provision Balance is a
   // straight Gross × Rate% read from the already-calculated salary_records
   // .gratuity figure (calculateBurden()'s own formula) — unlike Severance,
-  // it has no 5-year payout threshold/accrual concept.
+  // it has no 5-year payout threshold/accrual concept — EXCEPT the
+  // GRATUITY_ACCRUAL_START override (FRE001/FRE002), which multiplies by the
+  // period-of-accrual fraction instead.
   const rows = useMemo(() => {
     return employees
       .map(employee => {
@@ -142,7 +162,11 @@ export default function SeveranceProvisionPage() {
         const hasGratuity = employee.gratuity_applicable;
         const monthsAccrued = hasSeverance ? monthsSinceLastPayoutThreshold(employee.employment_date) : 0;
         const severanceBalance = hasSeverance ? Math.round((salary?.severance ?? 0) * monthsAccrued * 100) / 100 : 0;
-        const gratuityBalance = hasGratuity ? (salary?.gratuity ?? 0) : 0;
+        const accrualStart = employee.employee_code ? GRATUITY_ACCRUAL_START[employee.employee_code] : undefined;
+        const gratuityBalance = !hasGratuity ? 0
+          : accrualStart
+            ? Math.round((salary?.total_earnings ?? 0) * ((employee.gratuity_rate ?? 0) / 100) * periodOfAccrualYears(accrualStart, year) * 100) / 100
+            : (salary?.gratuity ?? 0);
         const totalBalance = severanceBalance + gratuityBalance;
         return {
           employee, salary, hotel: hotelMap.get(employee.hotel_id),
@@ -154,7 +178,7 @@ export default function SeveranceProvisionPage() {
         const hotelCmp = (a.hotel?.short_code ?? '').localeCompare(b.hotel?.short_code ?? '');
         return hotelCmp !== 0 ? hotelCmp : a.employee.surname.localeCompare(b.employee.surname);
       });
-  }, [employees, latestSalaryMap, hotelMap]);
+  }, [employees, latestSalaryMap, hotelMap, year]);
 
   const totalsByCountry = useMemo(() => {
     const totals = new Map<string, number>();
@@ -374,7 +398,7 @@ export default function SeveranceProvisionPage() {
           <h1 className="text-2xl font-bold text-foreground">Severance & Gratuity Provision</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          Severance accrual — Basic ÷ 26 daily rate, 1 day/month under 60 months' service, 2 days/month thereafter, paid out at every 5-year mark so the balance only covers months accrued since the most recent threshold crossed. Gratuity — Gross Salary × Rate%, no accrual threshold. ILG, CSL, NL and CFEM; shows employees with "Calculate severance accrual" and/or "Gratuity applicable" ticked on the Employee page — an employee can have either, both, or (once ticked) neither.
+          Severance accrual — Basic ÷ 26 daily rate, 1 day/month under 60 months' service, 2 days/month thereafter, paid out at every 5-year mark so the balance only covers months accrued since the most recent threshold crossed. Gratuity — Gross Salary × Rate%, no accrual threshold (FRE001/FRE002 use a period-of-accrual multiplier instead: (31 Jul {year} − LOA start 1 Oct 2024) ÷ 365.25). ILG, CSL, NL and CFEM; shows employees with "Calculate severance accrual" and/or "Gratuity applicable" ticked on the Employee page — an employee can have either, both, or (once ticked) neither.
         </p>
       </div>
 

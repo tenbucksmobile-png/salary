@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { Employee, Hotel, SalaryRecord, BonusProvisionBookBalance } from '@/types/database';
+import { Employee, Hotel, SalaryRecord, BonusProvisionBookBalance, ScenarioLine } from '@/types/database';
 import { fmtCurrency, sortHotels } from '@/lib/utils';
 import { calculateBurden, isBotswana } from '@/lib/payroll-calc';
 import { exportReport, type ReportSheet } from '@/lib/reports-export';
+import { fetchScenarioLineMap, resolveNewGross } from '@/lib/scenario-lines';
 import { RefreshCw, Download, Gift } from 'lucide-react';
 
 const HOTEL_FILTER_KEY = 'ihg-salary-bonus-hotel';
@@ -43,6 +44,7 @@ export default function BonusProvisionPage() {
   const [salaryRecords, setSalaryRecords] = useState<SalaryRecord[]>([]);
   const [bookBalances, setBookBalances] = useState<BonusProvisionBookBalance[]>([]);
   const [bookInputs, setBookInputs] = useState<Map<string, string>>(new Map());
+  const [scenarioLineMap, setScenarioLineMap] = useState<Map<string, ScenarioLine>>(new Map());
   const [year, setYear] = useState(new Date().getFullYear());
   const [accrualMonths, setAccrualMonths] = useState(DEFAULT_ACCRUAL_MONTHS);
   const [loading, setLoading] = useState(true);
@@ -99,9 +101,10 @@ export default function BonusProvisionPage() {
     if (!hotelFilter || hotels.length === 0) return;
     (async () => {
       const hotelIds = hotelFilter === ALL ? hotels.map(h => h.id) : [hotelFilter];
-      const [{ data: e }, { data: b }] = await Promise.all([
+      const [{ data: e }, { data: b }, slMap] = await Promise.all([
         sb.from('employees').select('*').in('hotel_id', hotelIds).eq('status', 'active'),
         sb.from('bonus_provision_book_balances').select('*').in('hotel_id', hotelIds),
+        fetchScenarioLineMap(sb, hotelIds),
       ]);
       const empList = (e ?? []) as Employee[];
       const empIds = empList.map(emp => emp.id);
@@ -111,6 +114,7 @@ export default function BonusProvisionPage() {
       setEmployees(empList);
       setSalaryRecords((s ?? []) as SalaryRecord[]);
       setBookBalances((b ?? []) as BonusProvisionBookBalance[]);
+      setScenarioLineMap(slMap);
     })();
   }, [hotelFilter, hotels]);
 
@@ -140,15 +144,21 @@ export default function BonusProvisionPage() {
         // its placeholder salary record.
         const isAno = employee.grade_label === 'ANO';
         const gross = salary?.total_earnings ?? 0;
+        // New Gross Salary (post-increase, from Salary Review) — falls back
+        // to current Gross Salary when no increase applies. Drives Bonus
+        // Required (Dec) for non-incentive employees; incentive-scheme
+        // employees are unaffected and keep using current gross/their
+        // incentive rate (see incentiveMonthly below).
+        const newGross = resolveNewGross(employee.id, scenarioLineMap, salary);
 
         // 13th-cheque (non-incentive) employees: months of service projected
         // to 31 Dec of the selected year, capped at 12, drives a payout
         // factor (months/12). Under 6 months' service this cycle forfeits
-        // the bonus entirely. Dec Bonus Required = Gross × factor.
+        // the bonus entirely. Dec Bonus Required = New Gross Salary × factor.
         const monthsOfService = isAno ? 0 : monthsOfServiceAtDec(employee.employment_date, year);
         const factor = Math.min(monthsOfService, 12) / 12;
         const decBonusRequired = (!isAno && !employee.incentive_applicable && monthsOfService >= 6)
-          ? Math.round(gross * factor * 100) / 100
+          ? Math.round(newGross * factor * 100) / 100
           : 0;
 
         // Incentive-scheme employees are unaffected by the above — their
@@ -167,7 +177,7 @@ export default function BonusProvisionPage() {
 
         return {
           employee, salary, hotel: hotelMap.get(employee.hotel_id), isAno,
-          gross, monthsOfService, factor, decBonusRequired, incentiveMonthly, provisionBalance,
+          gross, newGross, monthsOfService, factor, decBonusRequired, incentiveMonthly, provisionBalance,
         };
       })
       .filter(r => r.salary)
@@ -175,7 +185,7 @@ export default function BonusProvisionPage() {
         const hotelCmp = (a.hotel?.short_code ?? '').localeCompare(b.hotel?.short_code ?? '');
         return hotelCmp !== 0 ? hotelCmp : a.employee.surname.localeCompare(b.employee.surname);
       });
-  }, [employees, latestSalaryMap, hotelMap, accrualMonths, year]);
+  }, [employees, latestSalaryMap, hotelMap, accrualMonths, year, scenarioLineMap]);
 
   // Group totals by currency — ALL view can mix ZAR (SA: IH, ILRB, APA) and BWP (ILG).
   // Incentive-scheme employees (incentive_applicable) get salary_records.incentive
@@ -328,16 +338,17 @@ export default function BonusProvisionPage() {
     try {
       const headers = [
         ...(isAll ? ['Hotel'] : []),
-        'Emp Code', 'Surname', 'First Name', 'Gross Salary',
+        'Emp Code', 'Surname', 'First Name', 'Gross Salary', 'New Gross Salary',
         'Mths Service (Dec ' + year + ')', 'Payout Factor', 'Bonus Required (Dec)', 'Incentive',
         'Accrual Months', 'Provision Balance',
       ];
-      const dataRows = rows.map(({ employee, hotel, isAno, gross, monthsOfService, factor, decBonusRequired, incentiveMonthly, provisionBalance }) => [
+      const dataRows = rows.map(({ employee, hotel, isAno, gross, newGross, monthsOfService, factor, decBonusRequired, incentiveMonthly, provisionBalance }) => [
         ...(isAll ? [hotel?.short_code ?? '—'] : []),
         employee.employee_code ?? '—',
         employee.surname,
         employee.first_name,
         gross,
+        newGross,
         isAno ? 0 : monthsOfService,
         isAno ? 0 : +(factor * 100).toFixed(1),
         isAno ? 0 : decBonusRequired,
@@ -347,7 +358,7 @@ export default function BonusProvisionPage() {
       ]);
       const totalsRow = [
         ...(isAll ? [''] : []),
-        `Total (${rows.length} employees)`, '', '', '', '', '', '', '', '',
+        `Total (${rows.length} employees)`, '', '', '', '', '', '', '', '', '',
         [...totalsByCountry.entries()].map(([cur, v]) => `${cur} ${v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}`).join(' / '),
       ];
       const sheet: ReportSheet = {
@@ -375,7 +386,7 @@ export default function BonusProvisionPage() {
           <h1 className="text-2xl font-bold text-foreground">Bonus Provision</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          13th-cheque bonus provision — months of service projected to 31 Dec {year} (capped at 12) drives a payout factor (months ÷ 12); under 6 months forfeits the bonus entirely. Bonus Required (Dec) = Gross × factor. Accrual to the selected month spreads that Dec figure across the 11-month Jan–Nov accrual window. Employees ticked for incentive bonus on the Employee page use their Incentive rate instead (unaffected by this formula). ANO (vacant) positions always show "—". ILG, IH, ILRB and APA only.
+          13th-cheque bonus provision — months of service projected to 31 Dec {year} (capped at 12) drives a payout factor (months ÷ 12); under 6 months forfeits the bonus entirely. Bonus Required (Dec) = New Gross Salary × factor, where New Gross Salary is the post-increase figure from Salary Review (falls back to current Gross Salary when no increase applies). Accrual to the selected month spreads that Dec figure across the 11-month Jan–Nov accrual window. Employees ticked for incentive bonus on the Employee page use their Incentive rate instead (unaffected by New Gross Salary). ANO (vacant) positions always show "—". ILG, IH, ILRB, APA, CSL, NL and CFEM.
         </p>
       </div>
 
@@ -488,6 +499,7 @@ export default function BonusProvisionPage() {
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">Surname</th>
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">First Name</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Gross Salary</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">New Gross Salary</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Mths Service (Dec {year})</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Payout Factor</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Bonus Required (Dec)</th>
@@ -496,13 +508,14 @@ export default function BonusProvisionPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ employee, salary, hotel, isAno, monthsOfService, factor, decBonusRequired, incentiveMonthly, provisionBalance }, i) => (
+              {rows.map(({ employee, salary, hotel, isAno, newGross, monthsOfService, factor, decBonusRequired, incentiveMonthly, provisionBalance }, i) => (
                 <tr key={employee.id} className={`border-b last:border-0 ${i % 2 === 1 ? 'bg-muted/10' : ''}`}>
                   {isAll && <td className="px-4 py-2.5 text-muted-foreground">{hotel?.short_code ?? '—'}</td>}
                   <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{employee.employee_code ?? '—'}</td>
                   <td className="px-4 py-2.5 font-medium">{employee.surname}</td>
                   <td className="px-4 py-2.5">{employee.first_name}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(salary?.total_earnings ?? 0, hotel)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(newGross, hotel)}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">
                     {isAno || employee.incentive_applicable ? '—' : monthsOfService}
                   </td>
@@ -523,7 +536,7 @@ export default function BonusProvisionPage() {
             </tbody>
             <tfoot>
               <tr className="border-t bg-muted/20 font-medium">
-                <td className="px-4 py-3" colSpan={isAll ? 9 : 8}>Total ({rows.length} employees)</td>
+                <td className="px-4 py-3" colSpan={isAll ? 10 : 9}>Total ({rows.length} employees)</td>
                 <td className="px-4 py-3 text-right font-mono">
                   {[...totalsByCountry.entries()].map(([cur, v]) => (
                     <div key={cur}>{cur === 'BWP' ? 'P' : 'R'} {v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}</div>

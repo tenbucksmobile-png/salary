@@ -14,11 +14,12 @@
 
 import { createClient } from '@/lib/supabase/client';
 import {
-  Employee, Hotel, SalaryRecord, LeaveProvision, ScenarioLine,
+  Employee, Hotel, SalaryRecord, LeaveProvision,
   LeaveProvisionBookBalance, BonusProvisionBookBalance, SeveranceProvisionBookBalance,
 } from '@/types/database';
 import { isBotswana, leaveProvisionCapDays } from '@/lib/payroll-calc';
 import { sortHotels } from '@/lib/utils';
+import { fetchScenarioLineMap } from '@/lib/scenario-lines';
 
 const LEAVE_BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA', 'CSL', 'NL', 'CFEM'];
 const SEVERANCE_HOTEL_CODES = ['ILG'];
@@ -53,46 +54,6 @@ function fmtDateDDMMYYYY(date: string | null): string {
   const dd = String(d.getDate()).padStart(2, '0');
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   return `${dd}-${mm}-${d.getFullYear()}`;
-}
-
-// Per-hotel scenario resolution, mirroring SalarySummaryTable's own draft-vs-
-// committed priority: a hotel's draft scenario wins if one exists; otherwise
-// its own most recent approved/applied/committed scenario. Unlike the
-// dashboard's single global fallback, this resolves independently per hotel
-// so every hotel in this multi-hotel export gets its own correct scenario,
-// not just whichever hotel happens to have the single most recent commit.
-async function fetchScenarioLineMap(sb: ReturnType<typeof createClient>, hotelIds: string[]): Promise<Map<string, ScenarioLine>> {
-  if (hotelIds.length === 0) return new Map();
-
-  const { data: draftScenarios } = await sb
-    .from('increase_scenarios')
-    .select('id, hotel_id')
-    .eq('status', 'draft')
-    .not('hotel_id', 'is', null)
-    .in('hotel_id', hotelIds);
-
-  const draftHotelIds = new Set((draftScenarios ?? []).map((s: { hotel_id: string }) => s.hotel_id));
-  const scenarioIds: string[] = (draftScenarios ?? []).map((s: { id: string }) => s.id);
-
-  const missingHotelIds = hotelIds.filter(id => !draftHotelIds.has(id));
-  if (missingHotelIds.length > 0) {
-    const { data: committed } = await sb
-      .from('increase_scenarios')
-      .select('id, hotel_id, committed_at')
-      .in('hotel_id', missingHotelIds)
-      .in('status', ['approved', 'applied', 'committed'])
-      .order('committed_at', { ascending: false });
-    const seen = new Set<string>();
-    for (const s of (committed ?? []) as { id: string; hotel_id: string }[]) {
-      if (seen.has(s.hotel_id)) continue;
-      seen.add(s.hotel_id);
-      scenarioIds.push(s.id);
-    }
-  }
-
-  if (scenarioIds.length === 0) return new Map();
-  const { data: lines } = await sb.from('scenario_lines').select('*').in('scenario_id', scenarioIds);
-  return new Map(((lines ?? []) as ScenarioLine[]).map(l => [l.employee_id, l]));
 }
 
 // Whole calendar months of service projected forward to 31 Dec of the
@@ -298,7 +259,7 @@ function buildHotelSheet(
   const groups: { label: string; headers: string[] }[] = [
     { label: 'EMPLOYEE', headers: employeeHeaders },
     { label: `LEAVE PROVISION (${sym})`, headers: ['Actual Leave Balance', 'Capped Leave Balance', 'Daily Rate', 'Provision Value'] },
-    { label: `BONUS PROVISION incl. INCENTIVE (${sym}) — Accrual Months: ${accrualMonths}`, headers: ['Gross Salary', 'Mths Service (Dec)', 'Payout Factor', 'Bonus Required (Dec)', 'Incentive', 'Provision Balance'] },
+    { label: `BONUS PROVISION incl. INCENTIVE (${sym}) — Accrual Months: ${accrualMonths}`, headers: ['Mths Service (Dec)', 'Payout Factor', 'Bonus Required (Dec)', 'Incentive', 'Provision Balance'] },
   ];
   if (hasSeverance) {
     groups.push({ label: `SEVERANCE PROVISION (${sym})`, headers: ['Basic Salary', 'Yrs Service', 'Daily Rate', 'Days/Month', 'Monthly Rate', 'Months Accrued', 'Provision Balance'] });
@@ -332,7 +293,7 @@ function buildHotelSheet(
   // (severance only present when hasSeverance).
   const leaveStart = employeeHeaders.length;
   const bonusStart = leaveStart + 4;
-  const severanceStart = hasSeverance ? bonusStart + 6 : -1;
+  const severanceStart = hasSeverance ? bonusStart + 5 : -1;
   const totalCol = totalCols - 1;
   const colLetter = (i: number) => XLSX.utils.encode_col(i);
 
@@ -363,15 +324,24 @@ function buildHotelSheet(
     }
 
     if (row.bonus) {
-      const monthsCol = colLetter(bonusStart + 1);
+      // Bonus Required (Dec) reads directly from the Employee block's New
+      // Gross Salary column via formula, not a duplicated Gross Salary cell
+      // in this segment — except incentive-scheme employees, who are always
+      // 0 here (unaffected, they use their Incentive rate instead).
+      const monthsCol = colLetter(bonusStart);
+      const payoutFactorCol = colLetter(bonusStart + 1);
+      const newGrossCol = colLetter(employeeHeaders.length - 1);
+      const isIncentive = row.bonus.employee.incentive_applicable;
       cells.push(
-        num(row.bonus.gross),
         num(row.bonus.monthsOfService),
         fml(`MIN(${monthsCol}${r},12)/12`, +(row.bonus.factor * 100).toFixed(1)),
-        num(row.bonus.decBonusRequired), num(row.bonus.incentive), num(row.bonus.provisionBalance),
+        isIncentive
+          ? num(row.bonus.decBonusRequired)
+          : fml(`${newGrossCol}${r}*${payoutFactorCol}${r}`, row.bonus.decBonusRequired),
+        num(row.bonus.incentive), num(row.bonus.provisionBalance),
       );
     } else {
-      cells.push(blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell());
+      cells.push(blankCell(), blankCell(), blankCell(), blankCell(), blankCell());
     }
 
     if (hasSeverance) {
@@ -391,7 +361,7 @@ function buildHotelSheet(
     const total = (row.leave?.provision.provision_value ?? 0) + (row.bonus?.provisionBalance ?? 0) + (row.severance?.provisionBalance ?? 0);
     const sumRefs = [
       colLetter(leaveStart + 3) + r,
-      colLetter(bonusStart + 5) + r,
+      colLetter(bonusStart + 4) + r,
       ...(hasSeverance ? [colLetter(severanceStart + 6) + r] : []),
     ];
     cells.push(fml(`SUM(${sumRefs.join(',')})`, total, true));
@@ -411,7 +381,7 @@ function buildHotelSheet(
 
   const totRow: any[] = [tot(`Total (${combined.length} employees)`, false), ...Array.from({ length: employeeHeaders.length - 1 }, () => totBlank())];
   totRow.push(totBlank(), totBlank(), totBlank(), totFml(rangeSum(leaveStart + 3), sumLeave));
-  totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totFml(rangeSum(bonusStart + 5), sumBonus));
+  totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totFml(rangeSum(bonusStart + 4), sumBonus));
   if (hasSeverance) {
     totRow.push(totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totBlank(), totFml(rangeSum(severanceStart + 6), sumSeverance));
   }
