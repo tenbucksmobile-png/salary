@@ -987,7 +987,15 @@ export default function ImportPage() {
             ...(row.jobGrade ? { job_grade: row.jobGrade } : {}),
             ...(importAsFtc ? { grade_label: 'Fixed Term' } : row.gradeLabel ? { grade_label: row.gradeLabel } : {}),
             ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
-            ...(importType === 'employee' ? { last_seen_at: seenAt } : {}),
+            // HR List is a full-roster upload — an employee's presence in it
+            // means they're currently employed, so a match reactivates a
+            // previously terminated/on_leave record. Confirmed live: a
+            // vacant "ANO" position at ILG stayed stuck on status=terminated
+            // across multiple re-imports (last_seen_at kept refreshing, but
+            // nothing else in this update ever wrote status), silently
+            // dropping it from every active-only query app-wide, including
+            // the Dashboard headcount.
+            ...(row.importType === 'employee' ? { status: 'active', last_seen_at: seenAt } : {}),
             updated_at: new Date().toISOString(),
           }).eq('id', employeeId!);
           updated++;
