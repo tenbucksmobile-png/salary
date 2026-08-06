@@ -2,11 +2,9 @@
 // Incentive), and Severance across the hotels each segment applies to, plus
 // an Overview sheet aggregating each segment's Book Adjustment figures.
 //
-// Scope (per explicit instruction): Leave and Bonus both cover ILG/IH/ILRB/APA
-// only for this export — Leave's wider all-hotels scope on its own standalone
-// page is deliberately narrowed here to match Bonus/Severance so every hotel
-// tab has at least two applicable segments. Severance stays ILG-only. WCA is
-// omitted entirely (not a per-employee provision).
+// Scope: Leave and Bonus cover ILG/IH/ILRB/APA/CSL/NL/CFEM, matching the
+// standalone Leave and Bonus Provision pages' own hotel scope. Severance
+// stays ILG-only. WCA is omitted entirely (not a per-employee provision).
 //
 // Reuses each source page's own live settings rather than introducing new
 // export-time inputs: the Bonus accrual-months value comes from the same
@@ -22,7 +20,7 @@ import {
 import { isBotswana, leaveProvisionCapDays } from '@/lib/payroll-calc';
 import { sortHotels } from '@/lib/utils';
 
-const LEAVE_BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA'];
+const LEAVE_BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA', 'CSL', 'NL', 'CFEM'];
 const SEVERANCE_HOTEL_CODES = ['ILG'];
 const ACCRUAL_MONTHS_KEY = 'ihg-salary-bonus-accrual-months';
 const DEFAULT_ACCRUAL_MONTHS = 7;

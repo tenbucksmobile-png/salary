@@ -11,9 +11,7 @@ import { RefreshCw, Download } from 'lucide-react';
 const HOTEL_FILTER_KEY = 'ihg-salary-leave-hotel';
 const ALL = 'ALL';
 
-// Leave Provision only applies to these four hotels — CSL/NL/CFEM removed
-// per explicit request, matching Bonus Provision's hotel scope.
-const LEAVE_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA'];
+const LEAVE_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA', 'CSL', 'NL', 'CFEM'];
 
 export default function LeaveProvisionPage() {
   const sb = createClient();

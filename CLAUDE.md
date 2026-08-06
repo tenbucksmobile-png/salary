@@ -662,7 +662,7 @@ Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE
 
 `/dashboard/leave-provision` — standalone annual (July) leave balance provisioning. Nav tab positioned directly under Employees; configurable per sub-user via Access (key `leaveProvision` in `CONFIGURABLE_TABS`, not included in `DEFAULT_SUB_TABS` — same "never accessible before, must be explicitly granted" precedent as Reports/Methods).
 
-**Scoped to `LEAVE_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA']`** (page-local, mirrors `BONUS_HOTEL_CODES`) — CSL/NL/CFEM removed from the hotel selector per explicit request 2026-08-06, matching Bonus Provision's scope. Previously showed all hotels.
+**Scoped to `LEAVE_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA', 'CSL', 'NL', 'CFEM']`** (page-local, mirrors `BONUS_HOTEL_CODES`) — CSL/NL/CFEM were briefly removed 2026-08-06, then re-added the same day per explicit follow-up request (Leave Provision is in fact required for these three). All seven hotels now show in the selector.
 
 **Deliberately standalone from payroll burden** — does not affect `calculateBurden()`, `ctc`, `total_cost`, the Reports field list, or the Employees column picker. It answers a different question ("what would we owe today for banked leave days") from the existing `leave_accrual` column (a forward-looking monthly estimate, `basic × days/365 × pct`) and the legacy `leave_provision` column on `salary_records` (a VIP 710 passthrough) — none of these three are meant to reconcile with each other.
 
@@ -682,7 +682,7 @@ Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE
 
 ## Bonus Provision
 
-`/dashboard/provisions/bonus` — same page shape as Leave Provision (hotel/year selector, Book Adjustment card, employee table, Recalculate, Export), but with **no import mechanism**: everything is pulled live from data that already exists. Scoped to exactly four hotels — **ILG, IH, ILRB, APA** (`BONUS_HOTEL_CODES` in the page) — CSL/NL/CFEM are excluded entirely.
+`/dashboard/provisions/bonus` — same page shape as Leave Provision (hotel/year selector, Book Adjustment card, employee table, Recalculate, Export), but with **no import mechanism**: everything is pulled live from data that already exists. Scoped to seven hotels — **ILG, IH, ILRB, APA, CSL, NL, CFEM** (`BONUS_HOTEL_CODES` in the page).
 
 **13th-cheque calculation (revised 2026-08-06)** — the page no longer reads `salary_records.bonus_provision` for its Provision Balance; that field (and `calculateBurden()`'s own flat-rate formula that computes it) is left completely untouched everywhere else in the app, still feeding CTC via the `ctc_bonus` flag. On this page and the combined Provisions export only, the Dec-cheque liability is instead derived per employee: **months of service** (`monthsOfServiceAtDec()`, a page-local helper distinct from `yearsOfService()`) projected forward from `employment_date` to **31 December of the selected year**, capped at 12 → **payout factor** = `MIN(months, 12) / 12`. Under **6 months'** service that cycle forfeits the bonus entirely (`decBonusRequired = 0`); otherwise **Bonus Required (Dec) = Gross Salary × factor**. Employees ticked `incentive_applicable` are entirely unaffected by this — they still use `salary_records.incentive` (the monthly rate `calculateBurden()` already computes) exactly as before; the two are mutually exclusive per row, same as previously.
 
@@ -712,7 +712,7 @@ Both cases redirect to the user's first allowed tab (computed from `CONFIGURABLE
 
 `/dashboard/provisions/overview` — nav item "Overview", first in the Provisions sidebar group (above Leave). Combines Leave, Bonus (incl. Incentive), and Severance into one on-screen summary table (Required / On Books / Adjustment per segment per hotel, pulled straight from each standalone page's own Book Adjustment figures) plus an "Export All Provisions" button producing the full workbook. WCA is deliberately excluded — it isn't a per-employee provision.
 
-**Scope**: ILG, IH, ILRB, APA — the same set the standalone Leave Provision page itself is now scoped to (see Leave Provision section above; CSL/NL/CFEM were removed from Leave entirely, not just from this export), matching Bonus/Severance so every hotel has at least two applicable segments. Severance columns only populate for ILG.
+**Scope**: ILG, IH, ILRB, APA, CSL, NL, CFEM — the same set the standalone Leave and Bonus Provision pages are scoped to (see those sections above). Severance columns only populate for ILG.
 
 **All logic lives in `src/lib/provisions-export.ts`** — `fetchProvisionsData(year)` does the actual Supabase fetching (employees/salary/provisions/book-balances for all three segments, mirroring each standalone page's own query shape and filters exactly, including ANO exclusion at the source in every segment), shared by two public functions: `loadProvisionsSummary(year)` (returns the on-screen table's rows) and `exportAllProvisions(year)` (builds and downloads the workbook). Reuses each page's live settings rather than introducing new export-time inputs — Bonus's Accrual Months comes from the same `localStorage` key the Bonus Provision page itself reads/writes.
 

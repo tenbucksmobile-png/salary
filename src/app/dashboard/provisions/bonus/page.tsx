@@ -13,8 +13,7 @@ const ACCRUAL_MONTHS_KEY = 'ihg-salary-bonus-accrual-months';
 const ALL = 'ALL';
 const DEFAULT_ACCRUAL_MONTHS = 7; // monthly total accrued to end July
 
-// Bonus Provision only applies to these four hotels.
-const BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA'];
+const BONUS_HOTEL_CODES = ['ILG', 'IH', 'ILRB', 'APA', 'CSL', 'NL', 'CFEM'];
 
 function yearsOfService(date: string | null): number {
   if (!date) return 0;
