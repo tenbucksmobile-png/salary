@@ -11,8 +11,11 @@ import { RefreshCw, Download, HandCoins } from 'lucide-react';
 const HOTEL_FILTER_KEY = 'ihg-salary-severance-hotel';
 const ALL = 'ALL';
 
-// Severance provision only applies to Indaba Lodge Gaborone.
-const SEVERANCE_HOTEL_CODES = ['ILG'];
+// Severance/Gratuity provision hotels — ILG (severance only, historically)
+// plus CSL/NL/CFEM (where gratuity_applicable employees exist, e.g. CFEM's
+// FRE001/FRE002 at a 10% rate). A hotel/employee can have either, both, or
+// neither of Severance and Gratuity — the two are independent employee flags.
+const SEVERANCE_HOTEL_CODES = ['ILG', 'CSL', 'NL', 'CFEM'];
 const SEVERANCE_SENIOR_YEARS = 5; // 60 months — daily rate doubles at this tenure
 
 function yearsOfService(date: string | null): number {
@@ -93,7 +96,8 @@ export default function SeveranceProvisionPage() {
     (async () => {
       const hotelIds = hotelFilter === ALL ? hotels.map(h => h.id) : [hotelFilter];
       const [{ data: e }, { data: b }] = await Promise.all([
-        sb.from('employees').select('*').in('hotel_id', hotelIds).eq('status', 'active').eq('severance_applicable', true),
+        sb.from('employees').select('*').in('hotel_id', hotelIds).eq('status', 'active')
+          .or('severance_applicable.eq.true,gratuity_applicable.eq.true'),
         sb.from('severance_provision_book_balances').select('*').in('hotel_id', hotelIds),
       ]);
       const empList = (e ?? []) as Employee[];
@@ -125,13 +129,25 @@ export default function SeveranceProvisionPage() {
     return m;
   }, [salaryRecords]);
 
+  // A row can be severance-applicable, gratuity-applicable, or both — the two
+  // flags are independent per employee. Gratuity's Provision Balance is a
+  // straight Gross × Rate% read from the already-calculated salary_records
+  // .gratuity figure (calculateBurden()'s own formula) — unlike Severance,
+  // it has no 5-year payout threshold/accrual concept.
   const rows = useMemo(() => {
     return employees
       .map(employee => {
         const salary = latestSalaryMap.get(employee.id);
-        const monthsAccrued = monthsSinceLastPayoutThreshold(employee.employment_date);
-        const provisionBalance = Math.round((salary?.severance ?? 0) * monthsAccrued * 100) / 100;
-        return { employee, salary, hotel: hotelMap.get(employee.hotel_id), monthsAccrued, provisionBalance };
+        const hasSeverance = employee.severance_applicable;
+        const hasGratuity = employee.gratuity_applicable;
+        const monthsAccrued = hasSeverance ? monthsSinceLastPayoutThreshold(employee.employment_date) : 0;
+        const severanceBalance = hasSeverance ? Math.round((salary?.severance ?? 0) * monthsAccrued * 100) / 100 : 0;
+        const gratuityBalance = hasGratuity ? (salary?.gratuity ?? 0) : 0;
+        const totalBalance = severanceBalance + gratuityBalance;
+        return {
+          employee, salary, hotel: hotelMap.get(employee.hotel_id),
+          hasSeverance, hasGratuity, monthsAccrued, severanceBalance, gratuityBalance, totalBalance,
+        };
       })
       .filter(r => r.salary)
       .sort((a, b) => {
@@ -144,7 +160,7 @@ export default function SeveranceProvisionPage() {
     const totals = new Map<string, number>();
     for (const r of rows) {
       const key = r.hotel ? (isBotswana(r.hotel.country) ? 'BWP' : 'ZAR') : 'BWP';
-      totals.set(key, (totals.get(key) ?? 0) + r.provisionBalance);
+      totals.set(key, (totals.get(key) ?? 0) + r.totalBalance);
     }
     return totals;
   }, [rows]);
@@ -164,11 +180,14 @@ export default function SeveranceProvisionPage() {
     return selectedHotel ? [selectedHotel] : [];
   }, [isAll, hotels, selectedHotel]);
 
+  // Book Adjustment stays Severance-only (matches the existing
+  // severance_provision_book_balances data on the books) — Gratuity has no
+  // book-balance table of its own, so it's excluded from this reconciliation.
   const adjustmentRows = useMemo(() => {
     return adjustmentHotels.map(h => {
       const cost = rows
         .filter(r => r.hotel?.id === h.id)
-        .reduce((sum, r) => sum + r.provisionBalance, 0);
+        .reduce((sum, r) => sum + r.severanceBalance, 0);
       const book = bookMap.get(h.id)?.book_provision ?? 0;
       const adjustment = Math.floor((cost - book) / 100) * 100;
       return { hotel: h, cost, book, adjustment };
@@ -210,11 +229,12 @@ export default function SeveranceProvisionPage() {
   }
 
   // Recompute severance from each employee's latest salary record and
-  // current tenure. Severance also zeroes provident_employee/provident_company
-  // per the Botswana rule (severance_applicable employees have no PF), so —
-  // like Methods' "Save & Update All" — this writes back the full set of
-  // dependent fields rather than just `severance`, to avoid leaving PF or
-  // total_cost stale relative to it.
+  // current tenure, and gratuity from Gross × Rate%. Severance also zeroes
+  // provident_employee/provident_company per the Botswana rule
+  // (severance_applicable employees have no PF), so — like Methods' "Save &
+  // Update All" — this writes back the full set of dependent fields rather
+  // than just `severance`/`gratuity`, to avoid leaving PF or total_cost
+  // stale relative to them.
   async function recalculate() {
     setRecalculating(true);
 
@@ -274,6 +294,7 @@ export default function SeveranceProvisionPage() {
         net_salary:            burden.net_salary,
         provident_company:     burden.provident_company,
         severance:             burden.severance,
+        gratuity:              burden.gratuity,
         total_company_contrib: burden.total_company_contrib,
         total_payroll_burden:  burden.total_payroll_burden,
         total_cost:            burden.total_cost,
@@ -294,9 +315,12 @@ export default function SeveranceProvisionPage() {
     try {
       const headers = [
         ...(isAll ? ['Hotel'] : []),
-        'Emp Code', 'Surname', 'First Name', 'Grade', 'Basic Salary', 'Yrs Service', 'Daily Rate', 'Days / Month', 'Monthly Rate', 'Months Accrued', 'Provision Balance',
+        'Emp Code', 'Surname', 'First Name',
+        'Basic Salary', 'Yrs Service', 'Daily Rate', 'Days / Month', 'Monthly Rate', 'Months Accrued', 'Severance Balance',
+        'Gross Salary', 'Gratuity Rate', 'Gratuity Balance',
+        'Total Provision Balance',
       ];
-      const dataRows = rows.map(({ employee, salary, hotel, monthsAccrued, provisionBalance }) => {
+      const dataRows = rows.map(({ employee, salary, hotel, hasSeverance, hasGratuity, monthsAccrued, severanceBalance, gratuityBalance, totalBalance }) => {
         const yrs = yearsOfService(employee.employment_date);
         const daysPerMonth = yrs >= SEVERANCE_SENIOR_YEARS ? 2 : 1;
         const dailyRate = (salary?.basic_salary ?? 0) / 26;
@@ -305,19 +329,24 @@ export default function SeveranceProvisionPage() {
           employee.employee_code ?? '—',
           employee.surname,
           employee.first_name,
-          employee.grade_label ?? 'Unclassified',
-          salary?.basic_salary ?? 0,
-          yrs,
-          Math.round(dailyRate * 100) / 100,
-          daysPerMonth,
-          salary?.severance ?? 0,
-          monthsAccrued,
-          provisionBalance,
+          hasSeverance ? (salary?.basic_salary ?? 0) : null,
+          hasSeverance ? yrs : null,
+          hasSeverance ? Math.round(dailyRate * 100) / 100 : null,
+          hasSeverance ? daysPerMonth : null,
+          hasSeverance ? (salary?.severance ?? 0) : null,
+          hasSeverance ? monthsAccrued : null,
+          hasSeverance ? severanceBalance : null,
+          hasGratuity ? (salary?.total_earnings ?? 0) : null,
+          hasGratuity ? (employee.gratuity_rate ?? 0) : null,
+          hasGratuity ? gratuityBalance : null,
+          totalBalance,
         ];
       });
       const totalsRow = [
         ...(isAll ? [''] : []),
-        `Total (${rows.length} employees)`, '', '', '', '', '', '', '', '',
+        `Total (${rows.length} employees)`, '', '',
+        '', '', '', '', '', '', '',
+        '', '', '',
         [...totalsByCountry.entries()].map(([cur, v]) => `${cur} ${v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}`).join(' / '),
       ];
       const sheet: ReportSheet = {
@@ -342,10 +371,10 @@ export default function SeveranceProvisionPage() {
       <div className="mb-6">
         <div className="flex items-center gap-3 mb-2">
           <HandCoins className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-2xl font-bold text-foreground">Severance Provision</h1>
+          <h1 className="text-2xl font-bold text-foreground">Severance & Gratuity Provision</h1>
         </div>
         <p className="text-muted-foreground text-sm mt-1">
-          Severance accrual — Basic ÷ 26 daily rate, 1 day/month under 60 months' service, 2 days/month thereafter. Severance is assumed paid out at every 5-year mark, so the Provision Balance only covers months accrued since the most recent threshold crossed. Indaba Lodge Gaborone only; shows only employees with "Calculate severance accrual" ticked on the Employee page.
+          Severance accrual — Basic ÷ 26 daily rate, 1 day/month under 60 months' service, 2 days/month thereafter, paid out at every 5-year mark so the balance only covers months accrued since the most recent threshold crossed. Gratuity — Gross Salary × Rate%, no accrual threshold. ILG, CSL, NL and CFEM; shows employees with "Calculate severance accrual" and/or "Gratuity applicable" ticked on the Employee page — an employee can have either, both, or (once ticked) neither.
         </p>
       </div>
 
@@ -434,8 +463,8 @@ export default function SeveranceProvisionPage() {
 
       {rows.length === 0 ? (
         <div className="bg-white rounded-xl border p-10 text-center text-sm text-muted-foreground">
-          No employees with severance accrual enabled for {isAll ? 'any hotel' : (selectedHotel?.short_code ?? 'this hotel')}.
-          Tick "Calculate severance accrual" on the Employee page to add someone here.
+          No employees with severance accrual or gratuity enabled for {isAll ? 'any hotel' : (selectedHotel?.short_code ?? 'this hotel')}.
+          Tick "Calculate severance accrual" and/or "Gratuity applicable" on the Employee page to add someone here.
         </div>
       ) : (
         <div className="bg-white rounded-xl border overflow-x-auto">
@@ -446,18 +475,21 @@ export default function SeveranceProvisionPage() {
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">Emp Code</th>
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">Surname</th>
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">First Name</th>
-                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Grade</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Basic Salary</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Yrs Service</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Daily Rate</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Days / Month</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Monthly Rate</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Months Accrued</th>
-                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Provision Balance</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Severance Balance</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground border-l">Gross Salary</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Gratuity Rate</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground">Gratuity Balance</th>
+                <th className="text-right px-4 py-3 font-medium text-muted-foreground border-l">Total Provision Balance</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ employee, salary, hotel, monthsAccrued, provisionBalance }, i) => {
+              {rows.map(({ employee, salary, hotel, hasSeverance, hasGratuity, monthsAccrued, severanceBalance, gratuityBalance, totalBalance }, i) => {
                 const yrs = yearsOfService(employee.employment_date);
                 const daysPerMonth = yrs >= SEVERANCE_SENIOR_YEARS ? 2 : 1;
                 const dailyRate = (salary?.basic_salary ?? 0) / 26;
@@ -467,22 +499,25 @@ export default function SeveranceProvisionPage() {
                     <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{employee.employee_code ?? '—'}</td>
                     <td className="px-4 py-2.5 font-medium">{employee.surname}</td>
                     <td className="px-4 py-2.5">{employee.first_name}</td>
-                    <td className="px-4 py-2.5 text-muted-foreground">{employee.grade_label ?? 'Unclassified'}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(salary?.basic_salary ?? 0, hotel)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{yrs.toFixed(1)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(dailyRate, hotel)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{daysPerMonth}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(salary?.severance ?? 0, hotel)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{monthsAccrued}</td>
-                    <td className="px-4 py-2.5 text-right font-mono">{fmt(provisionBalance, hotel)}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{hasSeverance ? fmt(salary?.basic_salary ?? 0, hotel) : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{hasSeverance ? yrs.toFixed(1) : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{hasSeverance ? fmt(dailyRate, hotel) : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{hasSeverance ? daysPerMonth : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{hasSeverance ? fmt(salary?.severance ?? 0, hotel) : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{hasSeverance ? monthsAccrued : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono">{hasSeverance ? fmt(severanceBalance, hotel) : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground border-l">{hasGratuity ? fmt(salary?.total_earnings ?? 0, hotel) : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{hasGratuity ? `${employee.gratuity_rate ?? 0}%` : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono">{hasGratuity ? fmt(gratuityBalance, hotel) : '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono font-medium border-l">{fmt(totalBalance, hotel)}</td>
                   </tr>
                 );
               })}
             </tbody>
             <tfoot>
               <tr className="border-t bg-muted/20 font-medium">
-                <td className="px-4 py-3" colSpan={isAll ? 10 : 9}>Total ({rows.length} employees)</td>
-                <td className="px-4 py-3 text-right font-mono">
+                <td className="px-4 py-3" colSpan={isAll ? 14 : 13}>Total ({rows.length} employees)</td>
+                <td className="px-4 py-3 text-right font-mono border-l">
                   {[...totalsByCountry.entries()].map(([cur, v]) => (
                     <div key={cur}>{cur === 'BWP' ? 'P' : 'R'} {v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}</div>
                   ))}

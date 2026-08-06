@@ -328,7 +328,7 @@ export default function BonusProvisionPage() {
     try {
       const headers = [
         ...(isAll ? ['Hotel'] : []),
-        'Emp Code', 'Surname', 'First Name', 'Grade', 'Gross Salary',
+        'Emp Code', 'Surname', 'First Name', 'Gross Salary',
         'Mths Service (Dec ' + year + ')', 'Payout Factor', 'Bonus Required (Dec)', 'Incentive',
         'Accrual Months', 'Provision Balance',
       ];
@@ -337,7 +337,6 @@ export default function BonusProvisionPage() {
         employee.employee_code ?? '—',
         employee.surname,
         employee.first_name,
-        employee.grade_label ?? 'Unclassified',
         gross,
         isAno ? 0 : monthsOfService,
         isAno ? 0 : +(factor * 100).toFixed(1),
@@ -348,7 +347,7 @@ export default function BonusProvisionPage() {
       ]);
       const totalsRow = [
         ...(isAll ? [''] : []),
-        `Total (${rows.length} employees)`, '', '', '', '', '', '', '', '', '',
+        `Total (${rows.length} employees)`, '', '', '', '', '', '', '', '',
         [...totalsByCountry.entries()].map(([cur, v]) => `${cur} ${v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}`).join(' / '),
       ];
       const sheet: ReportSheet = {
@@ -488,7 +487,6 @@ export default function BonusProvisionPage() {
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">Emp Code</th>
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">Surname</th>
                 <th className="text-left px-4 py-3 font-medium text-muted-foreground">First Name</th>
-                <th className="text-left px-4 py-3 font-medium text-muted-foreground">Grade</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Gross Salary</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Mths Service (Dec {year})</th>
                 <th className="text-right px-4 py-3 font-medium text-muted-foreground">Payout Factor</th>
@@ -504,7 +502,6 @@ export default function BonusProvisionPage() {
                   <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{employee.employee_code ?? '—'}</td>
                   <td className="px-4 py-2.5 font-medium">{employee.surname}</td>
                   <td className="px-4 py-2.5">{employee.first_name}</td>
-                  <td className="px-4 py-2.5 text-muted-foreground">{employee.grade_label ?? 'Unclassified'}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">{fmt(salary?.total_earnings ?? 0, hotel)}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">
                     {isAno || employee.incentive_applicable ? '—' : monthsOfService}
@@ -526,7 +523,7 @@ export default function BonusProvisionPage() {
             </tbody>
             <tfoot>
               <tr className="border-t bg-muted/20 font-medium">
-                <td className="px-4 py-3" colSpan={isAll ? 10 : 9}>Total ({rows.length} employees)</td>
+                <td className="px-4 py-3" colSpan={isAll ? 9 : 8}>Total ({rows.length} employees)</td>
                 <td className="px-4 py-3 text-right font-mono">
                   {[...totalsByCountry.entries()].map(([cur, v]) => (
                     <div key={cur}>{cur === 'BWP' ? 'P' : 'R'} {v.toLocaleString('en-ZA', { maximumFractionDigits: 2 })}</div>
