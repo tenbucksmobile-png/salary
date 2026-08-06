@@ -273,7 +273,15 @@ function combineRows(leaveRows: LeaveRow[], bonusRows: BonusRow[], severanceRows
     const ex = map.get(r.employee.id);
     if (ex) ex.severance = r; else map.set(r.employee.id, { employee: r.employee, severance: r });
   }
-  return [...map.values()].sort((a, b) => a.employee.surname.localeCompare(b.employee.surname));
+  // FTC employees (no employee_code — CSL/NL's Fixed Term Contract staff,
+  // cleared by migration 014) sort to the bottom of every hotel tab, below
+  // everyone with a real code; alphabetical by surname within each group.
+  return [...map.values()].sort((a, b) => {
+    const aNoCode = !a.employee.employee_code;
+    const bNoCode = !b.employee.employee_code;
+    if (aNoCode !== bNoCode) return aNoCode ? 1 : -1;
+    return a.employee.surname.localeCompare(b.employee.surname);
+  });
 }
 
 // ── Sheet builders ─────────────────────────────────────────────────────────
@@ -420,27 +428,41 @@ function buildHotelSheet(
         const basicCol = colLetter(severanceStart);
         const rateCol = colLetter(severanceStart + 2);
         const monthsAccruedCol = colLetter(severanceStart + 5);
+        const monthsServiceCol = colLetter(6); // Employee block's own Months Service (31-July-anchored)
         cells.push(
           num(row.severance.basic),
           // Yrs Service — same 31-July-anchored formula as the Employee
           // block's own Years Service, referencing the same Start Date cell.
           fml(`ROUND(DATEDIF(${startCell},${julyAnchor},"d")/365.25,1)`, row.severance.yrs),
           fml(`${basicCol}${r}/26`, row.severance.dailyRate),
-          num(row.severance.daysPerMonth), num(row.severance.monthlyRate), num(row.severance.monthsAccrued),
+          num(row.severance.daysPerMonth), num(row.severance.monthlyRate),
+          // Months Accrued = total months of service since the most recent
+          // 5-year (60-month) payout threshold — MOD(totalMonths,60) is
+          // exactly that, and reuses the Employee block's own Months Service
+          // (already anchored to the same 31 July date) rather than
+          // repeating the DATEDIF.
+          fml(`MOD(${monthsServiceCol}${r},60)`, row.severance.monthsAccrued),
           fml(`${rateCol}${r}*${monthsAccruedCol}${r}`, row.severance.severanceBalance),
         );
       } else {
         cells.push(blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell(), blankCell());
       }
 
-      // Gratuity Provision Balance stays a static value, not a formula — its
-      // derivation branches on the FRE001/FRE002 period-of-accrual override,
-      // which isn't exposed as its own column here (mirrors Bonus Required
-      // (Dec)'s same static-value treatment above).
+      // Gratuity Provision Balance = Gross Salary × Rate% — for FRE001/FRE002
+      // (the only GRATUITY_ACCRUAL_START entries, both CFEM), it's further
+      // multiplied by the whole-months period of accrual from their hardcoded
+      // LOA start date to 31 July of the selected year, matching
+      // periodOfAccrualMonths() exactly.
       if (row.severance?.hasGratuity) {
+        const grossCol = colLetter(gratuityStart);
+        const rateCol = colLetter(gratuityStart + 1);
+        const accrualStart = row.employee.employee_code ? GRATUITY_ACCRUAL_START[row.employee.employee_code] : undefined;
+        const balanceFormula = accrualStart
+          ? `${grossCol}${r}*${rateCol}${r}/100*DATEDIF(DATE(${accrualStart.slice(0, 4)},${Number(accrualStart.slice(5, 7))},${Number(accrualStart.slice(8, 10))}),${julyAnchor},"m")`
+          : `${grossCol}${r}*${rateCol}${r}/100`;
         cells.push(
           num(row.severance.gratuityGross), num(row.severance.gratuityRate),
-          num(row.severance.gratuityBalance),
+          fml(balanceFormula, row.severance.gratuityBalance),
         );
       } else {
         cells.push(blankCell(), blankCell(), blankCell());
@@ -507,9 +529,14 @@ function buildOverviewSheet(
     return [
       str(h.name, true),
       { v: bw ? 'BWP (P)' : 'ZAR (R)', t: 's', s: { alignment: { horizontal: 'center' } } },
-      l ? num(l.cost) : blankCell(), l ? num(l.book) : blankCell(), l ? adjFml(`FLOOR.MATH(C${r}-D${r},100)`, l.adjustment) : blankCell(),
-      b ? num(b.cost) : blankCell(), b ? num(b.book) : blankCell(), b ? adjFml(`FLOOR.MATH(F${r}-G${r},100)`, b.adjustment) : blankCell(),
-      s ? num(s.cost) : blankCell(), s ? num(s.book) : blankCell(), s ? adjFml(`FLOOR.MATH(I${r}-J${r},100)`, s.adjustment) : blankCell(),
+      // FLOOR.MATH is a post-2007 function — Excel's file format requires the
+      // internal "_xlfn." prefix on functions newer than the legacy .xls
+      // function table, or Excel can't resolve the name and mangles the
+      // formula (shows up as "=@FLOOR.MATH(...)" with a #NAME?/implicit-
+      // intersection error instead of computing).
+      l ? num(l.cost) : blankCell(), l ? num(l.book) : blankCell(), l ? adjFml(`_xlfn.FLOOR.MATH(C${r}-D${r},100)`, l.adjustment) : blankCell(),
+      b ? num(b.cost) : blankCell(), b ? num(b.book) : blankCell(), b ? adjFml(`_xlfn.FLOOR.MATH(F${r}-G${r},100)`, b.adjustment) : blankCell(),
+      s ? num(s.cost) : blankCell(), s ? num(s.book) : blankCell(), s ? adjFml(`_xlfn.FLOOR.MATH(I${r}-J${r},100)`, s.adjustment) : blankCell(),
       g ? num(g.cost) : blankCell(),
     ];
   });
