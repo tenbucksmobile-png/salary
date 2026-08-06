@@ -403,6 +403,14 @@ export function parseLeaveBalanceFile(text: string): { employees: LeaveBalanceEn
     empCode:   header.findIndex(h => h === 'emp code' || h === 'employee code' || h === 'emp no' || h === 'employee no' || h === 'staff no' || h === 'staff code' || h === 'emp #' || h === 'emp#' || h === 'code'),
     leave:     header.findIndex(h => h.includes('leave')),
   };
+  // A bare "Name" header alongside a separate Surname column (e.g.
+  // "Code,Name,Surname,Leave") is the first-name half, not a combined full
+  // name — only treat it as combined when there's no Surname column to pair
+  // it with. Mirrors the same disambiguation already used for Afritec/Bodulo.
+  if (idx.surname >= 0 && idx.firstName < 0 && idx.fullName >= 0) {
+    idx.firstName = idx.fullName;
+    idx.fullName = -1;
+  }
 
   const employees: LeaveBalanceEntry[] = [];
   const errors: string[] = [];
