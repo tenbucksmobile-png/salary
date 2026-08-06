@@ -400,11 +400,13 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
   }
 
   // ── Build per-hotel row sets ────────────────────────────────────────────
+  // ANO (vacant position) employees are excluded entirely from every segment —
+  // not a real employee, so they never belong in a provisions export.
   const leaveByHotel = new Map<string, LeaveRow[]>();
   for (const p of (provisions ?? []) as LeaveProvision[]) {
     const employee = leaveEmpMap.get(p.employee_id);
     const hotel = hotelMap.get(p.hotel_id);
-    if (!employee || !hotel) continue;
+    if (!employee || !hotel || employee.grade_label === 'ANO') continue;
     if (!leaveByHotel.has(hotel.id)) leaveByHotel.set(hotel.id, []);
     leaveByHotel.get(hotel.id)!.push({ employee, provision: p, hotel });
   }
@@ -412,12 +414,12 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
 
   const bonusByHotel = new Map<string, BonusRow[]>();
   for (const employee of bonusEmployees) {
+    if (employee.grade_label === 'ANO') continue;
     const hotel = hotelMap.get(employee.hotel_id);
     const salary = latestSalaryMap.get(employee.id);
     if (!hotel || !salary) continue;
-    const isAno = employee.grade_label === 'ANO';
-    const bonusProvision = isAno ? 0 : (salary.bonus_provision ?? 0);
-    const incentive = isAno ? 0 : (salary.incentive ?? 0);
+    const bonusProvision = salary.bonus_provision ?? 0;
+    const incentive = salary.incentive ?? 0;
     const provisionBalance = Math.round((bonusProvision + incentive) * accrualMonths * 100) / 100;
     if (!bonusByHotel.has(hotel.id)) bonusByHotel.set(hotel.id, []);
     bonusByHotel.get(hotel.id)!.push({
@@ -428,6 +430,7 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
 
   const severanceByHotel = new Map<string, SeveranceRow[]>();
   for (const employee of severanceEmployees) {
+    if (employee.grade_label === 'ANO') continue;
     const hotel = hotelMap.get(employee.hotel_id);
     const salary = latestSalaryMap.get(employee.id);
     if (!hotel || !salary) continue;
