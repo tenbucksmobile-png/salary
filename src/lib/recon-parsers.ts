@@ -1111,6 +1111,65 @@ export async function parseFtcPayrollXls(
   };
 }
 
+// ── Increase List (CSL/NL salary review workbook, cross-referenced against payroll) ──
+// A two-sheet workbook (sheet names "CSL" and "NL"), one row per employee: Surname,
+// First Name, (NL only: Job Title), Yrs Service, Grade, Department, Current Gross (P),
+// New Gross (P), and a trailing free-text remarks column (e.g. "resigned",
+// "new employee DNQ") that has no header label of its own in a real confirmed file.
+// Column positions are detected by keyword per sheet rather than hardcoded, since the
+// two sheets don't share an identical column set (NL adds Job Title).
+
+export interface IncreaseRow {
+  surname: string;
+  firstName: string;
+  currentGross: number;
+  newGross: number;
+  comment: string;
+}
+
+function parseIncreaseSheet(rows: any[][]): IncreaseRow[] {
+  if (!rows.length) return [];
+  const header = rows[0].map((c: any) => String(c ?? '').trim().toLowerCase());
+  const surnameCol = header.findIndex(h => h === 'surname');
+  const firstNameCol = header.findIndex(h => /first\s*name/.test(h));
+  const currentCol = header.findIndex(h => /current.*gross/.test(h));
+  const newCol = header.findIndex(h => /new.*gross/.test(h));
+  // The remarks column carries no header label of its own in the confirmed file — it's
+  // simply the column right after New Gross.
+  const commentCol = newCol >= 0 ? newCol + 1 : -1;
+  if (surnameCol < 0 || currentCol < 0 || newCol < 0) return [];
+
+  const out: IncreaseRow[] = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const surname = String(row[surnameCol] ?? '').trim();
+    // Skips the sheet's own trailing "Total  employees" summary row (confirmed on a
+    // real CSL sheet) — not a real employee.
+    if (!surname || /^total/i.test(surname)) continue;
+    out.push({
+      surname,
+      firstName: firstNameCol >= 0 ? String(row[firstNameCol] ?? '').trim() : '',
+      currentGross: Number(row[currentCol]) || 0,
+      newGross: Number(row[newCol]) || 0,
+      comment: commentCol >= 0 ? String(row[commentCol] ?? '').trim() : '',
+    });
+  }
+  return out;
+}
+
+export async function parseIncreaseList(buf: ArrayBuffer): Promise<{ CSL: IncreaseRow[]; NL: IncreaseRow[] }> {
+  const XLSX = await getXLSX();
+  const wb = XLSX.read(buf, { type: 'array' });
+  const result: { CSL: IncreaseRow[]; NL: IncreaseRow[] } = { CSL: [], NL: [] };
+  (['CSL', 'NL'] as const).forEach(code => {
+    const sheetName = wb.SheetNames.find((n: string) => n.trim().toUpperCase() === code);
+    if (!sheetName) return;
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '' });
+    result[code] = parseIncreaseSheet(rows);
+  });
+  return result;
+}
+
 // ── CFEM Deductions Summary (plain-text/CSV export from CFEM's own payroll system) ──
 // CFEM Management runs a separate, confidential payroll from CSL/NL — this file is
 // CFEM's own pre-split-by-vendor deductions report, replacing the need to extract

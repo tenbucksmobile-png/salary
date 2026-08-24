@@ -22,9 +22,11 @@ import {
   parseCfemDeductions,
   parseCfemPensionCsv,
   parsePensionSchedule,
+  parseIncreaseList,
   nameKey,
   nameTokens,
   type PayrollLine,
+  type IncreaseRow,
 } from '@/lib/recon-parsers';
 import type { ParsedStatement, ParsedPayroll, ReconLine, ParsedCfemDeductions } from '@/lib/recon-parsers';
 import { exportReport, type ReportSheet } from '@/lib/reports-export';
@@ -190,6 +192,15 @@ export default function ReconciliationPage() {
   // loaded for the same prevYear/prevMonth the comparison itself uses. Deliberately never
   // offered for the CURRENT period's basic salary — see migration 033.
   const [basicOverridesByHotel, setBasicOverridesByHotel] = useState<Record<PayrollReconHotel, Record<string, ReconBasicSalaryOverride>>>({ CSL: {}, NL: {} });
+
+  // Increase List cross-reference (Employees tab, CSL/NL only) — a salary-review workbook
+  // with one sheet per hotel (Surname/First Name/Current Gross/New Gross/remarks),
+  // imported once and split into each hotel's own recon_uploads row (upload_type
+  // 'increase_list'), then diffed against that hotel's CURRENT period payroll upload
+  // (not the prior period — the increase list is scoped to the period it takes effect in).
+  const [increaseListByHotel, setIncreaseListByHotel] = useState<Record<PayrollReconHotel, IncreaseRow[]>>({ CSL: [], NL: [] });
+  const [increaseListUploading, setIncreaseListUploading] = useState(false);
+  const increaseListFileRef = useRef<HTMLInputElement | null>(null);
 
   // Employees tab approvals — per-record tickbox state, persisted so it survives navigation.
   // Loaded from DB on tab open; ticking a checkbox only updates local state (approvalTicks);
@@ -368,6 +379,88 @@ export default function ReconciliationPage() {
       setBasicOverridesByHotel(Object.fromEntries(PAYROLL_RECON_HOTELS.map((h, i) => [h, results[i]])) as Record<PayrollReconHotel, Record<string, ReconBasicSalaryOverride>>);
     });
   }, [tab, year, month, hotels]);
+
+  // Increase List cross-reference — loaded for the CURRENT period (the period the
+  // increase takes effect in), not the prior one. Also re-run after a fresh upload.
+  async function loadIncreaseLists() {
+    async function loadFor(shortCode: PayrollReconHotel): Promise<IncreaseRow[]> {
+      const hotel = hotels.find(h => h.short_code === shortCode);
+      if (!hotel) return [];
+      const { data: periodRow } = await supabase
+        .from('reconciliation_periods')
+        .select('id')
+        .eq('hotel_id', hotel.id)
+        .eq('period_year', year)
+        .eq('period_month', month)
+        .maybeSingle();
+      if (!periodRow) return [];
+      const { data: up } = await supabase
+        .from('recon_uploads')
+        .select('parsed_data')
+        .eq('period_id', periodRow.id)
+        .eq('upload_type', 'increase_list')
+        .maybeSingle();
+      return ((up?.parsed_data as any)?.rows ?? []) as IncreaseRow[];
+    }
+    const results = await Promise.all(PAYROLL_RECON_HOTELS.map(loadFor));
+    setIncreaseListByHotel(Object.fromEntries(PAYROLL_RECON_HOTELS.map((h, i) => [h, results[i]])) as Record<PayrollReconHotel, IncreaseRow[]>);
+  }
+
+  useEffect(() => {
+    if (tab !== 'crossref' || !hotels.length) return;
+    loadIncreaseLists();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, year, month, hotels]);
+
+  // Increase List upload — one workbook covers both CSL and NL sheets, so this isn't
+  // scoped to whichever hotel pill happens to be selected; each sheet is split out and
+  // saved against that hotel's own reconciliation_periods row (created if it doesn't
+  // exist yet — unlike ensurePeriod() below, this can't rely on the single `period`
+  // component state, since it may need to create/find TWO hotels' period rows in one go).
+  async function ensurePeriodForHotel(hid: string): Promise<string> {
+    const { data: existing } = await supabase
+      .from('reconciliation_periods')
+      .select('id')
+      .eq('hotel_id', hid)
+      .eq('period_year', year)
+      .eq('period_month', month)
+      .maybeSingle();
+    if (existing) return existing.id;
+    const { data, error } = await supabase
+      .from('reconciliation_periods')
+      .insert({ hotel_id: hid, period_year: year, period_month: month, status: 'open' })
+      .select()
+      .single();
+    if (error) throw error;
+    return data.id;
+  }
+
+  async function handleIncreaseListUpload(file: File) {
+    setIncreaseListUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const parsedByHotel = await parseIncreaseList(buf);
+      for (const code of PAYROLL_RECON_HOTELS) {
+        const rows = parsedByHotel[code];
+        if (!rows.length) continue;
+        const h = hotels.find(x => x.short_code === code);
+        if (!h) continue;
+        const pid = await ensurePeriodForHotel(h.id);
+        const { error } = await supabase.from('recon_uploads').upsert(
+          { period_id: pid, upload_type: 'increase_list', file_name: file.name,
+            parsed_data: { rows }, row_count: rows.length, total_amount: null, uploaded_by: username },
+          { onConflict: 'period_id,upload_type' },
+        );
+        if (error) throw error;
+      }
+      await loadIncreaseLists();
+    } catch (e: any) {
+      alert('Upload failed: ' + e.message);
+    } finally {
+      setIncreaseListUploading(false);
+      if (increaseListFileRef.current) increaseListFileRef.current.value = '';
+    }
+  }
 
   // Load any previously-submitted approvals for the currently selected hotel/period, so
   // ticks survive navigating away and back. Not gated to the Employees tab — the Commit
@@ -1380,12 +1473,71 @@ export default function ReconciliationPage() {
     PAYROLL_RECON_HOTELS.map(h => [h, buildEmployeesComparison(termPayrollByHotel[h], basicOverridesByHotel[h])])
   ) as Record<PayrollReconHotel, ReturnType<typeof buildEmployeesComparison>>;
 
+  // Increase List cross-reference: for each employee in the imported increase list,
+  // match against the CURRENT period's payroll upload by name and take the payroll's
+  // own incomeTotal (gross) as the authoritative "current salary" — the increase list's
+  // own Current Gross is kept alongside only to flag where the two disagree (listMismatch),
+  // since the list may have been built off a stale/incorrect current figure. Falls back to
+  // the list's own Current Gross when no payroll match exists at all.
+  interface IncreaseCrossRow {
+    surname: string; firstName: string;
+    currentSalary: number; listCurrent: number; newSalary: number; difference: number;
+    comment: string; matched: boolean; ambiguous: boolean; listMismatch: boolean;
+  }
+  // Two-pass, same pattern as the CFE Management matchCfeEmployee() above: an exact
+  // name match (nameKey — full token-set equality) first, since the increase list's
+  // First Name field sometimes carries only a nickname/middle name rather than the
+  // payroll's full given name (confirmed live: increase list "Chiziyo, Chibi" vs
+  // payroll "MRS MAVIS CHIBI CHIZIYO" — exact match fails on the missing "Mavis").
+  // Falls back to surname-token + first-initial matching, excluding the surname token
+  // itself from the initial check (otherwise a surname that happens to start with the
+  // same letter as the target's first initial creates a false match — confirmed live:
+  // "Kamwi, Kahimbi" matching "MR BOTSHELO KAMWI" purely because "KAMWI" starts with K).
+  // If more than one payroll line still matches after that (two people, same surname
+  // AND same first initial — confirmed live for "Matengu"), the match is left ambiguous
+  // rather than guessed, so a salary is never silently attributed to the wrong person.
+  function matchPayrollLineForIncrease(r: IncreaseRow, payrollLines: PayrollLine[]): { line: PayrollLine | null; ambiguous: boolean } {
+    const exact = payrollLines.find(l => nameKey(l.name) === nameKey(`${r.surname} ${r.firstName}`));
+    if (exact) return { line: exact, ambiguous: false };
+
+    const surnameToken = nameTokens(r.surname)[0];
+    if (!surnameToken) return { line: null, ambiguous: false };
+    const firstInitial = nameTokens(r.firstName)[0]?.[0];
+    const candidates = payrollLines.filter(l => {
+      const tokens = nameTokens(l.name);
+      if (!tokens.includes(surnameToken)) return false;
+      const rest = tokens.filter(t => t !== surnameToken);
+      return !firstInitial || rest.some(t => t[0] === firstInitial);
+    });
+    if (candidates.length === 1) return { line: candidates[0], ambiguous: false };
+    return { line: null, ambiguous: candidates.length > 1 };
+  }
+  function buildIncreaseCrossRef(rows: IncreaseRow[], payrollLines: PayrollLine[]): IncreaseCrossRow[] {
+    return [...rows]
+      .sort((a, b) => a.surname.toLowerCase().localeCompare(b.surname.toLowerCase()))
+      .map(r => {
+        const { line: p, ambiguous } = matchPayrollLineForIncrease(r, payrollLines);
+        const currentSalary = p ? p.incomeTotal : r.currentGross;
+        return {
+          surname: r.surname, firstName: r.firstName,
+          currentSalary, listCurrent: r.currentGross, newSalary: r.newGross,
+          difference: r.newGross - currentSalary,
+          comment: r.comment, matched: !!p, ambiguous,
+          listMismatch: !!p && Math.abs(r.currentGross - currentSalary) > 0.5,
+        };
+      });
+  }
+  const increaseCrossRefByHotel = Object.fromEntries(
+    PAYROLL_RECON_HOTELS.map(h => [h, buildIncreaseCrossRef(increaseListByHotel[h], termPayrollByHotel[h].current)])
+  ) as Record<PayrollReconHotel, IncreaseCrossRow[]>;
+
   // The Employees tab always reflects whichever hotel is currently selected via the
   // header pill (CSL or NL) — no separate internal sub-tab, so what you see always
   // matches the pill you're on.
   const employeesActiveHotel: PayrollReconHotel = hotel?.short_code === 'NL' ? 'NL' : 'CSL';
   const activeEmployeesComparison = employeesComparisonByHotel[employeesActiveHotel];
   const activeTermPayrollForEmployees = termPayrollByHotel[employeesActiveHotel];
+  const activeIncreaseCrossRef = increaseCrossRefByHotel[employeesActiveHotel];
 
   const employeesTabBadge = employeesComparisonByHotel[employeesActiveHotel];
   const employeesTabBadgeCount = employeesTabBadge.basicMismatches.length + employeesTabBadge.newAppointments.length + employeesTabBadge.terminations.length;
@@ -2438,6 +2590,97 @@ export default function ReconciliationPage() {
               Basic Salary Mismatch; names new this period show as New Appointments; names in last period&apos;s payroll
               but missing this period show as Terminations.
             </p>
+
+            {/* Increase List Cross-Reference */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  Increase List Cross-Reference ({activeIncreaseCrossRef.length})
+                </h2>
+                <div>
+                  <input
+                    ref={increaseListFileRef}
+                    type="file"
+                    accept=".xlsx,.xls"
+                    className="hidden"
+                    onChange={e => { const f = e.target.files?.[0]; if (f) handleIncreaseListUpload(f); }}
+                  />
+                  <button
+                    onClick={() => increaseListFileRef.current?.click()}
+                    disabled={increaseListUploading}
+                    className="text-xs border rounded px-2 py-1 hover:bg-muted disabled:opacity-50"
+                  >
+                    {increaseListUploading ? 'Uploading…' : 'Upload Increase List'}
+                  </button>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground mb-2">
+                One workbook covers both CSL and NL sheets (Surname / First Name / Current Gross / New Gross) —
+                uploading it updates both hotels at once. Current Salary is taken from this period&apos;s payroll
+                upload where the employee is found (amber row = the list&apos;s own Current Gross doesn&apos;t
+                match payroll); otherwise it falls back to the list&apos;s own figure and the row is greyed
+                (not found in this period&apos;s payroll).
+              </p>
+              {activeIncreaseCrossRef.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No increase list uploaded for {employeesActiveHotel} this period.</p>
+              ) : (
+                <table className="text-sm border rounded w-full max-w-3xl">
+                  <thead>
+                    <tr className="bg-muted/40">
+                      <th className="px-3 py-2 text-left">Name</th>
+                      <th className="px-3 py-2 text-right">Current Salary</th>
+                      <th className="px-3 py-2 text-right">New Salary</th>
+                      <th className="px-3 py-2 text-right">Difference</th>
+                      <th className="px-3 py-2 text-left">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeIncreaseCrossRef.map((r, i) => (
+                      <tr
+                        key={i}
+                        className={`border-t ${!r.matched ? 'bg-muted/20 text-muted-foreground' : r.listMismatch ? 'bg-amber-50' : ''}`}
+                      >
+                        <td className="px-3 py-1.5">{r.surname}, {r.firstName}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">
+                          {fmt(r.currentSalary, country)}
+                          {r.listMismatch && <span className="ml-1 text-amber-600" title={`List's own Current Gross: ${fmt(r.listCurrent, country)}`}>⚠</span>}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.newSalary, country)}</td>
+                        <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.difference > 0 ? 'text-green-700' : r.difference < 0 ? 'text-red-600' : ''}`}>
+                          {r.difference > 0 ? '+' : ''}{fmt(r.difference, country)}
+                        </td>
+                        <td className="px-3 py-1.5 text-xs">
+                          {!r.matched && (
+                            <span className="mr-1">{r.ambiguous ? 'multiple payroll matches — resolve manually' : 'not found in payroll'}</span>
+                          )}
+                          {r.comment}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t bg-muted/40 font-semibold">
+                      <td className="px-3 py-1.5">Total</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        {fmt(activeIncreaseCrossRef.reduce((s, r) => s + r.currentSalary, 0), country)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        {fmt(activeIncreaseCrossRef.reduce((s, r) => s + r.newSalary, 0), country)}
+                      </td>
+                      {(() => {
+                        const totalDiff = activeIncreaseCrossRef.reduce((s, r) => s + r.difference, 0);
+                        return (
+                          <td className={`px-3 py-1.5 text-right tabular-nums ${totalDiff > 0 ? 'text-green-700' : totalDiff < 0 ? 'text-red-600' : ''}`}>
+                            {totalDiff > 0 ? '+' : ''}{fmt(totalDiff, country)}
+                          </td>
+                        );
+                      })()}
+                      <td className="px-3 py-1.5" />
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
+            </div>
 
             {!activeTermPayrollForEmployees.loaded ? (
               <p className="text-sm text-muted-foreground">Loading…</p>
