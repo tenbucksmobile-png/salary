@@ -1473,16 +1473,25 @@ export default function ReconciliationPage() {
     PAYROLL_RECON_HOTELS.map(h => [h, buildEmployeesComparison(termPayrollByHotel[h], basicOverridesByHotel[h])])
   ) as Record<PayrollReconHotel, ReturnType<typeof buildEmployeesComparison>>;
 
-  // Increase List cross-reference: for each employee in the imported increase list,
-  // match against the CURRENT period's payroll upload by name and take the payroll's
-  // own incomeTotal (gross) as the authoritative "current salary" — the increase list's
-  // own Current Gross is kept alongside only to flag where the two disagree (listMismatch),
-  // since the list may have been built off a stale/incorrect current figure. Falls back to
-  // the list's own Current Gross when no payroll match exists at all.
+  // Increase List cross-reference: Current Salary / New Salary / Difference always come
+  // from the increase list ITSELF (Current Gross / New Gross), never from payroll —
+  // confirmed live that payroll's own incomeTotal/basic is NOT a stand-in for "current"
+  // here: for this period's CSL payroll, basic already equals the list's New Gross for
+  // nearly every matched employee (diff 0.00 across 149/169 sampled rows) — the increase
+  // has already been keyed into payroll's basic salary for the period being viewed, so
+  // there's no separate "current" figure left in payroll to diff against; using
+  // incomeTotal (which also includes overtime/allowances unrelated to the increase)
+  // produced a large negative "difference" on nearly every row.
+  // "Cross-referenced against payroll" instead means: has this increase actually been
+  // applied in the live payroll data yet? matched payroll basic is compared against both
+  // the list's Current and New Gross to classify each row as applied / pending / a
+  // genuine mismatch (payroll basic matches neither figure).
   interface IncreaseCrossRow {
     surname: string; firstName: string;
-    currentSalary: number; listCurrent: number; newSalary: number; difference: number;
-    comment: string; matched: boolean; ambiguous: boolean; listMismatch: boolean;
+    currentSalary: number; newSalary: number; difference: number;
+    comment: string; matched: boolean; ambiguous: boolean;
+    payrollBasic: number | null;
+    status: 'applied' | 'pending' | 'mismatch' | null;
   }
   // Two-pass, same pattern as the CFE Management matchCfeEmployee() above: an exact
   // name match (nameKey — full token-set equality) first, since the increase list's
@@ -1517,13 +1526,19 @@ export default function ReconciliationPage() {
       .sort((a, b) => a.surname.toLowerCase().localeCompare(b.surname.toLowerCase()))
       .map(r => {
         const { line: p, ambiguous } = matchPayrollLineForIncrease(r, payrollLines);
-        const currentSalary = p ? p.incomeTotal : r.currentGross;
+        const payrollBasic = p ? p.basic : null;
+        let status: IncreaseCrossRow['status'] = null;
+        if (payrollBasic !== null) {
+          if (Math.abs(payrollBasic - r.newGross) <= 0.5) status = 'applied';
+          else if (Math.abs(payrollBasic - r.currentGross) <= 0.5) status = 'pending';
+          else status = 'mismatch';
+        }
         return {
           surname: r.surname, firstName: r.firstName,
-          currentSalary, listCurrent: r.currentGross, newSalary: r.newGross,
-          difference: r.newGross - currentSalary,
+          currentSalary: r.currentGross, newSalary: r.newGross,
+          difference: r.newGross - r.currentGross,
           comment: r.comment, matched: !!p, ambiguous,
-          listMismatch: !!p && Math.abs(r.currentGross - currentSalary) > 0.5,
+          payrollBasic, status,
         };
       });
   }
@@ -2616,21 +2631,23 @@ export default function ReconciliationPage() {
               </div>
               <p className="text-xs text-muted-foreground mb-2">
                 One workbook covers both CSL and NL sheets (Surname / First Name / Current Gross / New Gross) —
-                uploading it updates both hotels at once. Current Salary is taken from this period&apos;s payroll
-                upload where the employee is found (amber row = the list&apos;s own Current Gross doesn&apos;t
-                match payroll); otherwise it falls back to the list&apos;s own figure and the row is greyed
-                (not found in this period&apos;s payroll).
+                uploading it updates both hotels at once. Current Salary and New Salary always come from the
+                increase list itself. Payroll Status cross-checks this period&apos;s payroll upload: <strong>Applied</strong> —
+                payroll&apos;s Basic already matches New Salary; <strong>Pending</strong> — payroll still shows the
+                old Current Salary; <strong>Mismatch</strong> — payroll&apos;s Basic matches neither figure (amber);
+                greyed rows have no payroll match at all for this period.
               </p>
               {activeIncreaseCrossRef.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No increase list uploaded for {employeesActiveHotel} this period.</p>
               ) : (
-                <table className="text-sm border rounded w-full max-w-3xl">
+                <table className="text-sm border rounded w-full max-w-4xl">
                   <thead>
                     <tr className="bg-muted/40">
                       <th className="px-3 py-2 text-left">Name</th>
                       <th className="px-3 py-2 text-right">Current Salary</th>
                       <th className="px-3 py-2 text-right">New Salary</th>
                       <th className="px-3 py-2 text-right">Difference</th>
+                      <th className="px-3 py-2 text-left">Payroll Status</th>
                       <th className="px-3 py-2 text-left">Notes</th>
                     </tr>
                   </thead>
@@ -2638,16 +2655,21 @@ export default function ReconciliationPage() {
                     {activeIncreaseCrossRef.map((r, i) => (
                       <tr
                         key={i}
-                        className={`border-t ${!r.matched ? 'bg-muted/20 text-muted-foreground' : r.listMismatch ? 'bg-amber-50' : ''}`}
+                        className={`border-t ${!r.matched ? 'bg-muted/20 text-muted-foreground' : r.status === 'mismatch' ? 'bg-amber-50' : ''}`}
                       >
                         <td className="px-3 py-1.5">{r.surname}, {r.firstName}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums">
-                          {fmt(r.currentSalary, country)}
-                          {r.listMismatch && <span className="ml-1 text-amber-600" title={`List's own Current Gross: ${fmt(r.listCurrent, country)}`}>⚠</span>}
-                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.currentSalary, country)}</td>
                         <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.newSalary, country)}</td>
                         <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.difference > 0 ? 'text-green-700' : r.difference < 0 ? 'text-red-600' : ''}`}>
                           {r.difference > 0 ? '+' : ''}{fmt(r.difference, country)}
+                        </td>
+                        <td className="px-3 py-1.5 text-xs">
+                          {r.status === 'applied' && <span className="text-green-700">Applied</span>}
+                          {r.status === 'pending' && <span className="text-amber-600">Pending</span>}
+                          {r.status === 'mismatch' && (
+                            <span className="text-amber-700" title={`Payroll Basic: ${fmt(r.payrollBasic ?? 0, country)}`}>Mismatch ⚠</span>
+                          )}
+                          {r.status === null && '—'}
                         </td>
                         <td className="px-3 py-1.5 text-xs">
                           {!r.matched && (
@@ -2675,6 +2697,7 @@ export default function ReconciliationPage() {
                           </td>
                         );
                       })()}
+                      <td className="px-3 py-1.5" />
                       <td className="px-3 py-1.5" />
                     </tr>
                   </tfoot>
