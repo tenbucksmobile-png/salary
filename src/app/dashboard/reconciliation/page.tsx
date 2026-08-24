@@ -1323,6 +1323,17 @@ export default function ReconciliationPage() {
   interface BasicMismatchRow { name: string; empCode: string; prevBasic: number; currBasic: number; diff: number }
   interface RosterChangeRow { name: string; empCode: string; basic: number }
 
+  // These payroll files give one combined name field ("Mr XXX Surname") — the last
+  // whitespace-separated word is taken as the surname for alphabetical sorting, since
+  // there's no separate surname column to sort on directly.
+  function surnameKey(name: string): string {
+    const words = name.trim().split(/\s+/);
+    return (words[words.length - 1] ?? '').toLowerCase();
+  }
+  function bySurname<T extends { name: string }>(rows: T[]): T[] {
+    return [...rows].sort((a, b) => surnameKey(a.name).localeCompare(surnameKey(b.name)));
+  }
+
   // overrides: manual corrections to the PRIOR period's basic salary (keyed by
   // nameKey), applied before the mismatch/termination comparison itself runs — so a
   // corrected figure that now matches the current period simply stops being flagged,
@@ -1349,7 +1360,11 @@ export default function ReconciliationPage() {
       .filter(l => !currByKey.has(nameKey(l.name)))
       .map(l => ({ name: l.name, empCode: l.empCode, basic: l.basic }));
 
-    return { basicMismatches, newAppointments, terminations };
+    return {
+      basicMismatches: bySurname(basicMismatches),
+      newAppointments: bySurname(newAppointments),
+      terminations: bySurname(terminations),
+    };
   }
 
   const employeesComparisonByHotel = Object.fromEntries(
