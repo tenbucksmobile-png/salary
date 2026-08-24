@@ -274,6 +274,21 @@ export interface ReconEmployeeApproval {
   updated_at: string;
 }
 
+// Employees tab: manual correction of a PRIOR period's Basic Salary figure used in the
+// Basic Salary Mismatch comparison, for CSL/NL only. Fixes a data-entry error in an
+// already-uploaded prior-month payroll file without re-uploading/re-processing that whole
+// period. Deliberately never applies to the current period — see migration 033.
+export interface ReconBasicSalaryOverride {
+  id: string;
+  hotel_id: string;
+  period_year: number;
+  period_month: number;
+  employee_name: string;
+  basic_salary: number;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 // Leave Provision: annual (July) leave balance import + daily-rate payout calc.
 // Standalone from salary_records — see leave_accrual (forward monthly estimate)
 // and leave_provision (legacy VIP passthrough), which this is unrelated to.

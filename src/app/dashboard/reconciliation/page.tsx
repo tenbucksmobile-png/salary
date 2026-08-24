@@ -11,6 +11,7 @@ import type {
   ReconConsolidationEntry,
   ReconEmployeeApproval,
   ReconApprovalCategory,
+  ReconBasicSalaryOverride,
 } from '@/types/database';
 import {
   parseAfritecXls,
@@ -183,6 +184,13 @@ export default function ReconciliationPage() {
   const emptyTermPayroll: TermPayrollState = { current: [], previous: [], loaded: false };
   const [termPayrollByHotel, setTermPayrollByHotel] = useState<Record<PayrollReconHotel, TermPayrollState>>({ CSL: emptyTermPayroll, NL: emptyTermPayroll });
 
+  // Manual corrections to a PRIOR period's Basic Salary (Employees tab, CSL/NL only) —
+  // fixes a data-entry error already sitting in an uploaded prior-month payroll file
+  // without re-uploading/re-processing that whole period. Keyed by nameKey(employee name),
+  // loaded for the same prevYear/prevMonth the comparison itself uses. Deliberately never
+  // offered for the CURRENT period's basic salary — see migration 033.
+  const [basicOverridesByHotel, setBasicOverridesByHotel] = useState<Record<PayrollReconHotel, Record<string, ReconBasicSalaryOverride>>>({ CSL: {}, NL: {} });
+
   // Employees tab approvals — per-record tickbox state, persisted so it survives navigation.
   // Loaded from DB on tab open; ticking a checkbox only updates local state (approvalTicks);
   // clicking Submit is what writes the current tick state to recon_employee_approvals.
@@ -340,9 +348,24 @@ export default function ReconciliationPage() {
       return { current, previous, loaded: true };
     }
 
+    async function loadOverrides(shortCode: PayrollReconHotel): Promise<Record<string, ReconBasicSalaryOverride>> {
+      const hotel = hotels.find(h => h.short_code === shortCode);
+      if (!hotel) return {};
+      const { data } = await supabase
+        .from('recon_basic_salary_overrides')
+        .select('*')
+        .eq('hotel_id', hotel.id)
+        .eq('period_year', prevYear)
+        .eq('period_month', prevMonth);
+      return Object.fromEntries(((data ?? []) as ReconBasicSalaryOverride[]).map(o => [nameKey(o.employee_name), o]));
+    }
+
     setTermPayrollByHotel(prev => Object.fromEntries(PAYROLL_RECON_HOTELS.map(h => [h, { ...prev[h], loaded: false }])) as Record<PayrollReconHotel, TermPayrollState>);
     Promise.all(PAYROLL_RECON_HOTELS.map(load)).then(results => {
       setTermPayrollByHotel(Object.fromEntries(PAYROLL_RECON_HOTELS.map((h, i) => [h, results[i]])) as Record<PayrollReconHotel, TermPayrollState>);
+    });
+    Promise.all(PAYROLL_RECON_HOTELS.map(loadOverrides)).then(results => {
+      setBasicOverridesByHotel(Object.fromEntries(PAYROLL_RECON_HOTELS.map((h, i) => [h, results[i]])) as Record<PayrollReconHotel, Record<string, ReconBasicSalaryOverride>>);
     });
   }, [tab, year, month, hotels]);
 
@@ -1300,8 +1323,16 @@ export default function ReconciliationPage() {
   interface BasicMismatchRow { name: string; empCode: string; prevBasic: number; currBasic: number; diff: number }
   interface RosterChangeRow { name: string; empCode: string; basic: number }
 
-  function buildEmployeesComparison(state: TermPayrollState) {
-    const prevByKey = new Map(state.previous.map(l => [nameKey(l.name), l]));
+  // overrides: manual corrections to the PRIOR period's basic salary (keyed by
+  // nameKey), applied before the mismatch/termination comparison itself runs — so a
+  // corrected figure that now matches the current period simply stops being flagged,
+  // rather than needing a separate submit/commit step to clear it.
+  function buildEmployeesComparison(state: TermPayrollState, overrides: Record<string, ReconBasicSalaryOverride>) {
+    const correctedPrevious = state.previous.map(l => {
+      const o = overrides[nameKey(l.name)];
+      return o ? { ...l, basic: o.basic_salary } : l;
+    });
+    const prevByKey = new Map(correctedPrevious.map(l => [nameKey(l.name), l]));
     const currByKey = new Map(state.current.map(l => [nameKey(l.name), l]));
 
     const basicMismatches: BasicMismatchRow[] = [];
@@ -1314,7 +1345,7 @@ export default function ReconciliationPage() {
         basicMismatches.push({ name: l.name, empCode: l.empCode, prevBasic: prev.basic, currBasic: l.basic, diff: l.basic - prev.basic });
       }
     }
-    const terminations: RosterChangeRow[] = state.previous
+    const terminations: RosterChangeRow[] = correctedPrevious
       .filter(l => !currByKey.has(nameKey(l.name)))
       .map(l => ({ name: l.name, empCode: l.empCode, basic: l.basic }));
 
@@ -1322,7 +1353,7 @@ export default function ReconciliationPage() {
   }
 
   const employeesComparisonByHotel = Object.fromEntries(
-    PAYROLL_RECON_HOTELS.map(h => [h, buildEmployeesComparison(termPayrollByHotel[h])])
+    PAYROLL_RECON_HOTELS.map(h => [h, buildEmployeesComparison(termPayrollByHotel[h], basicOverridesByHotel[h])])
   ) as Record<PayrollReconHotel, ReturnType<typeof buildEmployeesComparison>>;
 
   // The Employees tab always reflects whichever hotel is currently selected via the
@@ -1334,6 +1365,38 @@ export default function ReconciliationPage() {
 
   const employeesTabBadge = employeesComparisonByHotel[employeesActiveHotel];
   const employeesTabBadgeCount = employeesTabBadge.basicMismatches.length + employeesTabBadge.newAppointments.length + employeesTabBadge.terminations.length;
+
+  // Same prevYear/prevMonth the comparison itself is built against (see the
+  // termPayrollByHotel-loading effect above) — needed here too so a saved override is
+  // written against the correct prior period.
+  const employeesPrevMonth = month === 1 ? 12 : month - 1;
+  const employeesPrevYear = month === 1 ? year - 1 : year;
+
+  async function saveBasicOverride(name: string, value: number) {
+    const h = hotels.find(x => x.short_code === employeesActiveHotel);
+    if (!h) return;
+    const payload = {
+      hotel_id: h.id,
+      period_year: employeesPrevYear,
+      period_month: employeesPrevMonth,
+      employee_name: name,
+      basic_salary: value,
+      updated_at: new Date().toISOString(),
+      updated_by: username,
+    };
+    const { data } = await supabase
+      .from('recon_basic_salary_overrides')
+      .upsert(payload, { onConflict: 'hotel_id,period_year,period_month,employee_name' })
+      .select()
+      .single();
+    if (data) {
+      const o = data as ReconBasicSalaryOverride;
+      setBasicOverridesByHotel(prev => ({
+        ...prev,
+        [employeesActiveHotel]: { ...prev[employeesActiveHotel], [nameKey(o.employee_name)]: o },
+      }));
+    }
+  }
 
   const visibleApprovalKeys = [
     ...activeEmployeesComparison.basicMismatches.map(r => approvalKey('basic_mismatch', r.name)),
@@ -2365,6 +2428,13 @@ export default function ReconciliationPage() {
                   <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
                     Basic Salary Mismatch ({activeEmployeesComparison.basicMismatches.length})
                   </h2>
+                  {activeEmployeesComparison.basicMismatches.length > 0 && (
+                    <p className="text-xs text-muted-foreground mb-2">
+                      Prior Basic is editable — correct a data-entry error in last period&apos;s upload directly
+                      here instead of re-uploading. Current Basic always comes from this period&apos;s payroll
+                      upload and can&apos;t be edited here.
+                    </p>
+                  )}
                   {activeEmployeesComparison.basicMismatches.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No basic salary changes from prior month.</p>
                   ) : (
@@ -2396,7 +2466,22 @@ export default function ReconciliationPage() {
                                   <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
                                 )}
                               </td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.prevBasic, country)}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  defaultValue={r.prevBasic}
+                                  key={`${r.name}-${r.prevBasic}`}
+                                  className="w-24 text-right border rounded px-1.5 py-0.5 bg-white"
+                                  onBlur={e => {
+                                    const v = parseFloat(e.target.value);
+                                    if (!Number.isNaN(v) && v !== r.prevBasic) saveBasicOverride(r.name, v);
+                                  }}
+                                />
+                                {!!basicOverridesByHotel[employeesActiveHotel][nameKey(r.name)] && (
+                                  <span className="ml-1 text-xs text-muted-foreground align-middle" title="Manually corrected">✎</span>
+                                )}
+                              </td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.currBasic, country)}</td>
                               <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.diff > 0 ? 'text-green-700' : 'text-red-600'}`}>
                                 {r.diff > 0 ? '+' : ''}{fmt(r.diff, country)}
