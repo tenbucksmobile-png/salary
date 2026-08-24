@@ -220,6 +220,16 @@ export default function ReconciliationPage() {
   const emptyOtherHotelStmts: { CSL: OtherHotelStmts; NL: OtherHotelStmts; loaded: boolean } = { CSL: {}, NL: {}, loaded: false };
   const [csnStmtsForCfe, setCsnStmtsForCfe] = useState(emptyOtherHotelStmts);
 
+  // Reverse direction of the above: when viewing CSL's or NL's own Deductions Check tab,
+  // load CFEM's own report (cfem_deductions + its separate pension upload) for the SAME
+  // period, so the Management (CFE) section below can show a live CFEM Report figure and
+  // discrepancy next to each extracted statement line, instead of the previous permanent
+  // "—" Payroll placeholder (CFEM payroll is never uploaded here, so there was never
+  // anything to reconcile against until this).
+  type MgtCfeVendorType = CfeVendorType | 'pension';
+  const emptyCfemForMgt: { statements: Partial<Record<MgtCfeVendorType, ParsedStatement>>; loaded: boolean } = { statements: {}, loaded: false };
+  const [cfemForMgt, setCfemForMgt] = useState(emptyCfemForMgt);
+
   // Consolidation tab: director-facing monthly bank release sign-off, spanning all
   // three hotels for the selected month regardless of the main hotel selector.
   type ConsolidationHotel = 'CSL' | 'NL' | 'CFEM';
@@ -492,6 +502,53 @@ export default function ReconciliationPage() {
     Promise.all([loadForHotel('CSL'), loadForHotel('NL')]).then(([CSL, NL]) => {
       setCsnStmtsForCfe({ CSL, NL, loaded: true });
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, hotelId, year, month, hotels]);
+
+  useEffect(() => {
+    const currentHotelCode = hotels.find(h => h.id === hotelId)?.short_code;
+    if (tab !== 'deductions' || (currentHotelCode !== 'CSL' && currentHotelCode !== 'NL') || !hotels.length) return;
+    const cfemHotel = hotels.find(h => h.short_code === 'CFEM');
+    if (!cfemHotel) return;
+
+    setCfemForMgt(s => ({ ...s, loaded: false }));
+    (async () => {
+      const { data: periodRow } = await supabase
+        .from('reconciliation_periods')
+        .select('id')
+        .eq('hotel_id', cfemHotel.id)
+        .eq('period_year', year)
+        .eq('period_month', month)
+        .maybeSingle();
+      if (!periodRow) { setCfemForMgt({ statements: {}, loaded: true }); return; }
+
+      const { data: ups } = await supabase
+        .from('recon_uploads')
+        .select('upload_type, parsed_data, file_name')
+        .eq('period_id', periodRow.id)
+        .in('upload_type', ['cfem_deductions', 'pension']);
+
+      const statements: Partial<Record<MgtCfeVendorType, ParsedStatement>> = {};
+      const dedUp = (ups ?? []).find((u: any) => u.upload_type === 'cfem_deductions');
+      const parsed = dedUp?.parsed_data as ParsedCfemDeductions | undefined;
+      if (parsed) {
+        for (const section of parsed.sections) {
+          const vendorType = lookupCfemVendorType(section.vendor);
+          if (!vendorType) continue; // e.g. "Taku" — no equivalent slot yet
+          statements[vendorType] = {
+            uploadType: vendorType,
+            lines: section.lines.map(l => ({ empCode: l.empCode, name: l.name, amount: l.empAmount })),
+            unmatchedLines: [],
+            total: section.total,
+            fileName: dedUp!.file_name ?? 'CFEM Deductions Summary',
+          };
+        }
+      }
+      const pensionUp = (ups ?? []).find((u: any) => u.upload_type === 'pension');
+      if (pensionUp) statements.pension = pensionUp.parsed_data as ParsedStatement;
+
+      setCfemForMgt({ statements, loaded: true });
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, hotelId, year, month, hotels]);
 
@@ -1289,6 +1346,20 @@ export default function ReconciliationPage() {
     const byName = matchCfeEmployee(l.name);
     if (byName) return byName;
     return l.empCode ? cfeCodeIndex.get(l.empCode.toUpperCase()) : undefined;
+  }
+
+  // Reverse lookup for the Management (CFE) section on CSL's/NL's own tab: given an
+  // already-resolved CFE employee and a vendor, find their amount on CFEM's OWN report
+  // (cfemForMgt, loaded for the same period) — same resolveCfemLine matching, just
+  // searched from the employee side instead of iterating CFEM's report lines directly.
+  function cfemReportAmountFor(emp: Employee | undefined, vendorType: 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo' | 'pension'): number | null {
+    if (!emp) return null;
+    const stmt = cfemForMgt.statements[vendorType];
+    if (!stmt) return null;
+    for (const l of stmt.lines) {
+      if (resolveCfemLine(l)?.id === emp.id) return l.amount;
+    }
+    return null;
   }
 
   // Map vendor label → management amount so we can split summary rows
@@ -2334,7 +2405,8 @@ export default function ReconciliationPage() {
                           Management (CFE)
                         </h2>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          On CFE Management payroll — statement amounts shown. Reconcile via the CFE tab.
+                          On CFE Management payroll — statement amount vs the same employee&apos;s figure on CFEM&apos;s
+                          own deductions report for this period.
                           {cfeEmployees.length > 0 && (
                             <span className="ml-2 text-teal-700">
                               {mgtEmpRows.filter(r => matchCfeEmployee(r.name)).length}/{mgtEmpRows.length} matched in CFE records
@@ -2351,32 +2423,32 @@ export default function ReconciliationPage() {
                             <th className="px-3 py-2 text-left">Name</th>
                             {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
                               <th className="px-3 py-2 text-right">Furnmart Stmt</th>
-                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">CFEM Report</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
                               <th className="px-3 py-2 text-right">Afritec Stmt</th>
-                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">CFEM Report</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
                               <th className="px-3 py-2 text-right">Topline Stmt</th>
-                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">CFEM Report</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
                               <th className="px-3 py-2 text-right">CB Stores Stmt</th>
-                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">CFEM Report</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
                               <th className="px-3 py-2 text-right">Bodulo Stmt</th>
-                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">CFEM Report</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
                               <th className="px-3 py-2 text-right">Pension Stmt</th>
-                              <th className="px-3 py-2 text-right">Payroll</th>
+                              <th className="px-3 py-2 text-right">CFEM Report</th>
                               <th className="px-3 py-2 text-right">±</th>
                             </>}
                           </tr>
@@ -2398,6 +2470,18 @@ export default function ReconciliationPage() {
                             // contradictory "—" code and "unmatched" badge here.
                             const cfeMatch = matchCfeEmployee(row.name)
                               ?? (row.empCode ? cfeEmployees.find(e => e.employee_code?.toUpperCase() === row.empCode.toUpperCase()) : undefined);
+                            const cfemFurnmart = cfemReportAmountFor(cfeMatch, 'furnmart');
+                            const cfemAfritec  = cfemReportAmountFor(cfeMatch, 'afritec');
+                            const cfemTopline  = cfemReportAmountFor(cfeMatch, 'topline');
+                            const cfemCb       = cfemReportAmountFor(cfeMatch, 'cbstores');
+                            const cfemBodulo   = cfemReportAmountFor(cfeMatch, 'bodulo');
+                            const cfemPension  = cfemReportAmountFor(cfeMatch, 'pension');
+                            const furnDiff2    = cfemFurnmart != null ? (row.furnmart_stmt ?? 0) - cfemFurnmart : null;
+                            const afriDiff2    = cfemAfritec  != null ? (row.afritec_stmt  ?? 0) - cfemAfritec  : null;
+                            const topDiff2     = cfemTopline  != null ? (row.topline_stmt  ?? 0) - cfemTopline  : null;
+                            const cbDiff2      = cfemCb       != null ? (row.cb_stmt       ?? 0) - cfemCb       : null;
+                            const bodDiff2     = cfemBodulo   != null ? (row.bodulo_stmt   ?? 0) - cfemBodulo   : null;
+                            const pensionDiff2 = cfemPension  != null ? (row.pension_stmt  ?? 0) - cfemPension  : null;
                             return (
                               <tr key={`mgt-${row.name}-${i}`} className={i % 2 === 0 ? 'bg-white' : 'bg-muted/20'}>
                                 <td className="px-3 py-1.5 font-mono text-xs">
@@ -2414,33 +2498,45 @@ export default function ReconciliationPage() {
                                 </td>
                                 {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemFurnmart == null ? '—' : fmt(cfemFurnmart, country)}</td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${furnDiff2 != null ? diffClass(furnDiff2) : ''}`}>
+                                    {furnDiff2 != null ? fmtDiff(furnDiff2, country) : '—'}
+                                  </td>
                                 </>}
                                 {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.afritec_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemAfritec == null ? '—' : fmt(cfemAfritec, country)}</td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${afriDiff2 != null ? diffClass(afriDiff2) : ''}`}>
+                                    {afriDiff2 != null ? fmtDiff(afriDiff2, country) : '—'}
+                                  </td>
                                 </>}
                                 {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.topline_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemTopline == null ? '—' : fmt(cfemTopline, country)}</td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${topDiff2 != null ? diffClass(topDiff2) : ''}`}>
+                                    {topDiff2 != null ? fmtDiff(topDiff2, country) : '—'}
+                                  </td>
                                 </>}
                                 {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.cb_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemCb == null ? '—' : fmt(cfemCb, country)}</td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${cbDiff2 != null ? diffClass(cbDiff2) : ''}`}>
+                                    {cbDiff2 != null ? fmtDiff(cbDiff2, country) : '—'}
+                                  </td>
                                 </>}
                                 {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemBodulo == null ? '—' : fmt(cfemBodulo, country)}</td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${bodDiff2 != null ? diffClass(bodDiff2) : ''}`}>
+                                    {bodDiff2 != null ? fmtDiff(bodDiff2, country) : '—'}
+                                  </td>
                                 </>}
                                 {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.pension_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">—</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemPension == null ? '—' : fmt(cfemPension, country)}</td>
+                                  <td className={`px-3 py-1.5 text-right tabular-nums ${pensionDiff2 != null ? diffClass(pensionDiff2) : ''}`}>
+                                    {pensionDiff2 != null ? fmtDiff(pensionDiff2, country) : '—'}
+                                  </td>
                                 </>}
                               </tr>
                             );
@@ -2449,7 +2545,9 @@ export default function ReconciliationPage() {
                       </table>
                     </div>
                     <p className="mt-2 text-xs text-muted-foreground">
-                      CFE payroll not uploaded in this context — Payroll column shows — for all management employees.
+                      {cfemForMgt.loaded && Object.keys(cfemForMgt.statements).length === 0
+                        ? "CFEM hasn't uploaded a deductions report for this period yet — CFEM Report column shows — for all management employees."
+                        : 'CFEM Report is pulled live from CFEM\'s own Deductions Check upload for this same period.'}
                     </p>
                   </div>
                 )}
