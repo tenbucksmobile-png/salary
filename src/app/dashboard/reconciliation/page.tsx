@@ -2405,6 +2405,25 @@ export default function ReconciliationPage() {
                           );
                         })}
                       </tbody>
+                      <tfoot>
+                        <tr className="border-t bg-muted/40 font-semibold">
+                          <td className="px-3 py-1.5" colSpan={2}>Total</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {fmt(activeEmployeesComparison.basicMismatches.reduce((s, r) => s + r.prevBasic, 0), country)}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">
+                            {fmt(activeEmployeesComparison.basicMismatches.reduce((s, r) => s + r.currBasic, 0), country)}
+                          </td>
+                          {(() => {
+                            const totalDiff = activeEmployeesComparison.basicMismatches.reduce((s, r) => s + r.diff, 0);
+                            return (
+                              <td className={`px-3 py-1.5 text-right tabular-nums ${totalDiff > 0 ? 'text-green-700' : totalDiff < 0 ? 'text-red-600' : ''}`}>
+                                {totalDiff > 0 ? '+' : ''}{fmt(totalDiff, country)}
+                              </td>
+                            );
+                          })()}
+                        </tr>
+                      </tfoot>
                     </table>
                   )}
                 </div>

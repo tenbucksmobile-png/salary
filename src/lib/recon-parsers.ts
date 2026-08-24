@@ -979,11 +979,17 @@ function findFtcHeader(
     let furnmartCol = -1, boduloCol = -1, medAidCol = -1, afritecLoanCol = -1;
     rows[i].forEach((cell: any, j: number) => {
       const s = String(cell ?? '').trim().toLowerCase();
-      if (/^(full\s+)?name$/.test(s)) nameCol = j;
+      // "Employee Name" added after a real CSL FTC export used that header instead of
+      // a bare "Name"/"Full Name" — the same silent-zero-rows failure mode as the
+      // "NETT PAY" fix below.
+      if (/^(full\s+)?name$|^employee\s*name$/.test(s)) nameCol = j;
       // "NETT PAY" added after a real CSL FTC export used that header instead of
       // "TOTAL PAY"/"GROSS SALARY" — without it findFtcHeader never locates the header
       // row at all (found stays false) and the file parses to zero rows silently.
-      if (/total.+pay|gross.+salary|^nett\s*pay\b/.test(s)) totalCol = j;
+      // Bare "Amount" (anchored, so it never matches e.g. "Loan Amount") covers a
+      // minimal two-column CSL FTC export (Employee Name / Amount, no other columns
+      // at all) confirmed live.
+      if (/total.+pay|gross.+salary|^nett\s*pay\b|^amount$/.test(s)) totalCol = j;
       // A distinct basic-pay column, when present, is genuine basic pay — the total/
       // nett-pay column is NOT basic (real CSL FTC exports have both side by side: one
       // month headers it "Basic Salary" + "NETT PAY", another headers the same concept
