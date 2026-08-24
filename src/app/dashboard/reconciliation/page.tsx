@@ -1333,6 +1333,15 @@ export default function ReconciliationPage() {
   function bySurname<T extends { name: string }>(rows: T[]): T[] {
     return [...rows].sort((a, b) => surnameKey(a.name).localeCompare(surnameKey(b.name)));
   }
+  // Display-only reordering — moves the last word (surname) to the front, e.g.
+  // "MR GODFREY DIILE" -> "DIILE, MR GODFREY". Matching/sorting still use the
+  // original name via nameKey()/surnameKey() above; this only affects what's shown.
+  function surnameFirst(name: string): string {
+    const words = name.trim().split(/\s+/);
+    if (words.length < 2) return name;
+    const surname = words.pop();
+    return `${surname}, ${words.join(' ')}`;
+  }
 
   // overrides: manual corrections to the PRIOR period's basic salary (keyed by
   // nameKey), applied before the mismatch/termination comparison itself runs — so a
@@ -2476,7 +2485,7 @@ export default function ReconciliationPage() {
                                 />
                               </td>
                               <td className="px-3 py-1.5">
-                                {r.name}
+                                {surnameFirst(r.name)}
                                 {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
                                   <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
                                 )}
@@ -2557,7 +2566,7 @@ export default function ReconciliationPage() {
                                 />
                               </td>
                               <td className="px-3 py-1.5">
-                                {r.name}
+                                {surnameFirst(r.name)}
                                 {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
                                   <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
                                 )}
@@ -2600,7 +2609,7 @@ export default function ReconciliationPage() {
                                 />
                               </td>
                               <td className="px-3 py-1.5">
-                                {r.name}
+                                {surnameFirst(r.name)}
                                 {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
                                   <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
                                 )}
