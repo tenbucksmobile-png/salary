@@ -11,7 +11,6 @@ import type {
   ReconConsolidationEntry,
   ReconEmployeeApproval,
   ReconApprovalCategory,
-  ReconBasicSalaryOverride,
 } from '@/types/database';
 import {
   parseAfritecXls,
@@ -186,13 +185,6 @@ export default function ReconciliationPage() {
   const emptyTermPayroll: TermPayrollState = { current: [], previous: [], loaded: false };
   const [termPayrollByHotel, setTermPayrollByHotel] = useState<Record<PayrollReconHotel, TermPayrollState>>({ CSL: emptyTermPayroll, NL: emptyTermPayroll });
 
-  // Manual corrections to a PRIOR period's Basic Salary (Employees tab, CSL/NL only) —
-  // fixes a data-entry error already sitting in an uploaded prior-month payroll file
-  // without re-uploading/re-processing that whole period. Keyed by nameKey(employee name),
-  // loaded for the same prevYear/prevMonth the comparison itself uses. Deliberately never
-  // offered for the CURRENT period's basic salary — see migration 033.
-  const [basicOverridesByHotel, setBasicOverridesByHotel] = useState<Record<PayrollReconHotel, Record<string, ReconBasicSalaryOverride>>>({ CSL: {}, NL: {} });
-
   // Increase List cross-reference (Employees tab, CSL/NL only) — a salary-review workbook
   // with one sheet per hotel (Surname/First Name/Current Gross/New Gross/remarks),
   // imported once and split into each hotel's own recon_uploads row (upload_type
@@ -359,24 +351,9 @@ export default function ReconciliationPage() {
       return { current, previous, loaded: true };
     }
 
-    async function loadOverrides(shortCode: PayrollReconHotel): Promise<Record<string, ReconBasicSalaryOverride>> {
-      const hotel = hotels.find(h => h.short_code === shortCode);
-      if (!hotel) return {};
-      const { data } = await supabase
-        .from('recon_basic_salary_overrides')
-        .select('*')
-        .eq('hotel_id', hotel.id)
-        .eq('period_year', prevYear)
-        .eq('period_month', prevMonth);
-      return Object.fromEntries(((data ?? []) as ReconBasicSalaryOverride[]).map(o => [nameKey(o.employee_name), o]));
-    }
-
     setTermPayrollByHotel(prev => Object.fromEntries(PAYROLL_RECON_HOTELS.map(h => [h, { ...prev[h], loaded: false }])) as Record<PayrollReconHotel, TermPayrollState>);
     Promise.all(PAYROLL_RECON_HOTELS.map(load)).then(results => {
       setTermPayrollByHotel(Object.fromEntries(PAYROLL_RECON_HOTELS.map((h, i) => [h, results[i]])) as Record<PayrollReconHotel, TermPayrollState>);
-    });
-    Promise.all(PAYROLL_RECON_HOTELS.map(loadOverrides)).then(results => {
-      setBasicOverridesByHotel(Object.fromEntries(PAYROLL_RECON_HOTELS.map((h, i) => [h, results[i]])) as Record<PayrollReconHotel, Record<string, ReconBasicSalaryOverride>>);
     });
   }, [tab, year, month, hotels]);
 
@@ -1407,91 +1384,19 @@ export default function ReconciliationPage() {
       };
     }) : [];
 
-  // ── Employees tab: month-to-month payroll comparison (CSL/NL only) ────────
-  // Matched by name, not employee code — a hotel's payroll provider can change code
-  // formats between periods (observed for NL: "NL0020"-style in one month, "BAB001"
-  // mnemonic-style the next), which would otherwise make every employee look like a
-  // termination/new-appointment even though nothing actually changed. Never compared
-  // against the DB employee list — see termPayrollByHotel above.
-  interface BasicMismatchRow { name: string; empCode: string; prevBasic: number; currBasic: number; diff: number }
-  interface RosterChangeRow { name: string; empCode: string; basic: number }
-
-  // These payroll files give one combined name field ("Mr XXX Surname") — the last
-  // whitespace-separated word is taken as the surname for alphabetical sorting, since
-  // there's no separate surname column to sort on directly.
-  function surnameKey(name: string): string {
-    const words = name.trim().split(/\s+/);
-    return (words[words.length - 1] ?? '').toLowerCase();
-  }
-  function bySurname<T extends { name: string }>(rows: T[]): T[] {
-    return [...rows].sort((a, b) => surnameKey(a.name).localeCompare(surnameKey(b.name)));
-  }
-  // Display-only reordering — moves the last word (surname) to the front, e.g.
-  // "MR GODFREY DIILE" -> "DIILE, MR GODFREY". Matching/sorting still use the
-  // original name via nameKey()/surnameKey() above; this only affects what's shown.
-  function surnameFirst(name: string): string {
-    const words = name.trim().split(/\s+/);
-    if (words.length < 2) return name;
-    const surname = words.pop();
-    return `${surname}, ${words.join(' ')}`;
-  }
-
-  // overrides: manual corrections to the PRIOR period's basic salary (keyed by
-  // nameKey), applied before the mismatch/termination comparison itself runs — so a
-  // corrected figure that now matches the current period simply stops being flagged,
-  // rather than needing a separate submit/commit step to clear it.
-  function buildEmployeesComparison(state: TermPayrollState, overrides: Record<string, ReconBasicSalaryOverride>) {
-    const correctedPrevious = state.previous.map(l => {
-      const o = overrides[nameKey(l.name)];
-      return o ? { ...l, basic: o.basic_salary } : l;
-    });
-    const prevByKey = new Map(correctedPrevious.map(l => [nameKey(l.name), l]));
-    const currByKey = new Map(state.current.map(l => [nameKey(l.name), l]));
-
-    const basicMismatches: BasicMismatchRow[] = [];
-    const newAppointments: RosterChangeRow[] = [];
-    for (const l of state.current) {
-      const prev = prevByKey.get(nameKey(l.name));
-      if (!prev) {
-        newAppointments.push({ name: l.name, empCode: l.empCode, basic: l.basic });
-      } else if (Math.abs(l.basic - prev.basic) > 0.5) {
-        basicMismatches.push({ name: l.name, empCode: l.empCode, prevBasic: prev.basic, currBasic: l.basic, diff: l.basic - prev.basic });
-      }
-    }
-    const terminations: RosterChangeRow[] = correctedPrevious
-      .filter(l => !currByKey.has(nameKey(l.name)))
-      .map(l => ({ name: l.name, empCode: l.empCode, basic: l.basic }));
-
-    return {
-      basicMismatches: bySurname(basicMismatches),
-      newAppointments: bySurname(newAppointments),
-      terminations: bySurname(terminations),
-    };
-  }
-
-  const employeesComparisonByHotel = Object.fromEntries(
-    PAYROLL_RECON_HOTELS.map(h => [h, buildEmployeesComparison(termPayrollByHotel[h], basicOverridesByHotel[h])])
-  ) as Record<PayrollReconHotel, ReturnType<typeof buildEmployeesComparison>>;
-
-  // Increase List cross-reference: Current Salary / New Salary / Difference always come
-  // from the increase list ITSELF (Current Gross / New Gross), never from payroll —
-  // confirmed live that payroll's own incomeTotal/basic is NOT a stand-in for "current"
-  // here: for this period's CSL payroll, basic already equals the list's New Gross for
-  // nearly every matched employee (diff 0.00 across 149/169 sampled rows) — the increase
-  // has already been keyed into payroll's basic salary for the period being viewed, so
-  // there's no separate "current" figure left in payroll to diff against; using
-  // incomeTotal (which also includes overtime/allowances unrelated to the increase)
-  // produced a large negative "difference" on nearly every row.
-  // "Cross-referenced against payroll" instead means: has this increase actually been
-  // applied in the live payroll data yet? matched payroll basic is compared against both
-  // the list's Current and New Gross to classify each row as applied / pending / a
-  // genuine mismatch (payroll basic matches neither figure).
-  interface IncreaseCrossRow {
-    surname: string; firstName: string;
-    currentSalary: number; newSalary: number; difference: number;
-    comment: string; matched: boolean; ambiguous: boolean;
-    payrollBasic: number | null;
-    status: 'applied' | 'pending' | 'mismatch' | null;
+  // ── Employees tab: Increase List cross-referenced against this period's Payroll
+  // Spreadsheet upload (CSL/NL only) ──────────────────────────────────────────────
+  // Replaces the earlier month-to-month payroll comparison (Basic Salary Mismatch /
+  // New Appointments / Terminations) entirely — per explicit instruction, this is now
+  // the one table for the Employees tab: Name, Increase File - Current Salary, Payroll
+  // Upload - New Basic Salary, Increase File - New Gross Salary, Flag Differences.
+  interface MergedIncreaseRow {
+    name: string;        // "Surname FirstName" — identity used for approvalKey/commit matching
+    displayName: string; // "Surname, FirstName" — display only
+    empCode: string;
+    listCurrent: number; payrollNewBasic: number | null; listNew: number;
+    matched: boolean; ambiguous: boolean;
+    flag: 'applied' | 'pending' | 'mismatch' | 'unmatched' | 'ambiguous';
   }
   // Two-pass, same pattern as the CFE Management matchCfeEmployee() above: an exact
   // name match (nameKey — full token-set equality) first, since the increase list's
@@ -1521,79 +1426,46 @@ export default function ReconciliationPage() {
     if (candidates.length === 1) return { line: candidates[0], ambiguous: false };
     return { line: null, ambiguous: candidates.length > 1 };
   }
-  function buildIncreaseCrossRef(rows: IncreaseRow[], payrollLines: PayrollLine[]): IncreaseCrossRow[] {
+  // Flag Differences: payroll's Basic is checked against BOTH the list's Current and
+  // New figure — confirmed live that for the period being viewed, payroll's own Basic
+  // already equals the list's New Gross for most matched employees (the increase is
+  // already keyed into payroll), so "applied" is the common/expected case, not an
+  // anomaly. "mismatch" is the one that needs attention: payroll's Basic matches
+  // neither the list's Current nor New figure at all.
+  function buildMergedIncreaseTable(rows: IncreaseRow[], payrollLines: PayrollLine[]): MergedIncreaseRow[] {
     return [...rows]
       .sort((a, b) => a.surname.toLowerCase().localeCompare(b.surname.toLowerCase()))
       .map(r => {
         const { line: p, ambiguous } = matchPayrollLineForIncrease(r, payrollLines);
-        const payrollBasic = p ? p.basic : null;
-        let status: IncreaseCrossRow['status'] = null;
-        if (payrollBasic !== null) {
-          if (Math.abs(payrollBasic - r.newGross) <= 0.5) status = 'applied';
-          else if (Math.abs(payrollBasic - r.currentGross) <= 0.5) status = 'pending';
-          else status = 'mismatch';
-        }
+        const payrollNewBasic = p ? p.basic : null;
+        let flag: MergedIncreaseRow['flag'];
+        if (ambiguous) flag = 'ambiguous';
+        else if (!p) flag = 'unmatched';
+        else if (Math.abs(payrollNewBasic! - r.newGross) <= 0.5) flag = 'applied';
+        else if (Math.abs(payrollNewBasic! - r.currentGross) <= 0.5) flag = 'pending';
+        else flag = 'mismatch';
         return {
-          surname: r.surname, firstName: r.firstName,
-          currentSalary: r.currentGross, newSalary: r.newGross,
-          difference: r.newGross - r.currentGross,
-          comment: r.comment, matched: !!p, ambiguous,
-          payrollBasic, status,
+          name: `${r.surname} ${r.firstName}`.trim(),
+          displayName: `${r.surname}, ${r.firstName}`,
+          empCode: p?.empCode ?? '',
+          listCurrent: r.currentGross, payrollNewBasic, listNew: r.newGross,
+          matched: !!p, ambiguous, flag,
         };
       });
   }
-  const increaseCrossRefByHotel = Object.fromEntries(
-    PAYROLL_RECON_HOTELS.map(h => [h, buildIncreaseCrossRef(increaseListByHotel[h], termPayrollByHotel[h].current)])
-  ) as Record<PayrollReconHotel, IncreaseCrossRow[]>;
+  const mergedIncreaseTableByHotel = Object.fromEntries(
+    PAYROLL_RECON_HOTELS.map(h => [h, buildMergedIncreaseTable(increaseListByHotel[h], termPayrollByHotel[h].current)])
+  ) as Record<PayrollReconHotel, MergedIncreaseRow[]>;
 
   // The Employees tab always reflects whichever hotel is currently selected via the
   // header pill (CSL or NL) — no separate internal sub-tab, so what you see always
   // matches the pill you're on.
   const employeesActiveHotel: PayrollReconHotel = hotel?.short_code === 'NL' ? 'NL' : 'CSL';
-  const activeEmployeesComparison = employeesComparisonByHotel[employeesActiveHotel];
-  const activeTermPayrollForEmployees = termPayrollByHotel[employeesActiveHotel];
-  const activeIncreaseCrossRef = increaseCrossRefByHotel[employeesActiveHotel];
+  const activeMergedIncreaseTable = mergedIncreaseTableByHotel[employeesActiveHotel];
 
-  const employeesTabBadge = employeesComparisonByHotel[employeesActiveHotel];
-  const employeesTabBadgeCount = employeesTabBadge.basicMismatches.length + employeesTabBadge.newAppointments.length + employeesTabBadge.terminations.length;
+  const employeesTabBadgeCount = activeMergedIncreaseTable.length;
 
-  // Same prevYear/prevMonth the comparison itself is built against (see the
-  // termPayrollByHotel-loading effect above) — needed here too so a saved override is
-  // written against the correct prior period.
-  const employeesPrevMonth = month === 1 ? 12 : month - 1;
-  const employeesPrevYear = month === 1 ? year - 1 : year;
-
-  async function saveBasicOverride(name: string, value: number) {
-    const h = hotels.find(x => x.short_code === employeesActiveHotel);
-    if (!h) return;
-    const payload = {
-      hotel_id: h.id,
-      period_year: employeesPrevYear,
-      period_month: employeesPrevMonth,
-      employee_name: name,
-      basic_salary: value,
-      updated_at: new Date().toISOString(),
-      updated_by: username,
-    };
-    const { data } = await supabase
-      .from('recon_basic_salary_overrides')
-      .upsert(payload, { onConflict: 'hotel_id,period_year,period_month,employee_name' })
-      .select()
-      .single();
-    if (data) {
-      const o = data as ReconBasicSalaryOverride;
-      setBasicOverridesByHotel(prev => ({
-        ...prev,
-        [employeesActiveHotel]: { ...prev[employeesActiveHotel], [nameKey(o.employee_name)]: o },
-      }));
-    }
-  }
-
-  const visibleApprovalKeys = [
-    ...activeEmployeesComparison.basicMismatches.map(r => approvalKey('basic_mismatch', r.name)),
-    ...activeEmployeesComparison.newAppointments.map(r => approvalKey('new_appointment', r.name)),
-    ...activeEmployeesComparison.terminations.map(r => approvalKey('termination', r.name)),
-  ];
+  const visibleApprovalKeys = activeMergedIncreaseTable.map(r => approvalKey('basic_mismatch', r.name));
   const tickedApprovalCount = visibleApprovalKeys.filter(k => approvalTicks[k]).length;
 
   // Last-submitted state per row, keyed the same way as approvalTicks — drives both the
@@ -1614,20 +1486,10 @@ export default function ReconciliationPage() {
     if (!hotelId) return;
     setSubmittingApprovals(true);
     try {
-      const rows = [
-        ...activeEmployeesComparison.basicMismatches.map(r => ({
-          category: 'basic_mismatch' as ReconApprovalCategory, name: r.name, code: r.empCode,
-          detail: { prevBasic: r.prevBasic, currBasic: r.currBasic, diff: r.diff },
-        })),
-        ...activeEmployeesComparison.newAppointments.map(r => ({
-          category: 'new_appointment' as ReconApprovalCategory, name: r.name, code: r.empCode,
-          detail: { basic: r.basic },
-        })),
-        ...activeEmployeesComparison.terminations.map(r => ({
-          category: 'termination' as ReconApprovalCategory, name: r.name, code: r.empCode,
-          detail: { basic: r.basic },
-        })),
-      ];
+      const rows = activeMergedIncreaseTable.map(r => ({
+        category: 'basic_mismatch' as ReconApprovalCategory, name: r.name, code: r.empCode,
+        detail: { listCurrent: r.listCurrent, payrollNewBasic: r.payrollNewBasic, listNew: r.listNew, flag: r.flag },
+      }));
       const payload = rows.map(r => ({
         hotel_id: hotelId,
         period_year: year,
@@ -1695,7 +1557,7 @@ export default function ReconciliationPage() {
           }
         } else if (a.category === 'basic_mismatch') {
           const emp = resolve(a);
-          const newBasic = a.detail?.currBasic;
+          const newBasic = a.detail?.listNew;
           if (emp && newBasic != null) {
             await supabase.from('salary_records').upsert(
               { employee_id: emp.id, period_year: a.period_year, period_month: a.period_month, basic_salary: newBasic },
@@ -1917,7 +1779,7 @@ export default function ReconciliationPage() {
                     return <>Add employee: <strong>{firstName} {surname}</strong> (code {a.employee_code || '—'}, basic {fmt(a.detail?.basic ?? 0, country)})</>;
                   })()}
                   {a.category === 'termination' && <>Mark terminated: <strong>{a.employee_name}</strong></>}
-                  {a.category === 'basic_mismatch' && <>Update basic salary: <strong>{a.employee_name}</strong> → {fmt(a.detail?.currBasic ?? 0, country)}</>}
+                  {a.category === 'basic_mismatch' && <>Update basic salary: <strong>{a.employee_name}</strong> → {fmt(a.detail?.listNew ?? 0, country)}</>}
                 </div>
               ))}
             </div>
@@ -2596,108 +2458,105 @@ export default function ReconciliationPage() {
           </div>
         )}
 
-        {/* ═════ EMPLOYEES TAB — CSL/NL month-to-month payroll comparison ═════ */}
+        {/* ═════ EMPLOYEES TAB — Increase List reconciled against Payroll upload (CSL/NL) ═════ */}
         {tab === 'crossref' && (
           <div className="space-y-6">
-            <p className="text-sm text-muted-foreground max-w-3xl">
-              Compares this period&apos;s uploaded Payroll Spreadsheet against the <strong>previous period&apos;s</strong> upload
-              — never against the HR List (employees table). Matched names with a different Basic Salary show as
-              Basic Salary Mismatch; names new this period show as New Appointments; names in last period&apos;s payroll
-              but missing this period show as Terminations.
-            </p>
-
-            {/* Increase List Cross-Reference */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-                  Increase List Cross-Reference ({activeIncreaseCrossRef.length})
-                </h2>
-                <div>
-                  <input
-                    ref={increaseListFileRef}
-                    type="file"
-                    accept=".xlsx,.xls"
-                    className="hidden"
-                    onChange={e => { const f = e.target.files?.[0]; if (f) handleIncreaseListUpload(f); }}
-                  />
-                  <button
-                    onClick={() => increaseListFileRef.current?.click()}
-                    disabled={increaseListUploading}
-                    className="text-xs border rounded px-2 py-1 hover:bg-muted disabled:opacity-50"
-                  >
-                    {increaseListUploading ? 'Uploading…' : 'Upload Increase List'}
-                  </button>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground mb-2">
-                One workbook covers both CSL and NL sheets (Surname / First Name / Current Gross / New Gross) —
-                uploading it updates both hotels at once. Current Salary and New Salary always come from the
-                increase list itself. Payroll Status cross-checks this period&apos;s payroll upload: <strong>Applied</strong> —
-                payroll&apos;s Basic already matches New Salary; <strong>Pending</strong> — payroll still shows the
-                old Current Salary; <strong>Mismatch</strong> — payroll&apos;s Basic matches neither figure (amber);
-                greyed rows have no payroll match at all for this period.
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground max-w-3xl">
+                Reconciles the imported Increase List against this period&apos;s Payroll Spreadsheet upload for {employeesActiveHotel}.
+                Approve + Submit stages a row; the admin-only Commit button (top of page) writes the approved New
+                Gross Salary into that employee&apos;s Basic Salary for this period.
               </p>
-              {activeIncreaseCrossRef.length === 0 ? (
+              <div>
+                <input
+                  ref={increaseListFileRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleIncreaseListUpload(f); }}
+                />
+                <button
+                  onClick={() => increaseListFileRef.current?.click()}
+                  disabled={increaseListUploading}
+                  className="text-xs border rounded px-2 py-1 hover:bg-muted disabled:opacity-50 whitespace-nowrap ml-4"
+                >
+                  {increaseListUploading ? 'Uploading…' : 'Upload Increase List'}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                Increase List — Payroll Reconciliation ({activeMergedIncreaseTable.length})
+              </h2>
+              <p className="text-xs text-muted-foreground mb-2">
+                One workbook covers both CSL and NL sheets — uploading it updates both hotels at once.
+                Flag Differences: <strong>Applied</strong> — payroll&apos;s new Basic already matches the Increase
+                File&apos;s New Gross Salary; <strong>Pending</strong> — payroll still shows the old Current Salary;
+                <strong> Mismatch</strong> (amber) — payroll&apos;s Basic matches neither figure; greyed rows have no
+                payroll match at all this period.
+              </p>
+              {activeMergedIncreaseTable.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No increase list uploaded for {employeesActiveHotel} this period.</p>
               ) : (
                 <table className="text-sm border rounded w-full max-w-4xl">
                   <thead>
                     <tr className="bg-muted/40">
+                      <th className="px-3 py-2 text-center">Approve</th>
                       <th className="px-3 py-2 text-left">Name</th>
-                      <th className="px-3 py-2 text-right">Current Salary</th>
-                      <th className="px-3 py-2 text-right">New Salary</th>
-                      <th className="px-3 py-2 text-right">Difference</th>
-                      <th className="px-3 py-2 text-left">Payroll Status</th>
-                      <th className="px-3 py-2 text-left">Notes</th>
+                      <th className="px-3 py-2 text-right">Increase File — Current Salary</th>
+                      <th className="px-3 py-2 text-right">Payroll Upload — New Basic Salary</th>
+                      <th className="px-3 py-2 text-right">Increase File — New Gross Salary</th>
+                      <th className="px-3 py-2 text-left">Flag Differences</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {activeIncreaseCrossRef.map((r, i) => (
-                      <tr
-                        key={i}
-                        className={`border-t ${!r.matched ? 'bg-muted/20 text-muted-foreground' : r.status === 'mismatch' ? 'bg-amber-50' : ''}`}
-                      >
-                        <td className="px-3 py-1.5">{r.surname}, {r.firstName}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.currentSalary, country)}</td>
-                        <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.newSalary, country)}</td>
-                        <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.difference > 0 ? 'text-green-700' : r.difference < 0 ? 'text-red-600' : ''}`}>
-                          {r.difference > 0 ? '+' : ''}{fmt(r.difference, country)}
-                        </td>
-                        <td className="px-3 py-1.5 text-xs">
-                          {r.status === 'applied' && <span className="text-green-700">Applied</span>}
-                          {r.status === 'pending' && <span className="text-amber-600">Pending</span>}
-                          {r.status === 'mismatch' && (
-                            <span className="text-amber-700" title={`Payroll Basic: ${fmt(r.payrollBasic ?? 0, country)}`}>Mismatch ⚠</span>
-                          )}
-                          {r.status === null && '—'}
-                        </td>
-                        <td className="px-3 py-1.5 text-xs">
-                          {!r.matched && (
-                            <span className="mr-1">{r.ambiguous ? 'multiple payroll matches — resolve manually' : 'not found in payroll'}</span>
-                          )}
-                          {r.comment}
-                        </td>
-                      </tr>
-                    ))}
+                    {activeMergedIncreaseTable.map((r, i) => {
+                      const key = approvalKey('basic_mismatch', r.name);
+                      return (
+                        <tr
+                          key={i}
+                          className={`border-t ${!r.matched ? 'bg-muted/20 text-muted-foreground' : r.flag === 'mismatch' ? 'bg-amber-50' : ''}`}
+                        >
+                          <td className="px-3 py-1.5 text-center">
+                            <input
+                              type="checkbox"
+                              checked={!!approvalTicks[key]}
+                              onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
+                            />
+                          </td>
+                          <td className="px-3 py-1.5">
+                            {r.displayName}
+                            {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
+                              <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.listCurrent, country)}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">{r.payrollNewBasic == null ? '—' : fmt(r.payrollNewBasic, country)}</td>
+                          <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.listNew, country)}</td>
+                          <td className="px-3 py-1.5 text-xs">
+                            {r.flag === 'applied' && <span className="text-green-700">Applied</span>}
+                            {r.flag === 'pending' && <span className="text-amber-600">Pending</span>}
+                            {r.flag === 'mismatch' && <span className="text-amber-700">Mismatch ⚠</span>}
+                            {r.flag === 'unmatched' && <span>Not found in payroll</span>}
+                            {r.flag === 'ambiguous' && <span>Multiple payroll matches — resolve manually</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                   <tfoot>
                     <tr className="border-t bg-muted/40 font-semibold">
-                      <td className="px-3 py-1.5">Total</td>
+                      <td className="px-3 py-1.5" colSpan={2}>Total</td>
                       <td className="px-3 py-1.5 text-right tabular-nums">
-                        {fmt(activeIncreaseCrossRef.reduce((s, r) => s + r.currentSalary, 0), country)}
+                        {fmt(activeMergedIncreaseTable.reduce((s, r) => s + r.listCurrent, 0), country)}
                       </td>
                       <td className="px-3 py-1.5 text-right tabular-nums">
-                        {fmt(activeIncreaseCrossRef.reduce((s, r) => s + r.newSalary, 0), country)}
+                        {fmt(activeMergedIncreaseTable.reduce((s, r) => s + (r.payrollNewBasic ?? 0), 0), country)}
                       </td>
-                      {(() => {
-                        const totalDiff = activeIncreaseCrossRef.reduce((s, r) => s + r.difference, 0);
-                        return (
-                          <td className={`px-3 py-1.5 text-right tabular-nums ${totalDiff > 0 ? 'text-green-700' : totalDiff < 0 ? 'text-red-600' : ''}`}>
-                            {totalDiff > 0 ? '+' : ''}{fmt(totalDiff, country)}
-                          </td>
-                        );
-                      })()}
-                      <td className="px-3 py-1.5" />
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        {fmt(activeMergedIncreaseTable.reduce((s, r) => s + r.listNew, 0), country)}
+                      </td>
                       <td className="px-3 py-1.5" />
                     </tr>
                   </tfoot>
@@ -2705,222 +2564,35 @@ export default function ReconciliationPage() {
               )}
             </div>
 
-            {!activeTermPayrollForEmployees.loaded ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : activeTermPayrollForEmployees.previous.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No payroll uploaded for {employeesActiveHotel}&apos;s previous period — nothing to compare against yet.
-              </p>
-            ) : (
-              <>
-                {/* Basic Salary Mismatch */}
-                <div>
-                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                    Basic Salary Mismatch ({activeEmployeesComparison.basicMismatches.length})
-                  </h2>
-                  {activeEmployeesComparison.basicMismatches.length > 0 && (
-                    <p className="text-xs text-muted-foreground mb-2">
-                      Prior Basic is editable — correct a data-entry error in last period&apos;s upload directly
-                      here instead of re-uploading. Current Basic always comes from this period&apos;s payroll
-                      upload and can&apos;t be edited here.
-                    </p>
-                  )}
-                  {activeEmployeesComparison.basicMismatches.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No basic salary changes from prior month.</p>
-                  ) : (
-                    <table className="text-sm border rounded w-full max-w-2xl">
-                      <thead>
-                        <tr className="bg-muted/40">
-                          <th className="px-3 py-2 text-center">Approve</th>
-                          <th className="px-3 py-2 text-left">Name</th>
-                          <th className="px-3 py-2 text-right">Prior Basic</th>
-                          <th className="px-3 py-2 text-right">Current Basic</th>
-                          <th className="px-3 py-2 text-right">Change</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activeEmployeesComparison.basicMismatches.map((r, i) => {
-                          const key = approvalKey('basic_mismatch', r.name);
-                          return (
-                            <tr key={i} className="border-t">
-                              <td className="px-3 py-1.5 text-center">
-                                <input
-                                  type="checkbox"
-                                  checked={!!approvalTicks[key]}
-                                  onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
-                                />
-                              </td>
-                              <td className="px-3 py-1.5">
-                                {surnameFirst(r.name)}
-                                {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
-                                  <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  defaultValue={r.prevBasic}
-                                  key={`${r.name}-${r.prevBasic}`}
-                                  className="w-24 text-right border rounded px-1.5 py-0.5 bg-white"
-                                  onBlur={e => {
-                                    const v = parseFloat(e.target.value);
-                                    if (!Number.isNaN(v) && v !== r.prevBasic) saveBasicOverride(r.name, v);
-                                  }}
-                                />
-                                {!!basicOverridesByHotel[employeesActiveHotel][nameKey(r.name)] && (
-                                  <span className="ml-1 text-xs text-muted-foreground align-middle" title="Manually corrected">✎</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.currBasic, country)}</td>
-                              <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.diff > 0 ? 'text-green-700' : 'text-red-600'}`}>
-                                {r.diff > 0 ? '+' : ''}{fmt(r.diff, country)}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t bg-muted/40 font-semibold">
-                          <td className="px-3 py-1.5" colSpan={2}>Total</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {fmt(activeEmployeesComparison.basicMismatches.reduce((s, r) => s + r.prevBasic, 0), country)}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums">
-                            {fmt(activeEmployeesComparison.basicMismatches.reduce((s, r) => s + r.currBasic, 0), country)}
-                          </td>
-                          {(() => {
-                            const totalDiff = activeEmployeesComparison.basicMismatches.reduce((s, r) => s + r.diff, 0);
-                            return (
-                              <td className={`px-3 py-1.5 text-right tabular-nums ${totalDiff > 0 ? 'text-green-700' : totalDiff < 0 ? 'text-red-600' : ''}`}>
-                                {totalDiff > 0 ? '+' : ''}{fmt(totalDiff, country)}
-                              </td>
-                            );
-                          })()}
-                        </tr>
-                      </tfoot>
-                    </table>
-                  )}
-                </div>
-
-                {/* New Appointments */}
-                <div>
-                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                    New Appointments ({activeEmployeesComparison.newAppointments.length})
-                  </h2>
-                  {activeEmployeesComparison.newAppointments.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">None — headcount unchanged.</p>
-                  ) : (
-                    <table className="text-sm border rounded w-full max-w-xl">
-                      <thead>
-                        <tr className="bg-muted/40">
-                          <th className="px-3 py-2 text-center">New Appointment</th>
-                          <th className="px-3 py-2 text-left">Name</th>
-                          <th className="px-3 py-2 text-right">Basic</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activeEmployeesComparison.newAppointments.map((r, i) => {
-                          const key = approvalKey('new_appointment', r.name);
-                          return (
-                            <tr key={i} className="border-t">
-                              <td className="px-3 py-1.5 text-center">
-                                <input
-                                  type="checkbox"
-                                  checked={!!approvalTicks[key]}
-                                  onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
-                                />
-                              </td>
-                              <td className="px-3 py-1.5">
-                                {surnameFirst(r.name)}
-                                {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
-                                  <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-
-                {/* Terminations */}
-                <div>
-                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                    Terminations ({activeEmployeesComparison.terminations.length})
-                  </h2>
-                  {activeEmployeesComparison.terminations.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">None — no departures.</p>
-                  ) : (
-                    <table className="text-sm border rounded w-full max-w-xl">
-                      <thead>
-                        <tr className="bg-muted/40">
-                          <th className="px-3 py-2 text-center">Termination</th>
-                          <th className="px-3 py-2 text-left">Name</th>
-                          <th className="px-3 py-2 text-right">Prior Basic</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activeEmployeesComparison.terminations.map((r, i) => {
-                          const key = approvalKey('termination', r.name);
-                          return (
-                            <tr key={i} className="border-t">
-                              <td className="px-3 py-1.5 text-center">
-                                <input
-                                  type="checkbox"
-                                  checked={!!approvalTicks[key]}
-                                  onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
-                                />
-                              </td>
-                              <td className="px-3 py-1.5">
-                                {surnameFirst(r.name)}
-                                {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
-                                  <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-
-                {/* Consolidated submit — persists the current tick state. Purely a staging
-                    record; the admin-only Commit button (top of page, next to the hotel
-                    pills) is what actually writes to employees/salary_records. */}
-                {employeesTabBadgeCount > 0 && (
-                  <div className="flex flex-wrap items-center gap-3 pt-2 border-t">
-                    <button
-                      onClick={submitEmployeeApprovals}
-                      disabled={submittingApprovals}
-                      className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-medium hover:opacity-90 disabled:opacity-50"
-                    >
-                      {submittingApprovals ? 'Submitting…' : isSubmittedInSync ? 'Submitted' : `Submit (${tickedApprovalCount} of ${employeesTabBadgeCount} ticked)`}
-                    </button>
-                    {employeeApprovals.some(a => a.submitted_at) && (
-                      <span className="text-xs text-muted-foreground">
-                        Last submitted {new Date(
-                          employeeApprovals.reduce((latest, a) => a.submitted_at && a.submitted_at > latest ? a.submitted_at : latest, '')
-                        ).toLocaleString('en-ZA')}
-                        {' '}by {employeeApprovals.find(a => a.submitted_at)?.submitted_by ?? 'unknown'}
-                      </span>
-                    )}
-                    {employeeApprovals.some(a => a.committed_at) && (
-                      <span className="text-xs text-green-700">
-                        Last committed {new Date(
-                          employeeApprovals.reduce((latest, a) => a.committed_at && a.committed_at > latest ? a.committed_at : latest, '')
-                        ).toLocaleString('en-ZA')}
-                        {' '}by {[...employeeApprovals].reverse().find(a => a.committed_at)?.committed_by ?? 'unknown'}
-                      </span>
-                    )}
-                  </div>
+            {/* Consolidated submit — persists the current tick state. Purely a staging
+                record; the admin-only Commit button (top of page, next to the hotel
+                pills) is what actually writes to employees/salary_records. */}
+            {employeesTabBadgeCount > 0 && (
+              <div className="flex flex-wrap items-center gap-3 pt-2 border-t">
+                <button
+                  onClick={submitEmployeeApprovals}
+                  disabled={submittingApprovals}
+                  className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                >
+                  {submittingApprovals ? 'Submitting…' : isSubmittedInSync ? 'Submitted' : `Submit (${tickedApprovalCount} of ${employeesTabBadgeCount} ticked)`}
+                </button>
+                {employeeApprovals.some(a => a.submitted_at) && (
+                  <span className="text-xs text-muted-foreground">
+                    Last submitted {new Date(
+                      employeeApprovals.reduce((latest, a) => a.submitted_at && a.submitted_at > latest ? a.submitted_at : latest, '')
+                    ).toLocaleString('en-ZA')}
+                    {' '}by {employeeApprovals.find(a => a.submitted_at)?.submitted_by ?? 'unknown'}
+                  </span>
                 )}
-
-              </>
+                {employeeApprovals.some(a => a.committed_at) && (
+                  <span className="text-xs text-green-700">
+                    Last committed {new Date(
+                      employeeApprovals.reduce((latest, a) => a.committed_at && a.committed_at > latest ? a.committed_at : latest, '')
+                    ).toLocaleString('en-ZA')}
+                    {' '}by {[...employeeApprovals].reverse().find(a => a.committed_at)?.committed_by ?? 'unknown'}
+                  </span>
+                )}
+              </div>
             )}
           </div>
         )}
