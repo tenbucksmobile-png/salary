@@ -491,7 +491,7 @@ export async function parsePensionSchedule(
   const colSur = col(/surname/i);
   const colMember = col(/member\s*contribution\s*amount|employee\s*contribution\s*amount/i);
   const colEmployer = col(/employer\s*contribution\s*amount/i);
-  const colTotalContrib = col(/total\s*contribution/i);
+  const colTotalContrib = col(/total\s*contribution\s*amount/i);
 
   const lines: ReconLine[] = [];
   const unmatchedLines: ReconLine[] = [];
