@@ -27,7 +27,7 @@ import {
   type PayrollLine,
   type IncreaseRow,
 } from '@/lib/recon-parsers';
-import type { ParsedStatement, ParsedPayroll, ReconLine, ParsedCfemDeductions, CfemDeductionLine } from '@/lib/recon-parsers';
+import type { ParsedStatement, ParsedPayroll, ReconLine, ParsedCfemDeductions } from '@/lib/recon-parsers';
 import { exportReport, type ReportSheet } from '@/lib/reports-export';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -558,45 +558,7 @@ export default function ReconciliationPage() {
   useEffect(() => {
     if (tab !== 'consolidation' || !hotels.length) return;
 
-    // CFEM's deductions are supposed to be physically mixed into CSL's/NL's own shared
-    // vendor statements — normally that means CSL/NL's own upload already carries every
-    // CFE Management line, so no cross-referencing is needed here. But a given month's
-    // CSL/NL file can genuinely be missing a CFE employee's line (confirmed live: NL's
-    // August Bodulo/Afri Insurance file dropped Mojewa and Phofu entirely, while CFEM's
-    // own report still shows both) — when that happens, System silently under-counts
-    // against the real Bank figure with no way to see why. Fetch CFEM's own report once
-    // so CSL/NL's totals below can top up with whatever CFE employees are missing from
-    // their own file, same resolution CFEM Cross-Reference and the Management (CFE)
-    // section already use.
-    async function fetchCfemDeductions(): Promise<ParsedCfemDeductions | undefined> {
-      const cfemHotel = hotels.find(x => x.short_code === 'CFEM');
-      if (!cfemHotel) return undefined;
-      const { data: periodRow } = await supabase
-        .from('reconciliation_periods')
-        .select('id')
-        .eq('hotel_id', cfemHotel.id)
-        .eq('period_year', year)
-        .eq('period_month', month)
-        .maybeSingle();
-      if (!periodRow) return undefined;
-      const { data: up } = await supabase
-        .from('recon_uploads')
-        .select('parsed_data')
-        .eq('period_id', periodRow.id)
-        .eq('upload_type', 'cfem_deductions')
-        .maybeSingle();
-      return up?.parsed_data as ParsedCfemDeductions | undefined;
-    }
-
-    // Same name-first-then-code resolution as matchCfeEmployee/resolveCfemLine elsewhere
-    // on this page — kept local since cfeEmployees/matchCfeEmployee are in this
-    // component's closure regardless of source order (function declarations hoist).
-    function resolveCfemDeductionLine(l: CfemDeductionLine) {
-      return matchCfeEmployee(l.name)
-        ?? (l.empCode ? cfeEmployees.find(e => e.employee_code?.toUpperCase() === l.empCode.toUpperCase()) : undefined);
-    }
-
-    async function loadSystemTotals(shortCode: ConsolidationHotel, cfemDeductions?: ParsedCfemDeductions): Promise<SystemTotals> {
+    async function loadSystemTotals(shortCode: ConsolidationHotel): Promise<SystemTotals> {
       const h = hotels.find(x => x.short_code === shortCode);
       if (!h) return emptySystemTotals;
       const { data: periodRow } = await supabase
@@ -639,39 +601,14 @@ export default function ReconciliationPage() {
         return totals;
       }
 
-      // For each vendor line item, add any CFE Management employee's amount from
-      // CFEM's own report whose employee_code isn't already among this hotel's own
-      // statement lines for that vendor — i.e. only what's genuinely missing, never
-      // double-counting someone already embedded in the CSL/NL file as normal.
-      const supplementalFromCfem = (t: 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo'): number => {
-        if (!cfemDeductions) return 0;
-        const section = cfemDeductions.sections.find(sec => lookupCfemVendorType(sec.vendor) === t);
-        if (!section) return 0;
-        const ownStmt = byType.get(t) as ParsedStatement | undefined;
-        const ownCodes = new Set(
-          (ownStmt?.lines ?? []).map(l => l.empCode?.toUpperCase()).filter(Boolean),
-        );
-        let extra = 0;
-        for (const l of section.lines) {
-          const emp = resolveCfemDeductionLine(l);
-          if (!emp?.employee_code || ownCodes.has(emp.employee_code.toUpperCase())) continue;
-          extra += l.empAmount;
-        }
-        return extra;
-      };
-
       const payroll = byType.get('payroll') as ParsedPayroll | undefined;
       const ftc = byType.get('ftc_payroll') as ParsedPayroll | undefined;
       const netSalary = (payroll?.lines.reduce((s, l) => s + l.nettPay, 0) ?? 0)
                        + (ftc?.lines.reduce((s, l) => s + l.nettPay, 0) ?? 0);
       return {
         basic_salary: netSalary,
-        furnmart: get('furnmart') + supplementalFromCfem('furnmart'),
-        afritec:  get('afritec')  + supplementalFromCfem('afritec'),
-        topline:  get('topline')  + supplementalFromCfem('topline'),
-        cbstores: get('cbstores') + supplementalFromCfem('cbstores'),
-        bodulo:   get('bodulo')   + supplementalFromCfem('bodulo'),
-        pension:  getPensionBank(),
+        furnmart: get('furnmart'), afritec: get('afritec'), topline: get('topline'),
+        cbstores: get('cbstores'), bodulo: get('bodulo'), pension: getPensionBank(),
       };
     }
 
@@ -685,17 +622,12 @@ export default function ReconciliationPage() {
     }
 
     setConsolidationSystem(s => ({ ...s, loaded: false }));
-    fetchCfemDeductions().then(cfemDeductions => {
-      Promise.all([
-        loadSystemTotals('CSL', cfemDeductions),
-        loadSystemTotals('NL', cfemDeductions),
-        loadSystemTotals('CFEM'),
-        loadEntries(),
-      ]).then(([CSL, NL, CFEM, entries]) => {
+    Promise.all([loadSystemTotals('CSL'), loadSystemTotals('NL'), loadSystemTotals('CFEM'), loadEntries()]).then(
+      ([CSL, NL, CFEM, entries]) => {
         setConsolidationSystem({ CSL, NL, CFEM, loaded: true });
         setConsolidationEntries(entries);
-      });
-    });
+      }
+    );
   }, [tab, year, month, hotels]);
 
   async function saveConsolidationEntry(
