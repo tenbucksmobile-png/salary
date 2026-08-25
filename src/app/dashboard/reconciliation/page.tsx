@@ -2455,12 +2455,20 @@ export default function ReconciliationPage() {
                         </thead>
                         <tbody>
                           {(dedFilter === 'all' ? mgtEmpRows : mgtEmpRows.filter(row => {
-                            if (dedFilter === 'furnmart') return (row.furnmart_stmt ?? 0) > 0;
-                            if (dedFilter === 'afritec')  return (row.afritec_stmt  ?? 0) > 0;
-                            if (dedFilter === 'topline')  return (row.topline_stmt  ?? 0) > 0;
-                            if (dedFilter === 'cbstores') return (row.cb_stmt       ?? 0) > 0;
-                            if (dedFilter === 'bodulo')   return (row.bodulo_stmt   ?? 0) > 0;
-                            if (dedFilter === 'pension')  return (row.pension_stmt  ?? 0) > 0;
+                            // Check CFEM's own report too, not just NL's own statement figure —
+                            // a CFE Management employee can be missing from NL's own vendor file
+                            // for a given month (e.g. dropped from that month's Bodulo export)
+                            // while still genuinely appearing on CFEM's own report; filtering on
+                            // the NL-side figure alone would silently hide them from this exact
+                            // vendor tab, defeating the point of the CFEM Report column.
+                            const cfeMatch = matchCfeEmployee(row.name)
+                              ?? (row.empCode ? cfeEmployees.find(e => e.employee_code?.toUpperCase() === row.empCode.toUpperCase()) : undefined);
+                            if (dedFilter === 'furnmart') return (row.furnmart_stmt ?? 0) > 0 || (cfemReportAmountFor(cfeMatch, 'furnmart') ?? 0) > 0;
+                            if (dedFilter === 'afritec')  return (row.afritec_stmt  ?? 0) > 0 || (cfemReportAmountFor(cfeMatch, 'afritec')  ?? 0) > 0;
+                            if (dedFilter === 'topline')  return (row.topline_stmt  ?? 0) > 0 || (cfemReportAmountFor(cfeMatch, 'topline')  ?? 0) > 0;
+                            if (dedFilter === 'cbstores') return (row.cb_stmt       ?? 0) > 0 || (cfemReportAmountFor(cfeMatch, 'cbstores') ?? 0) > 0;
+                            if (dedFilter === 'bodulo')   return (row.bodulo_stmt   ?? 0) > 0 || (cfemReportAmountFor(cfeMatch, 'bodulo')   ?? 0) > 0;
+                            if (dedFilter === 'pension')  return (row.pension_stmt  ?? 0) > 0 || (cfemReportAmountFor(cfeMatch, 'pension')  ?? 0) > 0;
                             return true;
                           })).map((row, i) => {
                             // Same name-first-then-code fallback as isMgt() above, so a row that
