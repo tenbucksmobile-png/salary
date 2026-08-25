@@ -419,6 +419,18 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
   const lines: ReconLine[] = [];
   const unmatchedLines: ReconLine[] = [];
 
+  // Tolerant numeric parse — a management/manually-entered row can carry its amount as
+  // text with a currency prefix or thousands separator (e.g. "P380.00", "1,234.00")
+  // where bare Number(...) returns NaN. Confirmed live: two CFE Management rows on a
+  // real NL Bodulo export were silently dropped (see the unmatchedLines note below)
+  // despite having genuine, verifiable amounts on CFEM's own report — this is the most
+  // likely cause, since 35 other rows on the same file parsed with plain Number(...).
+  const parseAmount = (v: unknown): number => {
+    if (typeof v === 'number') return v;
+    const cleaned = String(v ?? '').replace(/[^0-9.\-]/g, '');
+    return Number(cleaned) || 0;
+  };
+
   for (let i = dataStart; i < rows.length; i++) {
     const row = rows[i];
     // Stop when we hit the legacy layout's summary block (no code, has label text) —
@@ -427,14 +439,20 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
     if (!row[colCode]) continue;
 
     const rawCode = String(row[colCode] || '').trim();
-    const amount = colAmt >= 0 ? Number(row[colAmt]) || 0 : (Number(row[9]) || Number(row[3]) || 0);
-    if (!rawCode || amount <= 0) continue;
-
+    const amount = colAmt >= 0 ? parseAmount(row[colAmt]) : (parseAmount(row[9]) || parseAmount(row[3]));
     const name = colFullName >= 0
       ? String(row[colFullName] || '').trim()
       : (colFirst >= 0 || colSur >= 0)
         ? `${String(row[colFirst] ?? '')} ${String(row[colSur] ?? '')}`.trim()
         : rawCode; // legacy policy list has no name column — repeat the code for display
+    if (!rawCode || amount <= 0) {
+      // Previously discarded with no trace at all — a row that has a real code/name but
+      // an amount that still didn't parse (blank, "-", or a format parseAmount can't
+      // salvage) at least surfaces here instead of vanishing invisibly from the total.
+      if (rawCode && name) unmatchedLines.push({ empCode: normalizeCode(rawCode), name, amount: 0 });
+      continue;
+    }
+
     const line: ReconLine = { empCode: normalizeCode(rawCode), name, amount };
     lines.push(line);
   }
