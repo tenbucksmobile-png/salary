@@ -170,6 +170,24 @@ export default function SalarySummaryTable() {
       let scenarioLineMap = new Map<string, ScenarioLine>();
       let displayName: string | null = null;
 
+      // Once a hotel's scenario is committed, its increase has already been
+      // folded into salary_records (a new period record carrying new_basic as
+      // the current basic_salary) — the Dashboard should show that as the
+      // plain current figure, not keep highlighting a stale "Increase+Adj"
+      // delta for it. Only DRAFT scenarios (not yet committed) get a delta
+      // here; a committed hotel with no draft falls through to
+      // computeEmployeeFigures' no-scenario-line branch (currentGross ===
+      // newGross, zero delta) — same as every hotel with no scenario at all.
+      //
+      // A prior version fell back to "the single most recently committed
+      // scenario across ALL hotels" when there was no draft anywhere. That
+      // breaks the moment two hotels are committed in the same batch (same
+      // committed_at, as this app's own multi-hotel Commit always produces):
+      // ORDER BY committed_at DESC LIMIT 1 picks one hotel arbitrarily among
+      // the tie, so only that one hotel kept showing its committed delta
+      // while every other hotel's — despite being equally "just committed" —
+      // silently showed none. Confirmed live 2026-08-26: all 7 hotels
+      // committed at the identical timestamp, yet only ILG's delta rendered.
       if ((draftScenarios ?? []).length > 0) {
         const ids = draftScenarios!.map(s => s.id);
         const { data: draftLines } = await sb
@@ -179,24 +197,6 @@ export default function SalarySummaryTable() {
         scenarioLineMap = new Map((draftLines ?? []).map(l => [l.employee_id, l as ScenarioLine]));
         const count = draftScenarios!.length;
         displayName = `Draft increases — ${count} hotel${count !== 1 ? 's' : ''} pending commit`;
-      } else {
-        // Fallback: most recent committed scenario
-        const { data: latestScenario } = await sb
-          .from('increase_scenarios')
-          .select('id, name, status')
-          .in('status', ['approved', 'applied', 'committed'])
-          .order('committed_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (latestScenario) {
-          displayName = latestScenario.name;
-          const { data: lines } = await sb
-            .from('scenario_lines')
-            .select('*')
-            .eq('scenario_id', latestScenario.id);
-          scenarioLineMap = new Map((lines ?? []).map(l => [l.employee_id, l as ScenarioLine]));
-        }
       }
 
       setScenarioName(displayName);
