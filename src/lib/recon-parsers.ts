@@ -394,8 +394,18 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
   const codeColPattern = /custom|policy.?id|employee.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|staff\.?\s*no\.?|payroll\.?\s*no\.?|^\s*code\s*$/i;
+  // Some products on this slot carry no employee code column at all — just a
+  // plain Name/Surname/Amount sheet (confirmed live: an "Afritec Bodulo NL"
+  // export with exactly those three headers, nothing else). The header row
+  // still needs to be found in that case, so detection also accepts a bare
+  // Surname/Name header even without a code-shaped column alongside it —
+  // otherwise headerIdx stays -1 and the code below falls through to the
+  // legacy layout's hardcoded column 4, which doesn't exist on a 3-column
+  // sheet, silently discarding every row (row[4] is always undefined).
+  const nameHeaderPattern = /surname|^(?:full\s*)?name$|^employee\s*name$|^customer\s*name$/i;
   const headerIdx = rows.findIndex(r =>
-    r.some((c: any) => codeColPattern.test(String(c || '').trim())),
+    r.some((c: any) => codeColPattern.test(String(c || '').trim())) ||
+    r.some((c: any) => nameHeaderPattern.test(String(c || '').trim())),
   );
   const dataStart = headerIdx >= 0 ? headerIdx + 1 : 1;
   const hRow = rows[headerIdx >= 0 ? headerIdx : 0] || [];
@@ -412,12 +422,39 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
   // Same bare-"Name"-vs-"Surname" ambiguity handling as parseAfritecXls — see there.
   const colFullName = colCombinedName >= 0 ? colCombinedName : (colSur < 0 ? colBareName : -1);
   const colFirst = colFirstNamed >= 0 ? colFirstNamed : (colSur >= 0 ? colBareName : -1);
+  const hasNameCol = colFullName >= 0 || colFirst >= 0 || colSur >= 0;
 
-  const colCode = colCodeFound >= 0 ? colCodeFound : 4;
+  // A header row WAS found (via the name pattern above) but has no code
+  // column at all — a genuine no-code product, not the "no header found"
+  // legacy case. Falling back to the hardcoded column 4 here would be wrong
+  // (there is no column 4), so leave colCode unresolved and match by name
+  // only, same as Furnmart's noCodeTotal path.
+  const noCodeAtAll = colCodeFound < 0 && headerIdx >= 0 && hasNameCol;
+  const colCode = colCodeFound >= 0 ? colCodeFound : (noCodeAtAll ? -1 : 4);
   const colAmt = colAmtFound >= 0 ? colAmtFound : -1;
 
   const lines: ReconLine[] = [];
   const unmatchedLines: ReconLine[] = [];
+
+  if (noCodeAtAll) {
+    const parseAmount = (v: unknown): number => {
+      if (typeof v === 'number') return v;
+      const cleaned = String(v ?? '').replace(/[^0-9.\-]/g, '');
+      return Number(cleaned) || 0;
+    };
+    for (let i = dataStart; i < rows.length; i++) {
+      const row = rows[i];
+      const name = colFullName >= 0
+        ? String(row[colFullName] || '').trim()
+        : `${String(row[colFirst] ?? '')} ${String(row[colSur] ?? '')}`.trim();
+      if (!name) continue;
+      const amount = colAmt >= 0 ? parseAmount(row[colAmt]) : 0;
+      if (amount <= 0) continue;
+      unmatchedLines.push({ empCode: '', name, amount });
+    }
+    const total = unmatchedLines.reduce((s, l) => s + l.amount, 0);
+    return { uploadType: 'bodulo', lines, unmatchedLines, total, fileName };
+  }
 
   // Tolerant numeric parse — a management/manually-entered row can carry its amount as
   // text with a currency prefix or thousands separator (e.g. "P380.00", "1,234.00")
