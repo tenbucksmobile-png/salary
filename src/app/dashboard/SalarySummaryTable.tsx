@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord, ScenarioLine } from '@/types/database';
 import { fmtZAR, fmtCurrency, sortHotels } from '@/lib/utils';
 import { Plus, Minus, ChevronDown } from 'lucide-react';
@@ -124,16 +124,16 @@ export default function SalarySummaryTable() {
 
   useEffect(() => {
     async function load() {
-      const [{ data: h }, { data: e }, { data: s }, meRes] = await Promise.all([
+      const [{ data: h }, e, salList, meRes] = await Promise.all([
         sb.from('hotels').select('*'),
-        sb.from('employees').select('*').eq('status', 'active'),
-        sb.from('salary_records').select('*'),
+        fetchAllRows<Employee>(() => sb.from('employees').select('*').eq('status', 'active')),
+        fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*')),
         fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
       ]);
       const me = meRes as { role: string; hotelIds: string[] | null } | null;
 
       let hotelList = sortHotels((h ?? []) as Hotel[]);
-      let empList   = (e ?? []) as Employee[];
+      let empList   = e;
       // Sub users restricted to specific hotels — filter both, not just the
       // hotel checkbox list, since "All Hotels" (empty selection) elsewhere
       // means "show everyone" and must never include a non-permitted hotel.
@@ -141,7 +141,6 @@ export default function SalarySummaryTable() {
         hotelList = hotelList.filter(h => me.hotelIds!.includes(h.id));
         empList   = empList.filter(e => me.hotelIds!.includes(e.hotel_id));
       }
-      const salList   = (s ?? []) as SalaryRecord[];
 
       const salMap = new Map<string, SalaryRecord>();
       for (const sr of salList) {

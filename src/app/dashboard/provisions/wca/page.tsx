@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import {
   Hotel, WcaAnnualConsolidation,
   WcaManualEntry, WcaManualEntryType, WcaManualEntryStatus, WcaRoeRate, WcaProvisionCalc,
@@ -167,11 +167,11 @@ export default function WcaProvisionPage() {
       const { data: e } = await sb.from('employees').select('*').eq('hotel_id', selectedHotel.id).eq('status', 'active');
       const empList = (e ?? []) as Employee[];
       const empIds = empList.map(emp => emp.id);
-      const { data: s } = empIds.length
-        ? await sb.from('salary_records').select('*').in('employee_id', empIds)
-        : { data: [] };
+      const s = empIds.length
+        ? await fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*').in('employee_id', empIds))
+        : [];
       setApaEmployees(empList);
-      setApaSalary((s ?? []) as SalaryRecord[]);
+      setApaSalary(s);
     })();
   }, [selectedHotel?.id, selectedHotel?.short_code]);
 

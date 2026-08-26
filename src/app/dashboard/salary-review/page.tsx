@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { fmtZAR, fmtCurrency, MONTH_NAMES, sortHotels } from '@/lib/utils';
 import { TrendingUp, CheckCircle, Pencil, X, Check, Download, Save, Trash2, ChevronDown } from 'lucide-react';
@@ -191,15 +191,13 @@ export default function SalaryReviewPage() {
 
   useEffect(() => {
     async function load() {
-      const [{ data: h }, { data: e }, { data: s }, { data: drafts }] = await Promise.all([
+      const [{ data: h }, empList, salList, { data: drafts }] = await Promise.all([
         sb.from('hotels').select('*'),
-        sb.from('employees').select('*').eq('status', 'active'),
-        sb.from('salary_records').select('*'),
+        fetchAllRows<Employee>(() => sb.from('employees').select('*').eq('status', 'active')),
+        fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*')),
         sb.from('increase_scenarios').select('id, hotel_id, settings_json').eq('status', 'draft').not('hotel_id', 'is', null),
       ]);
       const hotelList = sortHotels((h ?? []) as Hotel[]);
-      const empList   = (e ?? []) as Employee[];
-      const salList   = (s ?? []) as SalaryRecord[];
 
       const salMap = new Map<string, SalaryRecord>();
       for (const sr of salList) {

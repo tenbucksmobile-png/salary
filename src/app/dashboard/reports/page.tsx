@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { sortHotels, MONTH_NAMES } from '@/lib/utils';
 import { ChevronDown, ChevronRight, FileSpreadsheet, FileText } from 'lucide-react';
@@ -343,13 +343,13 @@ export default function ReportsPage() {
     const sb = createClient();
     Promise.all([
       sb.from('hotels').select('*'),
-      sb.from('employees').select('*'),
-      sb.from('salary_records').select('*'),
+      fetchAllRows<Employee>(() => sb.from('employees').select('*')),
+      fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*')),
       fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
     ]).then(([h, e, s, meRes]) => {
       const me = meRes as { role: string; hotelIds: string[] | null } | null;
       let sorted = sortHotels(h.data ?? []);
-      let emps   = (e.data ?? []) as Employee[];
+      let emps   = e;
       // Sub users restricted to specific hotels — filter both, not just the
       // hotel checkbox list, since an empty selection here means "all
       // hotels" and must never fall back to including a non-permitted one.
@@ -360,7 +360,7 @@ export default function ReportsPage() {
       setHotels(sorted);
       setSelectedHotels(sorted.map(x => x.id));
       setEmployees(emps);
-      setSalaryRecords(s.data ?? []);
+      setSalaryRecords(s);
       setLoading(false);
     });
   }, []);

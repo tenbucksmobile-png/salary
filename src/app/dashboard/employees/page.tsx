@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { Employee, Hotel, SalaryRecord } from '@/types/database';
 import { fmtZAR, fmtCurrency, sortHotels, MONTH_NAMES } from '@/lib/utils';
 import Link from 'next/link';
@@ -234,10 +234,10 @@ export default function EmployeesPage() {
   }, [hotelFilter]);
 
   async function load() {
-    const [{ data: h }, { data: e }, { data: s }, meRes] = await Promise.all([
+    const [{ data: h }, e, s, meRes] = await Promise.all([
       sb.from('hotels').select('*'),
-      sb.from('employees').select('*').order('surname'),
-      sb.from('salary_records').select('*'),
+      fetchAllRows<Employee>(() => sb.from('employees').select('*').order('surname')),
+      fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*')),
       fetch('/api/auth/me').then(r => r.ok ? r.json() : null),
     ]);
     const me = meRes as { role: string; hotelIds: string[] | null } | null;
@@ -246,8 +246,8 @@ export default function EmployeesPage() {
       hotelList = hotelList.filter(h => me.hotelIds!.includes(h.id));
     }
     setHotels(hotelList);
-    setEmployees((e ?? []) as Employee[]);
-    setSalaries((s ?? []) as SalaryRecord[]);
+    setEmployees(e);
+    setSalaries(s);
     // Resolve hotel filter: prefer localStorage value if it matches a real hotel,
     // otherwise fall back to the first hotel in the list.
     if (hotelList.length > 0) {

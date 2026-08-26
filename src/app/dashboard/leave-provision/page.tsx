@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { Employee, Hotel, LeaveProvision, LeaveProvisionBookBalance, SalaryRecord } from '@/types/database';
 import { fmtCurrency, sortHotels } from '@/lib/utils';
 import { isBotswana, LEAVE_PROVISION_CAP_DAYS, leaveProvisionCapDays } from '@/lib/payroll-calc';
@@ -173,10 +173,9 @@ export default function LeaveProvisionPage() {
     setRecalculating(true);
 
     const empIds = rows.map(r => r.employee!.id);
-    const { data: salData } = empIds.length
-      ? await sb.from('salary_records').select('*').in('employee_id', empIds)
-      : { data: [] };
-    const salList = (salData ?? []) as SalaryRecord[];
+    const salList = empIds.length
+      ? await fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*').in('employee_id', empIds))
+      : [];
     const latestSalary = new Map<string, SalaryRecord>();
     for (const sal of salList) {
       const ex = latestSalary.get(sal.employee_id);

@@ -15,7 +15,7 @@
 // Book Adjustment figures come from the same *_book_balances tables the
 // standalone pages already persist to.
 
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import {
   Employee, Hotel, SalaryRecord, LeaveProvision,
   LeaveProvisionBookBalance, BonusProvisionBookBalance, SeveranceProvisionBookBalance,
@@ -631,10 +631,9 @@ async function fetchProvisionsData(year: number): Promise<ProvisionsData> {
     ...bonusEmployees.map(e => e.id),
     ...severanceEmployees.map(e => e.id),
   ]);
-  const { data: sal } = empIdSet.size
-    ? await sb.from('salary_records').select('*').in('employee_id', [...empIdSet])
-    : { data: [] as SalaryRecord[] };
-  const salaryRecords = (sal ?? []) as SalaryRecord[];
+  const salaryRecords = empIdSet.size
+    ? await fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*').in('employee_id', [...empIdSet]))
+    : [];
   const latestSalaryMap = new Map<string, SalaryRecord>();
   for (const s of salaryRecords) {
     const ex = latestSalaryMap.get(s.employee_id);

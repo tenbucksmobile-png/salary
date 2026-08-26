@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { calculateBurden, isBotswana } from '@/lib/payroll-calc';
 import { sortHotels } from '@/lib/utils';
@@ -159,8 +159,7 @@ export default function MethodsPage() {
     }
 
     const empIds = employees.map(e => e.id);
-    const { data: salData } = await sb.from('salary_records').select('*').in('employee_id', empIds);
-    const salList = (salData ?? []) as SalaryRecord[];
+    const salList = await fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*').in('employee_id', empIds));
 
     // Latest salary record per employee
     const latestSalary = new Map<string, SalaryRecord>();

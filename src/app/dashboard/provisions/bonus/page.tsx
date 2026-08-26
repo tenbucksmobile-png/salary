@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { Employee, Hotel, SalaryRecord, BonusProvisionBookBalance, ScenarioLine } from '@/types/database';
 import { fmtCurrency, sortHotels } from '@/lib/utils';
 import { calculateBurden, isBotswana } from '@/lib/payroll-calc';
@@ -113,11 +113,11 @@ export default function BonusProvisionPage() {
       ]);
       const empList = (e ?? []) as Employee[];
       const empIds = empList.map(emp => emp.id);
-      const { data: s } = empIds.length
-        ? await sb.from('salary_records').select('*').in('employee_id', empIds)
-        : { data: [] };
+      const s = empIds.length
+        ? await fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*').in('employee_id', empIds))
+        : [];
       setEmployees(empList);
-      setSalaryRecords((s ?? []) as SalaryRecord[]);
+      setSalaryRecords(s);
       setBookBalances((b ?? []) as BonusProvisionBookBalance[]);
       setScenarioLineMap(slMap);
     })();
@@ -334,10 +334,10 @@ export default function BonusProvisionPage() {
     }));
 
     const empIds = employees.map(e => e.id);
-    const { data: s } = empIds.length
-      ? await sb.from('salary_records').select('*').in('employee_id', empIds)
-      : { data: [] };
-    setSalaryRecords((s ?? []) as SalaryRecord[]);
+    const s = empIds.length
+      ? await fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*').in('employee_id', empIds))
+      : [];
+    setSalaryRecords(s);
     setRecalculating(false);
   }
 
