@@ -29,17 +29,12 @@ function computeEmployeeFigures(
 ): EmployeeFigures | null {
   const sal = latestSalary.get(emp.id);
   if (!sal) return null;
-  // ANO = a vacant position, not a real employee — its salary_records row is
-  // leftover from whoever last held the position before it went vacant
-  // (resigned/terminated), not a current payment. It still counts toward
-  // headcount (useful for vacancy tracking) but must contribute zero to every
-  // money figure, or a stale pre-vacancy salary keeps inflating hotel/grade
-  // totals indefinitely. Confirmed live: four ILG "ANO/Resignation" rows
-  // (status still active) were adding P22,700 of nobody's money to ILG's
-  // Dashboard total, sourced from each position's last real occupant.
-  if (emp.grade_label === 'ANO') {
-    return { currentGross: 0, increaseAdj: 0, newGross: 0, currentCtc: 0, newCtc: 0 };
-  }
+  // ANO = a vacant position. Its salary_records figure is intentionally kept
+  // (not zeroed) — it represents the budget held for that position, which is
+  // exactly what the Dashboard is meant to show per category. Do not exclude
+  // or zero ANO here; a prior attempt to do this was reverted at the user's
+  // explicit direction (2026-08-26) once it turned out ANO's money was
+  // correct and the actual reported anomaly was elsewhere.
   const sl = slMap.get(emp.id);
   if (sl) {
     const structure = sal.allowances?.structure ?? 0;
