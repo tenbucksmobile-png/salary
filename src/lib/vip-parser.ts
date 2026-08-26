@@ -320,8 +320,16 @@ export const isTSVEmployeeFile = isTabularEmployeeFile;
 function parseTabularAmount(s: string): number {
   const clean = s.replace(/[\s R]/g, '');
   if (!clean || clean === '-') return 0;
-  // European decimal comma: comma present, no period → replace comma with dot
+  // Comma present, no period: could be a European decimal comma ("652,5") or a
+  // thousands separator ("2,400"). A thousands-grouped number always has
+  // exactly 3 digits after each comma (optionally repeated, e.g. "1,234,567");
+  // a decimal comma has 1-2 trailing digits and only ever appears once. Only
+  // the former shape is treated as thousands grouping — anything else falls
+  // back to decimal-comma interpretation.
   if (clean.includes(',') && !clean.includes('.')) {
+    if (/^-?\d{1,3}(,\d{3})+$/.test(clean)) {
+      return parseFloat(clean.replace(/,/g, '')) || 0;
+    }
     return parseFloat(clean.replace(',', '.')) || 0;
   }
   // Standard: comma is thousands separator → strip it
