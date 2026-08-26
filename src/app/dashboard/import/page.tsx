@@ -878,7 +878,15 @@ export default function ImportPage() {
 
       const importId = (importRec as any)?.id;
 
-      // Build salary batch and employee patches in one pass
+      // Build salary batch and employee patches in one pass.
+      //
+      // Every burden/provision/increase-scenario column is explicitly zeroed
+      // (same fix as the HR List import below) — an upsert only overwrites
+      // columns present in its payload, so any column left out here would
+      // keep whatever stale value a prior Calculate Burden run or a committed
+      // Salary Review increase left for this employee/period, producing an
+      // internally inconsistent record (new basic_salary next to an old
+      // total_cost/new_ctc derived from a different basic).
       const salaryBatch = matched.map(row => ({
         employee_id:           resolveId(row)!,
         import_id:             importId,
@@ -893,6 +901,13 @@ export default function ImportPage() {
         ancilla_employee:      0, provident_employee: 0, total_deductions: 0,
         uif_company:           0, medical_company:   0, provident_company: 0,
         sdl_company:           0, ancilla_company:   0, total_company_contrib: 0,
+        wca_company:           0, staff_meals:       0, bonus_provision:   0,
+        incentive:             0, leave_provision:   0, other_company_contrib: 0,
+        leave_days:            0, leave_accrual:     0, bonus_payout_factor: 0,
+        bonus_accrual_dec:     0, bonus_accrual_july: 0, mgmt_incentive:   0,
+        severance:             0, gratuity:          0,
+        increase_amount:       0, adjustment:        0, increase_pct:     0,
+        new_basic:             0, new_ctc:           0,
         total_payroll_burden:  0, total_cost:        row.basic,
       }));
 
@@ -1003,6 +1018,20 @@ export default function ImportPage() {
 
         // HR List: minimal salary record so employees appear in Salary Review.
         // Period auto-sets to current month. Run Calculate Burden afterwards.
+        //
+        // Every burden/provision/increase-scenario column is explicitly zeroed
+        // here (matching the full column set the Add Employee insert uses) —
+        // not just the deduction columns. An upsert only overwrites the
+        // columns present in its payload, so omitting any of these leaves a
+        // stale value from whatever previously occupied this employee/period
+        // row (a prior Calculate Burden run, or a committed Salary Review
+        // increase for the same period) sitting next to the freshly imported
+        // basic_salary/total_earnings — an internally inconsistent record
+        // (e.g. total_cost/new_ctc computed from the OLD basic while
+        // basic_salary/ctc already reflect the NEW one). Confirmed live: an
+        // ILG employee's Aug 2026 record combined this import's basic_salary
+        // (2,950) with the prior day's committed total_cost (3,823.53, derived
+        // from a different basic) and stale new_ctc — silently, with no error.
         if (employeeId && (importType !== 'employee' || row.basicSalary > 0)) {
           salaryBatch.push(
             importType === 'employee' ? {
@@ -1018,8 +1047,16 @@ export default function ImportPage() {
               uif_company: 0, medical_company: row.medicalCompany,
               provident_company: 0, sdl_company: 0, ancilla_company: 0,
               total_company_contrib: row.medicalCompany,
+              wca_company: 0, staff_meals: 0, bonus_provision: 0,
+              incentive: 0, leave_provision: 0, other_company_contrib: 0,
+              total_payroll_burden: 0, leave_days: 0, leave_accrual: 0,
+              bonus_payout_factor: 0, bonus_accrual_dec: 0, bonus_accrual_july: 0,
+              mgmt_incentive: 0, severance: 0, gratuity: 0,
+              increase_amount: 0, adjustment: 0, increase_pct: 0,
+              new_basic: 0, new_ctc: 0,
               net_salary: row.basicSalary,
               ctc: row.totalEarnings + row.medicalCompany,
+              total_cost: row.totalEarnings + row.medicalCompany,
             } : {
               employee_id: employeeId,
               import_id: importId,
