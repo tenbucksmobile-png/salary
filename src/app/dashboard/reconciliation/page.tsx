@@ -79,9 +79,14 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
     payrollKey: 'bodulo',
   },
   {
-    type: 'pension', label: 'Pension Contributions', required: false,
-    accept: '.xls,.xlsx,.csv,.txt', desc: 'Monthly pension/provident fund contribution statement (.xls, or CFEM\'s .csv "LIST OF:" export) — uploaded per hotel, including CFEM',
+    type: 'pension', label: 'Pension Schedule', required: false,
+    accept: '.xls,.xlsx', desc: 'Monthly pension/provident fund contribution schedule from the fund administrator — uploaded per hotel, including CFEM',
     payrollKey: 'pensionEe',
+  },
+  {
+    type: 'pension_deductions', label: 'Pension Deductions (Payroll)', required: false,
+    accept: '.csv,.txt', desc: 'CFEM only — CFEM\'s own payroll system\'s pension deductions report ("LIST OF: Pension Fund"), checked against the Pension Schedule above',
+    payrollKey: null,
   },
   {
     type: 'cfem_deductions', label: 'CFEM Deductions Summary', required: true,
@@ -91,15 +96,19 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
 ];
 
 // CFEM has its own confidential payroll and never uploads any salary data here —
-// its single combined deductions report is the only upload slot shown ("12 Months
-// Payroll Report" is also a salary document, so it's excluded too, not just Payroll Spreadsheet).
-// Pension Contributions is the one exception: unlike the other 5 vendors (which arrive mixed
-// into CSL's/NL's shared statements for CFE), pension is administered directly per hotel, so
-// CFEM gets its own upload slot for it too, alongside the combined deductions report.
-const CFEM_UPLOAD_TYPES: ReconUploadType[] = ['cfem_deductions', 'pension'];
+// its combined deductions report and the two pension documents below are the only
+// upload slots shown ("12 Months Payroll Report" is also a salary document, so it's
+// excluded too, not just Payroll Spreadsheet). Pension is the one line item CFEM gets
+// TWO slots for: unlike the other 5 vendors (which arrive mixed into CSL's/NL's shared
+// statements for CFE), pension is administered directly per hotel, so there's no
+// CSL/NL side to check it against — instead, CFEM's own Pension Schedule (from the
+// fund administrator) is checked against CFEM's own payroll pension deductions report,
+// two genuinely separate documents that used to share one upload slot and clobber
+// each other.
+const CFEM_UPLOAD_TYPES: ReconUploadType[] = ['cfem_deductions', 'pension', 'pension_deductions'];
 const NON_CFEM_UPLOAD_TYPES: ReconUploadType[] = UPLOAD_CONFIGS
   .map(c => c.type)
-  .filter(t => t !== 'cfem_deductions');
+  .filter(t => t !== 'cfem_deductions' && t !== 'pension_deductions');
 
 // Maps a CFEM Deductions Summary section's vendor label to the existing vendor upload_type
 // keys the Deductions Check tab already knows how to render — "Afri Insurance" is CFEM's
@@ -229,19 +238,6 @@ export default function ReconciliationPage() {
   type MgtCfeVendorType = CfeVendorType | 'pension';
   const emptyCfemForMgt: { statements: Partial<Record<MgtCfeVendorType, ParsedStatement>>; loaded: boolean } = { statements: {}, loaded: false };
   const [cfemForMgt, setCfemForMgt] = useState(emptyCfemForMgt);
-
-  // CFEM's own Pension upload has no CSL/NL-embedded counterpart (unlike Furnmart/
-  // Afritec/etc — pension is administered directly per hotel, never mixed into CSL's/
-  // NL's shared statements — see CFEM_UPLOAD_TYPES above), so it was falling through
-  // the CFE Cross-Reference entirely with nothing to check it against. CFEM's own
-  // payroll IS tracked normally elsewhere in the app (salary_records, same as any
-  // other hotel) — just never shown on this page to keep it out of CSL/NL sub-users'
-  // view — so this ties CFEM's pension statement total against the sum of active CFEM
-  // employees' own provident_employee for the SAME period, aggregate only (no
-  // per-employee breakdown here, unlike the CSL/NL Employee Detail table), the same
-  // way this page already nets out CFEM's Net Salary on the Consolidation tab rather
-  // than exposing individual salary-derived figures to anyone who isn't CFEM.
-  const [cfemPensionPayroll, setCfemPensionPayroll] = useState<{ total: number; loaded: boolean }>({ total: 0, loaded: false });
 
   // Consolidation tab: director-facing monthly bank release sign-off, spanning all
   // three hotels for the selected month regardless of the main hotel selector.
@@ -565,38 +561,6 @@ export default function ReconciliationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, hotelId, year, month, hotels]);
 
-  // CFEM's own "payroll" side for the Pension check above — aggregate only (see
-  // cfemPensionPayroll comment). Sums active CFEM employees' provident_employee off
-  // their salary_records for the SAME period being reconciled.
-  useEffect(() => {
-    const currentHotelCode = hotels.find(h => h.id === hotelId)?.short_code;
-    if (tab !== 'deductions' || currentHotelCode !== 'CFEM' || !hotels.length) return;
-    const cfemHotel = hotels.find(h => h.short_code === 'CFEM');
-    if (!cfemHotel) return;
-
-    setCfemPensionPayroll(s => ({ ...s, loaded: false }));
-    (async () => {
-      const { data: emps } = await supabase
-        .from('employees')
-        .select('id')
-        .eq('hotel_id', cfemHotel.id)
-        .eq('status', 'active');
-      const ids = (emps ?? []).map((e: any) => e.id);
-      if (!ids.length) { setCfemPensionPayroll({ total: 0, loaded: true }); return; }
-
-      const { data: sal } = await supabase
-        .from('salary_records')
-        .select('employee_id, provident_employee')
-        .in('employee_id', ids)
-        .eq('period_year', year)
-        .eq('period_month', month);
-
-      const total = (sal ?? []).reduce((s: number, r: any) => s + (r.provident_employee ?? 0), 0);
-      setCfemPensionPayroll({ total, loaded: true });
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, hotelId, year, month, hotels]);
-
   // Consolidation tab: load each hotel's "system" totals (auto from whatever's already
   // parsed — payroll spreadsheets for CSL/NL, the CFEM Deductions Summary for CFEM) plus
   // any manual bank/system figures already saved for this period, for all 3 hotels at once.
@@ -774,15 +738,14 @@ export default function ReconciliationPage() {
       else if (type === 'ftc_payroll') parsed = await parseFtcPayrollXls(buf, file.name, month, year);
       else if (type === 'furnmart') parsed = await parseFurnmart(buf, file.name);
       else if (type === 'bodulo')   parsed = await parseBodulo(buf, file.name);
-      else if (type === 'pension') {
-        // CFEM's fund administrator can export pension as a plain-text/CSV "LIST OF:
-        // Pension Fund" statement (the same sectioned shape as the CFEM Deductions
-        // Summary) instead of the multi-sheet xlsx parsePensionSchedule expects — an
-        // .xlsx workbook read of a CSV would throw, so route by extension.
-        parsed = /\.(csv|txt)$/i.test(file.name)
-          ? parseCfemPensionCsv(new TextDecoder().decode(buf), file.name)
-          : await parsePensionSchedule(buf, file.name, month, year);
-      }
+      else if (type === 'pension') parsed = await parsePensionSchedule(buf, file.name, month, year);
+      // CFEM only — its own payroll system's pension deductions report, the exact same
+      // "LIST OF: Pension Fund METHOD NO: ALL" sectioned plain-text/CSV shape as the
+      // combined CFEM Deductions Summary (parseCfemDeductions), just for one vendor.
+      // Genuinely separate from the Pension Schedule above (a different document from a
+      // different source, the fund administrator) — the two used to share the "pension"
+      // upload slot with CSV-vs-xlsx routing, silently clobbering each other.
+      else if (type === 'pension_deductions') parsed = parseCfemPensionCsv(new TextDecoder().decode(buf), file.name);
       else                          parsed = await parseAfritecXls(buf, file.name, type, hotelCode);
 
       const pid = await ensurePeriod();
@@ -912,7 +875,14 @@ export default function ReconciliationPage() {
   const boduloStmt   = isCfem ? cfemStatements.bodulo   : getStmt('bodulo');
   // Pension is uploaded directly for every hotel including CFEM (unlike the 5 vendors
   // above, it's never mixed into CSL's/NL's shared statements), so no CFEM ternary needed.
+  // pensionStmt = the fund administrator's own Schedule (parsePensionSchedule / the
+  // "LIST OF: Pension Fund" CSV variant, whichever CFEM uploads to the Pension slot).
+  // pensionDeductionsStmt = CFEM-only: its own payroll system's pension deductions
+  // report (a second, separate upload — see the Pension Deductions (Payroll) config)
+  // — the two used to be uploaded to the SAME slot (one clobbering the other), which
+  // is why CFEM's pension previously had no real cross-check at all.
   const pensionStmt  = getStmt('pension');
+  const pensionDeductionsStmt = isCfem ? getStmt('pension_deductions') : undefined;
 
   // Determine if payroll has separate columns per lender (vs one combined staffLoans)
   const payrollHasSeparateLoanCols = mergedTotals.afritecLoans > 0 || mergedTotals.toplineLoans > 0;
@@ -1494,6 +1464,34 @@ export default function ReconciliationPage() {
         details,
       };
     }) : [];
+
+  // Pension (CFEM only) — two genuinely separate CFEM uploads: the fund
+  // administrator's own Schedule (pensionStmt) and CFEM's own payroll pension
+  // deductions report (pensionDeductionsStmt). Both use the same employee-code
+  // scheme (CFEM's own systems), so matched by code alone — every employee
+  // appearing on either side gets a row, with a null on whichever side is missing
+  // so a genuine gap is visible rather than silently dropped.
+  interface PensionCrossCheckRow {
+    empCode: string; name: string;
+    scheduleAmount: number | null; payrollAmount: number | null; diff: number | null;
+  }
+  const pensionCrossCheck: PensionCrossCheckRow[] =
+    isCfem && pensionStmt && pensionDeductionsStmt ? (() => {
+      const scheduleByCode = new Map(pensionStmt.lines.map(l => [l.empCode, l]));
+      const payrollByCode = new Map(pensionDeductionsStmt.lines.map(l => [l.empCode, l]));
+      const allCodes = new Set([...scheduleByCode.keys(), ...payrollByCode.keys()]);
+      return [...allCodes].map(code => {
+        const sched = scheduleByCode.get(code);
+        const pay = payrollByCode.get(code);
+        return {
+          empCode: code,
+          name: sched?.name || pay?.name || code,
+          scheduleAmount: sched?.amount ?? null,
+          payrollAmount: pay?.amount ?? null,
+          diff: sched != null && pay != null ? sched.amount - pay.amount : null,
+        };
+      }).sort((a, b) => a.name.localeCompare(b.name));
+    })() : [];
 
   // ── Employees tab: Increase List cross-referenced against this period's Payroll
   // Spreadsheet upload (CSL/NL only) ──────────────────────────────────────────────
@@ -2222,47 +2220,80 @@ export default function ReconciliationPage() {
                     </div>
 
                     {/* Pension — administered directly per hotel (never mixed into CSL/NL's
-                        shared statements, unlike the vendors above), so it has no CSL/NL side
-                        to cross-check against. Checked instead against CFEM's own payroll
-                        (aggregate only — no per-employee breakdown, to keep CFEM's
-                        salary-derived figures out of any CSL/NL sub-user's view of this page). */}
-                    {pensionStmt && (
+                        shared statements, unlike the vendors above), so it's checked against
+                        CFEM's own second, separate upload instead: its payroll system's pension
+                        deductions report. Both are genuine CFEM documents (not derived from
+                        confidential salary data), so — unlike Consolidation's Net Salary — a
+                        full per-employee breakdown is shown here, same as CSL/NL get for every
+                        other vendor. */}
+                    {(pensionStmt || pensionDeductionsStmt) && (
                       <div>
                         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
-                          Pension — Statement vs Payroll
+                          Pension — Schedule vs Payroll Deductions
                         </h2>
                         <p className="text-xs text-muted-foreground mb-3">
-                          CFEM&apos;s pension is administered directly, not mixed into CSL&apos;s/NL&apos;s statements — checked
-                          here against the total of active CFEM employees&apos; own payroll pension deduction for {' '}
-                          {MONTH_NAMES[month - 1]} {year} (aggregate only).
+                          Compares the fund administrator&apos;s Pension Schedule against CFEM&apos;s own payroll pension
+                          deductions report for {MONTH_NAMES[month - 1]} {year}.
                         </p>
-                        {!cfemPensionPayroll.loaded ? (
-                          <p className="text-sm text-muted-foreground">Loading…</p>
+                        {!pensionStmt || !pensionDeductionsStmt ? (
+                          <p className="text-sm text-muted-foreground">
+                            Upload both the Pension Schedule and the Pension Deductions (Payroll) report to see this comparison.
+                          </p>
                         ) : (
-                          <table className="text-sm border rounded overflow-hidden w-full max-w-2xl">
-                            <thead>
-                              <tr className="bg-[#1B3A5C] text-white">
-                                <th className="px-4 py-2 text-left font-semibold"></th>
-                                <th className="px-4 py-2 text-right font-semibold">Amount</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              <tr className="bg-white">
-                                <td className="px-4 py-2 font-medium">Pension Statement (EE)</td>
-                                <td className="px-4 py-2 text-right tabular-nums">{fmt(pensionStmt.total, country)}</td>
-                              </tr>
-                              <tr className="bg-muted/20">
-                                <td className="px-4 py-2 font-medium">Payroll — Provident Fund EE (aggregate)</td>
-                                <td className="px-4 py-2 text-right tabular-nums">{fmt(cfemPensionPayroll.total, country)}</td>
-                              </tr>
-                              <tr className="bg-white">
-                                <td className="px-4 py-2 font-medium">Difference</td>
-                                <td className={`px-4 py-2 text-right tabular-nums ${diffClass(pensionStmt.total - cfemPensionPayroll.total)}`}>
-                                  {fmtDiff(pensionStmt.total - cfemPensionPayroll.total, country)}
-                                </td>
-                              </tr>
-                            </tbody>
-                          </table>
+                          <>
+                            <table className="text-sm border rounded overflow-hidden w-full max-w-md mb-4">
+                              <thead>
+                                <tr className="bg-[#1B3A5C] text-white">
+                                  <th className="px-4 py-2 text-left font-semibold"></th>
+                                  <th className="px-4 py-2 text-right font-semibold">Amount</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr className="bg-white">
+                                  <td className="px-4 py-2 font-medium">Pension Schedule</td>
+                                  <td className="px-4 py-2 text-right tabular-nums">{fmt(pensionStmt.total, country)}</td>
+                                </tr>
+                                <tr className="bg-muted/20">
+                                  <td className="px-4 py-2 font-medium">Payroll Deductions Report</td>
+                                  <td className="px-4 py-2 text-right tabular-nums">{fmt(pensionDeductionsStmt.total, country)}</td>
+                                </tr>
+                                <tr className="bg-white">
+                                  <td className="px-4 py-2 font-medium">Difference</td>
+                                  <td className={`px-4 py-2 text-right tabular-nums ${diffClass(pensionStmt.total - pensionDeductionsStmt.total)}`}>
+                                    {fmtDiff(pensionStmt.total - pensionDeductionsStmt.total, country)}
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
+
+                            <h3 className="text-sm font-semibold mb-2">Pension — Employee Detail</h3>
+                            <table className="text-sm border rounded w-full max-w-xl">
+                              <thead>
+                                <tr className="bg-muted/40">
+                                  <th className="px-3 py-2 text-left">Name</th>
+                                  <th className="px-3 py-2 text-right">Schedule</th>
+                                  <th className="px-3 py-2 text-right">Payroll</th>
+                                  <th className="px-3 py-2 text-right">Diff</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {pensionCrossCheck.map((row, i) => (
+                                  <tr key={row.empCode + i} className="border-t">
+                                    <td className="px-3 py-1.5">{row.name}</td>
+                                    <td className="px-3 py-1.5 text-right tabular-nums">
+                                      {row.scheduleAmount != null ? fmt(row.scheduleAmount, country) : <span className="text-muted-foreground">—</span>}
+                                    </td>
+                                    <td className="px-3 py-1.5 text-right tabular-nums">
+                                      {row.payrollAmount != null ? fmt(row.payrollAmount, country) : <span className="text-muted-foreground">—</span>}
+                                    </td>
+                                    <td className={`px-3 py-1.5 text-right tabular-nums ${row.diff != null ? diffClass(row.diff) : 'text-muted-foreground'}`}>
+                                      {row.diff != null ? fmtDiff(row.diff, country) : '—'}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </>
                         )}
                       </div>
                     )}
