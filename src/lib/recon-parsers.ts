@@ -6,6 +6,12 @@ export interface ReconLine {
   name: string;
   amount: number;
   section?: string; // section label from multi-section files (e.g. "CSL STAFF", "CSL MGMNT")
+  // Pension lines only: the combined EE+ER contribution for this one employee (`amount`
+  // stays EE-only, same reasoning as ParsedStatement.bankTotal below). Needed so
+  // Consolidation can move a CFE Management employee's pension bank total between
+  // hotels (see the CSL/NL/CFEM pension note in reconciliation/page.tsx) without
+  // access to only an EE-only per-line figure.
+  bankAmount?: number;
 }
 
 export interface ParsedStatement {
@@ -593,7 +599,7 @@ export async function parsePensionSchedule(
     if (eeTotal <= 0 && combined <= 0) continue;
 
     const name = `${first} ${sur}`.trim();
-    lines.push({ empCode: normalizeCode(rawCode), name, amount: eeTotal });
+    lines.push({ empCode: normalizeCode(rawCode), name, amount: eeTotal, bankAmount: combined });
     eeSum += eeTotal;
     bankSum += combined;
   }
@@ -1362,7 +1368,7 @@ export function parseCfemPensionCsv(text: string, fileName: string): ParsedState
   const section = sections.find(s => /pension/i.test(s.vendor)) ?? sections[0];
   if (!section) return { uploadType: 'pension_deductions', lines: [], unmatchedLines: [], total: 0, fileName };
 
-  const lines: ReconLine[] = section.lines.map(l => ({ empCode: l.empCode, name: l.name, amount: l.empAmount }));
+  const lines: ReconLine[] = section.lines.map(l => ({ empCode: l.empCode, name: l.name, amount: l.empAmount, bankAmount: l.total }));
   const eeSum = lines.reduce((s, l) => s + l.amount, 0);
   const bankSum = section.total || section.lines.reduce((s, l) => s + l.total, 0);
 

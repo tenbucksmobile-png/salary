@@ -569,12 +569,20 @@ export default function ReconciliationPage() {
   // Consolidation tab: load each hotel's "system" totals (auto from whatever's already
   // parsed — payroll spreadsheets for CSL/NL, the CFEM Deductions Summary for CFEM) plus
   // any manual bank/system figures already saved for this period, for all 3 hotels at once.
+  //
+  // Pension needs a cross-hotel adjustment the other line items don't: CSL and NL each
+  // pay their pension schedule out of their OWN bank account, but a schedule can
+  // physically carry a handful of CFE Management employees mixed in (confirmed live on
+  // NL's — MOJ001/PHO001/TSH001/TSH002). That money is CFEM's, not CSL's/NL's, even
+  // though it's sitting on CSL's/NL's own uploaded file — so it must be subtracted from
+  // whichever hotel's schedule it's embedded in and added to CFEM's own pension figure,
+  // otherwise CSL/NL overstate their own bank obligation and CFEM understates its own.
   useEffect(() => {
     if (tab !== 'consolidation' || !hotels.length) return;
 
-    async function loadSystemTotals(shortCode: ConsolidationHotel): Promise<SystemTotals> {
+    async function loadUploadsByType(shortCode: ConsolidationHotel): Promise<Map<string, any>> {
       const h = hotels.find(x => x.short_code === shortCode);
-      if (!h) return emptySystemTotals;
+      if (!h) return new Map();
       const { data: periodRow } = await supabase
         .from('reconciliation_periods')
         .select('id')
@@ -582,48 +590,12 @@ export default function ReconciliationPage() {
         .eq('period_year', year)
         .eq('period_month', month)
         .maybeSingle();
-      if (!periodRow) return emptySystemTotals;
-
+      if (!periodRow) return new Map();
       const { data: ups } = await supabase
         .from('recon_uploads')
         .select('upload_type, parsed_data')
         .eq('period_id', periodRow.id);
-      const byType = new Map((ups ?? []).map((u: any) => [u.upload_type, u.parsed_data]));
-
-      const get = (t: string) => (byType.get(t) as ParsedStatement | undefined)?.total ?? 0;
-      // Pension's Consolidation figure is the combined EE+ER contribution — what
-      // actually gets paid to the fund administrator — not the EE-only `total` used
-      // everywhere else (Deductions Check compares EE-only against payroll's own
-      // EE-only pensionEe column). Falls back to `total` for a statement with no
-      // EE/ER split at all.
-      const getPensionBank = () => {
-        const stmt = byType.get('pension') as ParsedStatement | undefined;
-        return stmt?.bankTotal ?? stmt?.total ?? 0;
-      };
-
-      if (shortCode === 'CFEM') {
-        const cfem = byType.get('cfem_deductions') as ParsedCfemDeductions | undefined;
-        // Net Salary stays 0 for CFEM — netted out entirely, never a manual entry either
-        // (see consolidationIsManualSystem/consolidationSystemValue below).
-        const totals: SystemTotals = { ...emptySystemTotals };
-        cfem?.sections.forEach(sec => {
-          const t = lookupCfemVendorType(sec.vendor);
-          if (t) totals[t] = sec.total;
-        });
-        // Pension isn't part of the combined CFEM Deductions Summary — it's its own upload.
-        totals.pension = getPensionBank();
-        return totals;
-      }
-
-      const payroll = byType.get('payroll') as ParsedPayroll | undefined;
-      const ftc = byType.get('ftc_payroll') as ParsedPayroll | undefined;
-      const netSalary = (payroll?.lines.reduce((s, l) => s + l.nettPay, 0) ?? 0)
-                       + (ftc?.lines.reduce((s, l) => s + l.nettPay, 0) ?? 0);
-      return {
-        basic_salary: netSalary,
-        furnmart: get('furnmart'), afritec: get('afritec'), topline: get('topline'),
-        cbstores: get('cbstores'), bodulo: get('bodulo'), pension: getPensionBank(),
-      };
+      return new Map((ups ?? []).map((u: any) => [u.upload_type, u.parsed_data]));
     }
 
     async function loadEntries(): Promise<ReconConsolidationEntry[]> {
@@ -636,13 +608,77 @@ export default function ReconciliationPage() {
     }
 
     setConsolidationSystem(s => ({ ...s, loaded: false }));
-    Promise.all([loadSystemTotals('CSL'), loadSystemTotals('NL'), loadSystemTotals('CFEM'), loadEntries()]).then(
-      ([CSL, NL, CFEM, entries]) => {
-        setConsolidationSystem({ CSL, NL, CFEM, loaded: true });
+    Promise.all([loadUploadsByType('CSL'), loadUploadsByType('NL'), loadUploadsByType('CFEM'), loadEntries()]).then(
+      ([cslByType, nlByType, cfemByType, entries]) => {
+        // Pension's Consolidation figure is the combined EE+ER contribution — what
+        // actually gets paid to the fund administrator — not the EE-only `total` used
+        // everywhere else (Deductions Check compares EE-only against payroll's own
+        // EE-only pensionEe column). Falls back to `total` for a statement with no
+        // EE/ER split at all.
+        const pensionOf = (byType: Map<string, any>) => {
+          const stmt = byType.get('pension') as ParsedStatement | undefined;
+          return { stmt, bank: stmt?.bankTotal ?? stmt?.total ?? 0 };
+        };
+        // The portion of a hotel's own pension schedule that actually belongs to a
+        // known CFEM employee — per-line combined EE+ER (bankAmount), falling back to
+        // the EE-only amount for any line that predates the bankAmount field. Matched
+        // via isEmbeddedCfePensionLine (name-based, not raw code — see its comment for
+        // why code-only matching would wrongly strip real CSL employees out).
+        const embeddedCfeBank = (stmt: ParsedStatement | undefined) =>
+          (stmt?.lines ?? [])
+            .filter(isEmbeddedCfePensionLine)
+            .reduce((s, l) => s + (l.bankAmount ?? l.amount), 0);
+
+        const cslPension = pensionOf(cslByType);
+        const nlPension = pensionOf(nlByType);
+        const cfemPension = pensionOf(cfemByType);
+        const cslEmbedded = embeddedCfeBank(cslPension.stmt);
+        const nlEmbedded = embeddedCfeBank(nlPension.stmt);
+
+        function buildTotals(shortCode: ConsolidationHotel, byType: Map<string, any>): SystemTotals {
+          const get = (t: string) => (byType.get(t) as ParsedStatement | undefined)?.total ?? 0;
+
+          if (shortCode === 'CFEM') {
+            const cfem = byType.get('cfem_deductions') as ParsedCfemDeductions | undefined;
+            // Net Salary stays 0 for CFEM — netted out entirely, never a manual entry
+            // either (see consolidationIsManualSystem/consolidationSystemValue below).
+            const totals: SystemTotals = { ...emptySystemTotals };
+            cfem?.sections.forEach(sec => {
+              const t = lookupCfemVendorType(sec.vendor);
+              if (t) totals[t] = sec.total;
+            });
+            // Pension isn't part of the combined CFEM Deductions Summary — it's its own
+            // upload — plus whatever CFE Management pension is actually embedded in
+            // CSL's/NL's own schedules rather than CFEM's own.
+            totals.pension = cfemPension.bank + cslEmbedded + nlEmbedded;
+            return totals;
+          }
+
+          const payroll = byType.get('payroll') as ParsedPayroll | undefined;
+          const ftc = byType.get('ftc_payroll') as ParsedPayroll | undefined;
+          const netSalary = (payroll?.lines.reduce((s, l) => s + l.nettPay, 0) ?? 0)
+                           + (ftc?.lines.reduce((s, l) => s + l.nettPay, 0) ?? 0);
+          const ownPension = shortCode === 'CSL' ? cslPension : nlPension;
+          const embedded = shortCode === 'CSL' ? cslEmbedded : nlEmbedded;
+          return {
+            basic_salary: netSalary,
+            furnmart: get('furnmart'), afritec: get('afritec'), topline: get('topline'),
+            cbstores: get('cbstores'), bodulo: get('bodulo'),
+            pension: ownPension.bank - embedded,
+          };
+        }
+
+        setConsolidationSystem({
+          CSL: buildTotals('CSL', cslByType),
+          NL: buildTotals('NL', nlByType),
+          CFEM: buildTotals('CFEM', cfemByType),
+          loaded: true,
+        });
         setConsolidationEntries(entries);
       }
     );
-  }, [tab, year, month, hotels]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, year, month, hotels, cfeEmployees]);
 
   async function saveConsolidationEntry(
     hotelCode: ConsolidationHotel,
@@ -1355,9 +1391,40 @@ export default function ReconciliationPage() {
       const surnameTokens = nameTokens(e.surname);
       if (!surnameTokens.some(st => tokens.includes(st))) continue;
       const firstInitial = nameTokens(e.first_name)[0]?.[0];
-      if (!firstInitial || tokens.some(t => t[0] === firstInitial)) return e;
+      // Excludes the matched surname token(s) from the initial check — otherwise a
+      // surname that happens to start with the same letter as the required first
+      // initial trivially "passes" on its own, with no real first-name token involved
+      // at all. Confirmed live: NL's own "MODIMOOSI BAAKILE" (a real NL employee,
+      // unrelated to CFEM's Baboloki Baakile) satisfied the old unguarded check purely
+      // because "BAAKILE" itself starts with "B", the same initial as "Baboloki" —
+      // wrongly moving her pension contribution onto CFEM's books during the NL pension
+      // cross-hotel check. Same "exclude the surname token from the initial check"
+      // pattern already used by matchPayrollLineForIncrease on the Employees tab.
+      const nonSurnameTokens = tokens.filter(t => !surnameTokens.includes(t));
+      if (!firstInitial || nonSurnameTokens.some(t => t[0] === firstInitial)) return e;
     }
     return undefined;
+  }
+
+  // CSL's and NL's own pension schedules can carry a genuine CFE Management employee
+  // (confirmed live on NL: MOJ001/PHO001/TSH001/TSH002), but matching those lines by
+  // employee code ALONE is unsafe here — unlike CFEM's own report (where code drift is
+  // the exception matchCfeEmployee's code fallback exists for), CSL's own auto-generated
+  // codes (makeSyntheticCode: surname+first-name initials) routinely COLLIDE with
+  // CFEM's unrelated codes by pure coincidence. Confirmed live: CSL's own pension
+  // schedule has SAN001/MAK001/THA001/BAA001 too, but they're real CSL employees
+  // (Dikeledi Sanyumba, Mary Makina, Olopeng Thapelo, Dennis Baani) — not CFE Management
+  // — so matching by code there would wrongly strip real CSL staff out of CSL's own
+  // pension total. matchCfeEmployee's surname+initial rule already rejects all four.
+  // PHO001 is the one confirmed exception the generic rule can't catch: NL's schedule
+  // spells her first name as the nickname "Tiny" instead of her DB first name
+  // "Boikhutso" (initial T vs B), failing the initial check even though she's genuinely
+  // CFE Management — a one-employee override, not a reason to loosen the generic rule.
+  const PENSION_NICKNAME_OVERRIDES: Record<string, string> = { 'TINY PHOFU': 'PHO001' };
+  function isEmbeddedCfePensionLine(line: { empCode: string; name: string }): boolean {
+    if (matchCfeEmployee(line.name)) return true;
+    const normName = line.name.trim().toUpperCase().replace(/\s+/g, ' ');
+    return PENSION_NICKNAME_OVERRIDES[normName] === line.empCode.toUpperCase();
   }
 
   // Name first (authoritative — see note above), code only as a fallback if the name
@@ -1484,20 +1551,20 @@ export default function ReconciliationPage() {
   // for pension specifically it's CSL's/NL's own Pension Schedule upload rather than a
   // combined third-party statement. Embedded lines are pulled in here (CSL checked too,
   // for symmetry, even though only NL has been confirmed so far) and merged into the
-  // schedule side, filtered to known CFEM employee codes so a same-code coincidence on
-  // CSL/NL's own permanent roster can never bleed in.
+  // schedule side, matched via isEmbeddedCfePensionLine (name-based — see its comment
+  // above for why code-only matching is unsafe here specifically: CSL's own auto-
+  // generated codes genuinely collide with unrelated CFE codes).
   interface PensionCrossCheckRow {
     empCode: string; name: string;
     scheduleAmount: number | null; payrollAmount: number | null; diff: number | null;
     scheduleSource: 'CFEM' | 'CSL' | 'NL' | null;
   }
-  const cfeEmployeeCodes = new Set(cfeEmployees.map(e => (e.employee_code ?? '').toUpperCase()).filter(Boolean));
   const embeddedScheduleLines: Array<ReconLine & { source: 'CSL' | 'NL' }> = isCfem
     ? (['CSL', 'NL'] as const).flatMap(hcode => {
         const stmt = csnStmtsForCfe[hcode].pension;
         if (!stmt) return [];
         return stmt.lines
-          .filter(l => cfeEmployeeCodes.has(l.empCode.toUpperCase()))
+          .filter(isEmbeddedCfePensionLine)
           .map(l => ({ ...l, source: hcode }));
       })
     : [];
