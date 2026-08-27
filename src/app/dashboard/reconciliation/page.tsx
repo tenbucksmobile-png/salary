@@ -3072,7 +3072,10 @@ export default function ReconciliationPage() {
                               request. */}
                           <Fragment key="subtotal-csl-cfem">
                             <tr className="bg-amber-50">
-                              <td rowSpan={2} className="px-3 py-1.5 font-semibold border-t align-top">Subtotal (CSL + CFEM)</td>
+                              <td rowSpan={2} className="px-3 py-1.5 border-t align-top">
+                                <div className="font-semibold">Subtotal</div>
+                                <div className="text-xs font-normal text-muted-foreground">CSL + CFEM</div>
+                              </td>
                               <td className="px-3 py-1.5 text-muted-foreground border-t">System</td>
                               {subSysByLi.map((sys, i) => (
                                 <td key={LINE_ITEMS[i]} className="px-2 py-1.5 text-right border-t border-l tabular-nums">{fmtCents(sys, country)}</td>
