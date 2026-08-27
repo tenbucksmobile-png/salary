@@ -230,6 +230,19 @@ export default function ReconciliationPage() {
   const emptyCfemForMgt: { statements: Partial<Record<MgtCfeVendorType, ParsedStatement>>; loaded: boolean } = { statements: {}, loaded: false };
   const [cfemForMgt, setCfemForMgt] = useState(emptyCfemForMgt);
 
+  // CFEM's own Pension upload has no CSL/NL-embedded counterpart (unlike Furnmart/
+  // Afritec/etc — pension is administered directly per hotel, never mixed into CSL's/
+  // NL's shared statements — see CFEM_UPLOAD_TYPES above), so it was falling through
+  // the CFE Cross-Reference entirely with nothing to check it against. CFEM's own
+  // payroll IS tracked normally elsewhere in the app (salary_records, same as any
+  // other hotel) — just never shown on this page to keep it out of CSL/NL sub-users'
+  // view — so this ties CFEM's pension statement total against the sum of active CFEM
+  // employees' own provident_employee for the SAME period, aggregate only (no
+  // per-employee breakdown here, unlike the CSL/NL Employee Detail table), the same
+  // way this page already nets out CFEM's Net Salary on the Consolidation tab rather
+  // than exposing individual salary-derived figures to anyone who isn't CFEM.
+  const [cfemPensionPayroll, setCfemPensionPayroll] = useState<{ total: number; loaded: boolean }>({ total: 0, loaded: false });
+
   // Consolidation tab: director-facing monthly bank release sign-off, spanning all
   // three hotels for the selected month regardless of the main hotel selector.
   type ConsolidationHotel = 'CSL' | 'NL' | 'CFEM';
@@ -548,6 +561,38 @@ export default function ReconciliationPage() {
       if (pensionUp) statements.pension = pensionUp.parsed_data as ParsedStatement;
 
       setCfemForMgt({ statements, loaded: true });
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, hotelId, year, month, hotels]);
+
+  // CFEM's own "payroll" side for the Pension check above — aggregate only (see
+  // cfemPensionPayroll comment). Sums active CFEM employees' provident_employee off
+  // their salary_records for the SAME period being reconciled.
+  useEffect(() => {
+    const currentHotelCode = hotels.find(h => h.id === hotelId)?.short_code;
+    if (tab !== 'deductions' || currentHotelCode !== 'CFEM' || !hotels.length) return;
+    const cfemHotel = hotels.find(h => h.short_code === 'CFEM');
+    if (!cfemHotel) return;
+
+    setCfemPensionPayroll(s => ({ ...s, loaded: false }));
+    (async () => {
+      const { data: emps } = await supabase
+        .from('employees')
+        .select('id')
+        .eq('hotel_id', cfemHotel.id)
+        .eq('status', 'active');
+      const ids = (emps ?? []).map((e: any) => e.id);
+      if (!ids.length) { setCfemPensionPayroll({ total: 0, loaded: true }); return; }
+
+      const { data: sal } = await supabase
+        .from('salary_records')
+        .select('employee_id, provident_employee')
+        .in('employee_id', ids)
+        .eq('period_year', year)
+        .eq('period_month', month);
+
+      const total = (sal ?? []).reduce((s: number, r: any) => s + (r.provident_employee ?? 0), 0);
+      setCfemPensionPayroll({ total, loaded: true });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, hotelId, year, month, hotels]);
@@ -1406,8 +1451,6 @@ export default function ReconciliationPage() {
     cfemTotal: number;
     embeddedTotal: number;
     diff: number;
-    onlyInCfem: ReconLine[];
-    onlyInEmbedded: ReconLine[];
     details: Array<{ name: string; cfemAmount: number | null; embeddedAmount: number | null }>;
   }
   const cfeCrossCheck: CfeCrossCheckRow[] = isCfem ? (Object.keys(CFEM_VENDOR_LABELS) as CfeVendorType[])
@@ -1431,8 +1474,7 @@ export default function ReconciliationPage() {
       const embeddedByEmp = new Map<string, ReconLine>();
       embeddedLines.forEach(l => { const emp = matchCfeEmployee(l.name); if (emp) embeddedByEmp.set(emp.id, l); });
 
-      // Every CFE employee appearing on either side, for a full side-by-side table —
-      // not just the mismatches (onlyInCfem/onlyInEmbedded below cover those separately).
+      // Every CFE employee appearing on either side, for a full side-by-side table.
       const allEmpIds = new Set([...cfemByEmp.keys(), ...embeddedByEmp.keys()]);
       const details = [...allEmpIds].map(id => {
         const cfeEmp = cfeEmployees.find(e => e.id === id);
@@ -1449,8 +1491,6 @@ export default function ReconciliationPage() {
         cfemTotal: cfemLines.reduce((s, l) => s + l.amount, 0),
         embeddedTotal: embeddedLines.reduce((s, l) => s + l.amount, 0),
         diff: cfemLines.reduce((s, l) => s + l.amount, 0) - embeddedLines.reduce((s, l) => s + l.amount, 0),
-        onlyInCfem: [...cfemByEmp.entries()].filter(([id]) => !embeddedByEmp.has(id)).map(([, l]) => l),
-        onlyInEmbedded: [...embeddedByEmp.entries()].filter(([id]) => !cfemByEmp.has(id)).map(([, l]) => l),
         details,
       };
     }) : [];
@@ -2177,28 +2217,55 @@ export default function ReconciliationPage() {
                             </tbody>
                           </table>
 
-                          {cfeCrossCheck.some(r => r.onlyInCfem.length > 0 || r.onlyInEmbedded.length > 0) && (
-                            <div className="mt-3 space-y-2 max-w-2xl">
-                              {cfeCrossCheck.filter(r => r.onlyInCfem.length > 0 || r.onlyInEmbedded.length > 0).map(row => (
-                                <div key={row.type} className="rounded border border-amber-200 bg-amber-50 p-3 text-xs">
-                                  <p className="font-semibold text-amber-800 mb-1">{row.label} — not matched on both sides</p>
-                                  {row.onlyInCfem.length > 0 && (
-                                    <p className="text-amber-700">
-                                      Only in CFEM report: {row.onlyInCfem.map(l => `${l.name} (${fmt(l.amount, country)})`).join(', ')}
-                                    </p>
-                                  )}
-                                  {row.onlyInEmbedded.length > 0 && (
-                                    <p className="text-amber-700">
-                                      Only in CSL/NL statements: {row.onlyInEmbedded.map(l => `${l.name} (${fmt(l.amount, country)})`).join(', ')}
-                                    </p>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
                         </>
                       )}
                     </div>
+
+                    {/* Pension — administered directly per hotel (never mixed into CSL/NL's
+                        shared statements, unlike the vendors above), so it has no CSL/NL side
+                        to cross-check against. Checked instead against CFEM's own payroll
+                        (aggregate only — no per-employee breakdown, to keep CFEM's
+                        salary-derived figures out of any CSL/NL sub-user's view of this page). */}
+                    {pensionStmt && (
+                      <div>
+                        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                          Pension — Statement vs Payroll
+                        </h2>
+                        <p className="text-xs text-muted-foreground mb-3">
+                          CFEM&apos;s pension is administered directly, not mixed into CSL&apos;s/NL&apos;s statements — checked
+                          here against the total of active CFEM employees&apos; own payroll pension deduction for {' '}
+                          {MONTH_NAMES[month - 1]} {year} (aggregate only).
+                        </p>
+                        {!cfemPensionPayroll.loaded ? (
+                          <p className="text-sm text-muted-foreground">Loading…</p>
+                        ) : (
+                          <table className="text-sm border rounded overflow-hidden w-full max-w-2xl">
+                            <thead>
+                              <tr className="bg-[#1B3A5C] text-white">
+                                <th className="px-4 py-2 text-left font-semibold"></th>
+                                <th className="px-4 py-2 text-right font-semibold">Amount</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr className="bg-white">
+                                <td className="px-4 py-2 font-medium">Pension Statement (EE)</td>
+                                <td className="px-4 py-2 text-right tabular-nums">{fmt(pensionStmt.total, country)}</td>
+                              </tr>
+                              <tr className="bg-muted/20">
+                                <td className="px-4 py-2 font-medium">Payroll — Provident Fund EE (aggregate)</td>
+                                <td className="px-4 py-2 text-right tabular-nums">{fmt(cfemPensionPayroll.total, country)}</td>
+                              </tr>
+                              <tr className="bg-white">
+                                <td className="px-4 py-2 font-medium">Difference</td>
+                                <td className={`px-4 py-2 text-right tabular-nums ${diffClass(pensionStmt.total - cfemPensionPayroll.total)}`}>
+                                  {fmtDiff(pensionStmt.total - cfemPensionPayroll.total, country)}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )}
 
                     {/* Per-employee detail, one table per vendor — every CFE employee found on
                         either side, not just the mismatches called out above. */}

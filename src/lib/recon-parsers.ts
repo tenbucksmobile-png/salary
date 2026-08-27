@@ -515,9 +515,18 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
 // Header row (detected by keyword, not a fixed row index): EMPLOYEE NO, FIRST
 // NAMES, SURNAME, MEMBER CONTRIBUTION AMOUNT (the employee/EE side — what
 // payroll's own pensionEe column represents), EMPLOYER CONTRIBUTION AMOUNT (ER),
-// TOTAL CONTRIBUTION AMOUNT (EE+ER, falls back to EE+ER computed locally if this
-// column is absent). `lines[].amount` and `total` are EE-only — see the
-// `bankTotal` comment on ParsedStatement for why the two are kept separate.
+// and (some schedules, e.g. the CFEM management template) MEMBER AVC
+// CONTRIBUTION — an additional voluntary employee-side top-up. The combined
+// figure ("bankTotal" — what's actually paid to the fund administrator, used by
+// Consolidation's Pension System row) is always computed directly as
+// EE + ER + AVC, NOT read from the sheet's own printed "Total Contributions"
+// column — confirmed live on the CFEM management template that its own total
+// column excludes AVC entirely (e.g. a row with EE 1186.50 + ER 2135.70 + AVC
+// 496.67 prints a "Total Contributions" of 3322.20, silently dropping the AVC).
+// `lines[].amount` and `total` stay EE-only (MEMBER CONTRIBUTION AMOUNT alone,
+// excluding AVC) — see the `bankTotal` comment on ParsedStatement for why the
+// two are kept separate; payroll's own pensionEe never includes a voluntary AVC
+// top-up, so including AVC in the EE-only comparison would create a false diff.
 
 export async function parsePensionSchedule(
   buf: ArrayBuffer,
@@ -546,7 +555,7 @@ export async function parsePensionSchedule(
   const colSur = col(/surname/i);
   const colMember = col(/member\s*contribution\s*amount|employee\s*contribution\s*amount/i);
   const colEmployer = col(/employer\s*contribution\s*amount/i);
-  const colTotalContrib = col(/total\s*contribution\s*amount/i);
+  const colAvc = col(/member\s*avc\s*contribution/i);
 
   const lines: ReconLine[] = [];
   const unmatchedLines: ReconLine[] = [];
@@ -558,12 +567,24 @@ export async function parsePensionSchedule(
     const rawCode = String(row[colCode] || '').trim();
     if (!rawCode) continue;
 
+    // Unlike every other vendor parser in this file (Furnmart/Bodulo/Afritec all
+    // explicitly skip a trailing "TOTAL"/"GRAND TOTAL" summary row), this loop had
+    // no such guard — a schedule whose bottom totals row carries any text in the
+    // Employee No./Name columns would get summed in as if it were another
+    // employee, doubling eeSum/bankSum on top of the already-complete per-employee
+    // sum. Confirmed as the cause of Consolidation's Pension System total reading
+    // higher than the fund administrator's own printed total.
+    const first = String(row[colFirst] ?? '').trim();
+    const sur = String(row[colSur] ?? '').trim();
+    if (/total/i.test(rawCode) || /total/i.test(first) || /total/i.test(sur)) continue;
+
     const ee = colMember >= 0 ? Number(row[colMember]) || 0 : 0;
     const er = colEmployer >= 0 ? Number(row[colEmployer]) || 0 : 0;
-    const combined = colTotalContrib >= 0 ? Number(row[colTotalContrib]) || 0 : ee + er;
+    const avc = colAvc >= 0 ? Number(row[colAvc]) || 0 : 0;
+    const combined = ee + er + avc;
     if (ee <= 0 && combined <= 0) continue;
 
-    const name = `${String(row[colFirst] ?? '')} ${String(row[colSur] ?? '')}`.trim();
+    const name = `${first} ${sur}`.trim();
     lines.push({ empCode: normalizeCode(rawCode), name, amount: ee });
     eeSum += ee;
     bankSum += combined;
