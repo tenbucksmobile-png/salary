@@ -3090,7 +3090,13 @@ export default function ReconciliationPage() {
                               <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(subTotalBank, country)}</td>
                             </tr>
                           </Fragment>
+                          <tr aria-hidden="true">
+                            <td colSpan={2 + LINE_ITEMS.length + 1} className="h-3 p-0 border-0" />
+                          </tr>
                           {hotelRows('NL', 'bg-white')}
+                          <tr aria-hidden="true">
+                            <td colSpan={2 + LINE_ITEMS.length + 1} className="h-3 p-0 border-0" />
+                          </tr>
                         </>
                       );
                     })()}
