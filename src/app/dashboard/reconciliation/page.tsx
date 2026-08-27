@@ -224,8 +224,13 @@ export default function ReconciliationPage() {
   // CFE cross-reference (Deductions Check, CFEM only): CSL's and NL's own vendor
   // statement uploads for the same period, so CFEM's report can be diffed against
   // whatever CFE-employee lines are mixed into the shared third-party statements.
+  // 'pension' is included here too — unlike the other 5 vendors, pension is normally
+  // administered directly per hotel, but some CFE Management employees (confirmed:
+  // MOJ001/PHO001/TSH001/TSH002) are actually on NL's OWN pension schedule instead of
+  // CFEM's, so the same embedded-in-a-shared-file pattern applies to a subset of pension
+  // lines too — see pensionCrossCheck below, which merges these in.
   type CfeVendorType = 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo';
-  type OtherHotelStmts = Partial<Record<CfeVendorType, ParsedStatement>>;
+  type OtherHotelStmts = Partial<Record<CfeVendorType | 'pension', ParsedStatement>>;
   const emptyOtherHotelStmts: { CSL: OtherHotelStmts; NL: OtherHotelStmts; loaded: boolean } = { CSL: {}, NL: {}, loaded: false };
   const [csnStmtsForCfe, setCsnStmtsForCfe] = useState(emptyOtherHotelStmts);
 
@@ -501,9 +506,9 @@ export default function ReconciliationPage() {
         .from('recon_uploads')
         .select('upload_type, parsed_data')
         .eq('period_id', periodRow.id)
-        .in('upload_type', ['furnmart', 'afritec', 'topline', 'cbstores', 'bodulo']);
+        .in('upload_type', ['furnmart', 'afritec', 'topline', 'cbstores', 'bodulo', 'pension']);
       const result: OtherHotelStmts = {};
-      (ups ?? []).forEach((u: any) => { result[u.upload_type as CfeVendorType] = u.parsed_data as ParsedStatement; });
+      (ups ?? []).forEach((u: any) => { result[u.upload_type as CfeVendorType | 'pension'] = u.parsed_data as ParsedStatement; });
       return result;
     }
 
@@ -1471,13 +1476,38 @@ export default function ReconciliationPage() {
   // scheme (CFEM's own systems), so matched by code alone — every employee
   // appearing on either side gets a row, with a null on whichever side is missing
   // so a genuine gap is visible rather than silently dropped.
+  //
+  // A handful of CFE Management employees (confirmed live: MOJ001, PHO001, TSH001,
+  // TSH002) are NOT on CFEM's own Pension Schedule at all — they're embedded in NL's
+  // own pension schedule instead, the same "mixed into a shared hotel's statement"
+  // pattern the other 5 vendors already have (see the CFE Cross-Reference above), just
+  // for pension specifically it's CSL's/NL's own Pension Schedule upload rather than a
+  // combined third-party statement. Embedded lines are pulled in here (CSL checked too,
+  // for symmetry, even though only NL has been confirmed so far) and merged into the
+  // schedule side, filtered to known CFEM employee codes so a same-code coincidence on
+  // CSL/NL's own permanent roster can never bleed in.
   interface PensionCrossCheckRow {
     empCode: string; name: string;
     scheduleAmount: number | null; payrollAmount: number | null; diff: number | null;
+    scheduleSource: 'CFEM' | 'CSL' | 'NL' | null;
   }
+  const cfeEmployeeCodes = new Set(cfeEmployees.map(e => (e.employee_code ?? '').toUpperCase()).filter(Boolean));
+  const embeddedScheduleLines: Array<ReconLine & { source: 'CSL' | 'NL' }> = isCfem
+    ? (['CSL', 'NL'] as const).flatMap(hcode => {
+        const stmt = csnStmtsForCfe[hcode].pension;
+        if (!stmt) return [];
+        return stmt.lines
+          .filter(l => cfeEmployeeCodes.has(l.empCode.toUpperCase()))
+          .map(l => ({ ...l, source: hcode }));
+      })
+    : [];
   const pensionCrossCheck: PensionCrossCheckRow[] =
-    isCfem && pensionStmt && pensionDeductionsStmt ? (() => {
-      const scheduleByCode = new Map(pensionStmt.lines.map(l => [l.empCode, l]));
+    isCfem && pensionDeductionsStmt && (pensionStmt || embeddedScheduleLines.length > 0) ? (() => {
+      const scheduleByCode = new Map<string, { amount: number; name: string; source: 'CFEM' | 'CSL' | 'NL' }>();
+      (pensionStmt?.lines ?? []).forEach(l => scheduleByCode.set(l.empCode, { amount: l.amount, name: l.name, source: 'CFEM' }));
+      embeddedScheduleLines.forEach(l => {
+        if (!scheduleByCode.has(l.empCode)) scheduleByCode.set(l.empCode, { amount: l.amount, name: l.name, source: l.source });
+      });
       const payrollByCode = new Map(pensionDeductionsStmt.lines.map(l => [l.empCode, l]));
       const allCodes = new Set([...scheduleByCode.keys(), ...payrollByCode.keys()]);
       return [...allCodes].map(code => {
@@ -1489,9 +1519,11 @@ export default function ReconciliationPage() {
           scheduleAmount: sched?.amount ?? null,
           payrollAmount: pay?.amount ?? null,
           diff: sched != null && pay != null ? sched.amount - pay.amount : null,
+          scheduleSource: sched?.source ?? null,
         };
       }).sort((a, b) => a.name.localeCompare(b.name));
     })() : [];
+  const pensionScheduleTotal = (pensionStmt?.total ?? 0) + embeddedScheduleLines.reduce((s, l) => s + l.amount, 0);
 
   // ── Employees tab: Increase List cross-referenced against this period's Payroll
   // Spreadsheet upload (CSL/NL only) ──────────────────────────────────────────────
@@ -2222,22 +2254,26 @@ export default function ReconciliationPage() {
                     {/* Pension — administered directly per hotel (never mixed into CSL/NL's
                         shared statements, unlike the vendors above), so it's checked against
                         CFEM's own second, separate upload instead: its payroll system's pension
-                        deductions report. Both are genuine CFEM documents (not derived from
-                        confidential salary data), so — unlike Consolidation's Net Salary — a
-                        full per-employee breakdown is shown here, same as CSL/NL get for every
-                        other vendor. */}
-                    {(pensionStmt || pensionDeductionsStmt) && (
+                        deductions report. A handful of CFE Management employees sit on NL&apos;s
+                        (or CSL&apos;s) own Pension Schedule instead of CFEM&apos;s — those are pulled in
+                        automatically and flagged with a Found In column. Both statement sides are
+                        genuine documents (not derived from confidential salary data), so — unlike
+                        Consolidation&apos;s Net Salary — a full per-employee breakdown is shown here,
+                        same as CSL/NL get for every other vendor. */}
+                    {(pensionStmt || pensionDeductionsStmt || embeddedScheduleLines.length > 0) && (
                       <div>
                         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
                           Pension — Schedule vs Payroll Deductions
                         </h2>
                         <p className="text-xs text-muted-foreground mb-3">
-                          Compares the fund administrator&apos;s Pension Schedule against CFEM&apos;s own payroll pension
+                          Compares the fund administrator&apos;s Pension Schedule (CFEM&apos;s own, plus any CFE Management
+                          lines found embedded in CSL&apos;s/NL&apos;s own schedule) against CFEM&apos;s payroll pension
                           deductions report for {MONTH_NAMES[month - 1]} {year}.
                         </p>
-                        {!pensionStmt || !pensionDeductionsStmt ? (
+                        {!pensionDeductionsStmt || (!pensionStmt && embeddedScheduleLines.length === 0) ? (
                           <p className="text-sm text-muted-foreground">
-                            Upload both the Pension Schedule and the Pension Deductions (Payroll) report to see this comparison.
+                            Upload both the Pension Schedule (CFEM&apos;s, or check CSL/NL for embedded lines) and the
+                            Pension Deductions (Payroll) report to see this comparison.
                           </p>
                         ) : (
                           <>
@@ -2251,7 +2287,7 @@ export default function ReconciliationPage() {
                               <tbody>
                                 <tr className="bg-white">
                                   <td className="px-4 py-2 font-medium">Pension Schedule</td>
-                                  <td className="px-4 py-2 text-right tabular-nums">{fmt(pensionStmt.total, country)}</td>
+                                  <td className="px-4 py-2 text-right tabular-nums">{fmt(pensionScheduleTotal, country)}</td>
                                 </tr>
                                 <tr className="bg-muted/20">
                                   <td className="px-4 py-2 font-medium">Payroll Deductions Report</td>
@@ -2259,19 +2295,20 @@ export default function ReconciliationPage() {
                                 </tr>
                                 <tr className="bg-white">
                                   <td className="px-4 py-2 font-medium">Difference</td>
-                                  <td className={`px-4 py-2 text-right tabular-nums ${diffClass(pensionStmt.total - pensionDeductionsStmt.total)}`}>
-                                    {fmtDiff(pensionStmt.total - pensionDeductionsStmt.total, country)}
+                                  <td className={`px-4 py-2 text-right tabular-nums ${diffClass(pensionScheduleTotal - pensionDeductionsStmt.total)}`}>
+                                    {fmtDiff(pensionScheduleTotal - pensionDeductionsStmt.total, country)}
                                   </td>
                                 </tr>
                               </tbody>
                             </table>
 
                             <h3 className="text-sm font-semibold mb-2">Pension — Employee Detail</h3>
-                            <table className="text-sm border rounded w-full max-w-xl">
+                            <table className="text-sm border rounded w-full max-w-2xl">
                               <thead>
                                 <tr className="bg-muted/40">
                                   <th className="px-3 py-2 text-left">Name</th>
                                   <th className="px-3 py-2 text-right">Schedule</th>
+                                  <th className="px-3 py-2 text-left">Found In</th>
                                   <th className="px-3 py-2 text-right">Payroll</th>
                                   <th className="px-3 py-2 text-right">Diff</th>
                                 </tr>
@@ -2282,6 +2319,11 @@ export default function ReconciliationPage() {
                                     <td className="px-3 py-1.5">{row.name}</td>
                                     <td className="px-3 py-1.5 text-right tabular-nums">
                                       {row.scheduleAmount != null ? fmt(row.scheduleAmount, country) : <span className="text-muted-foreground">—</span>}
+                                    </td>
+                                    <td className="px-3 py-1.5 text-muted-foreground">
+                                      {row.scheduleSource === 'CSL' || row.scheduleSource === 'NL' ? (
+                                        <span className="text-amber-700 font-medium">{row.scheduleSource}&apos;s schedule</span>
+                                      ) : row.scheduleSource === 'CFEM' ? 'CFEM' : '—'}
                                     </td>
                                     <td className="px-3 py-1.5 text-right tabular-nums">
                                       {row.payrollAmount != null ? fmt(row.payrollAmount, country) : <span className="text-muted-foreground">—</span>}
