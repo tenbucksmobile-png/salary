@@ -5,6 +5,11 @@ export interface ReportSheet {
   headers: string[];
   rows: Array<Array<string | number | null>>;
   isTotalsRow?: boolean[];
+  // Excel number format for numeric cells — defaults to whole units ('#,##0'), matching
+  // this app's display convention everywhere else. Pass '#,##0.00' for a sheet that
+  // specifically needs cents shown (e.g. Consolidation, a bank reconciliation where a
+  // genuine few-cent gap matters and shouldn't be rounded away).
+  numberFormat?: string;
 }
 
 export interface PdfRow {
@@ -29,7 +34,7 @@ function hdr(v: string) {
   };
 }
 
-function cell(v: string | number | null, isTotals = false) {
+function cell(v: string | number | null, isTotals = false, numberFormat = '#,##0') {
   const totFill = { patternType: 'solid', fgColor: { rgb: LGRAY } };
   const totFont = { bold: true };
 
@@ -45,7 +50,7 @@ function cell(v: string | number | null, isTotals = false) {
   }
   if (typeof v === 'number') {
     return {
-      v, t: 'n', z: '#,##0',
+      v, t: 'n', z: numberFormat,
       s: {
         alignment: { horizontal: 'right' },
         ...(isTotals ? { font: totFont, fill: totFill } : {}),
@@ -67,7 +72,7 @@ function buildSheet(sheet: ReportSheet, XLSX: any): any {
   for (let i = 0; i < sheet.rows.length; i++) {
     const row      = sheet.rows[i];
     const isTotals = sheet.isTotalsRow?.[i] ?? false;
-    aoa.push(row.map(v => cell(v, isTotals)));
+    aoa.push(row.map(v => cell(v, isTotals, sheet.numberFormat)));
   }
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);

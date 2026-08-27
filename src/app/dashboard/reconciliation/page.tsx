@@ -161,6 +161,24 @@ function fmtDiff(diff: number, country: string) {
   return sign + fmtCurrency(diff, country);
 }
 
+// Cents-aware variants of fmt()/fmtDiff() — Consolidation only. fmtCurrency() rounds
+// to whole units everywhere else in the app by design, but Consolidation is a bank
+// reconciliation where a genuine few-cent gap is exactly what it needs to surface, not
+// round away.
+const _zarCentsFmt = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const _numCentsFmt = new Intl.NumberFormat('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function fmtCents(n: number | null | undefined, country: string) {
+  if (n == null || n === 0) return '—';
+  const bw = country.toLowerCase().includes('botswana');
+  return bw ? `P ${_numCentsFmt.format(n)}` : _zarCentsFmt.format(n);
+}
+
+function fmtDiffCents(diff: number, country: string) {
+  if (Math.abs(diff) < 0.005) return '✓';
+  const sign = diff > 0 ? '+' : '';
+  return sign + fmtCents(diff, country);
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ReconciliationPage() {
@@ -1827,20 +1845,23 @@ export default function ReconciliationPage() {
     if (isCfemNetSalary(hotelCode, lineItem)) return false;
     return consolidationSystem[hotelCode][lineItem] == null;
   }
-  // Rounded to whole currency units — matches fmt()/fmtCurrency(), which never shows
-  // cents anywhere in this app. Diffs must be computed on the same rounded values shown
-  // on screen, otherwise a manually-entered Bank figure that matches the displayed
-  // (rounded) System figure exactly can still show a phantom ±1 "Balance Differential"
-  // purely from the auto-computed System total's sub-unit cents remainder.
+  // Rounded to whole CENTS (2 decimals), not whole currency units — this tab is a
+  // director-facing bank reconciliation, where a real few-cent gap (e.g. from a pension
+  // AVC split) is exactly the kind of thing it exists to surface, not hide. Whole-unit
+  // rounding (matching fmt()/fmtCurrency() elsewhere in the app, which never shows
+  // cents) was previously used here too, which could either mask a genuine sub-Rand/
+  // Pula discrepancy or manufacture a phantom ±1 "Balance Differential" out of pure
+  // rounding noise. Diffs must be computed on these same cents-rounded values shown on
+  // screen so a Bank figure keyed in to match System exactly always reads as ✓.
   function consolidationSystemValue(hotelCode: ConsolidationHotel, lineItem: LineItem): number {
     if (isCfemNetSalary(hotelCode, lineItem)) return 0;
     const auto = consolidationSystem[hotelCode][lineItem];
-    if (auto != null) return Math.round(auto);
-    return Math.round(getConsolidationEntry(hotelCode, lineItem)?.system_amount ?? 0);
+    if (auto != null) return Math.round(auto * 100) / 100;
+    return Math.round((getConsolidationEntry(hotelCode, lineItem)?.system_amount ?? 0) * 100) / 100;
   }
   function consolidationBankValue(hotelCode: ConsolidationHotel, lineItem: LineItem): number {
     if (isCfemNetSalary(hotelCode, lineItem)) return 0;
-    return Math.round(getConsolidationEntry(hotelCode, lineItem)?.bank_amount ?? 0);
+    return Math.round((getConsolidationEntry(hotelCode, lineItem)?.bank_amount ?? 0) * 100) / 100;
   }
 
   async function handleExportConsolidation() {
@@ -1872,6 +1893,10 @@ export default function ReconciliationPage() {
       headers,
       rows,
       isTotalsRow: rows.map(r => r[0] === 'Total'),
+      // Cents shown, not rounded to whole units — see fmtCents/consolidationSystemValue
+      // above for why: this is a bank reconciliation, where a genuine few-cent gap is
+      // exactly what it exists to surface.
+      numberFormat: '#,##0.00',
     };
     await exportReport('Consolidation', `Consolidation_${MONTH_NAMES[month - 1]}_${year}.xlsx`, [sheet]);
   }
@@ -2979,17 +3004,18 @@ export default function ReconciliationPage() {
                                   {manual ? (
                                     <input
                                       type="number"
+                                      step="0.01"
                                       defaultValue={sys || ''}
                                       onBlur={e => saveConsolidationEntry(h, li, 'system_amount', e.target.value === '' ? null : Number(e.target.value))}
                                       className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
                                     />
                                   ) : (
-                                    <span className="tabular-nums">{fmt(sys, country)}</span>
+                                    <span className="tabular-nums">{fmtCents(sys, country)}</span>
                                   )}
                                 </td>
                               );
                             })}
-                            <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmt(hotelTotalSys, country)}</td>
+                            <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(hotelTotalSys, country)}</td>
                           </tr>
                           <tr className={rowBg}>
                             <td className="px-3 py-1.5 text-muted-foreground border-t">Bank Upload</td>
@@ -3000,6 +3026,7 @@ export default function ReconciliationPage() {
                                 ) : (
                                   <input
                                     type="number"
+                                    step="0.01"
                                     defaultValue={bankByLi[i] || ''}
                                     onBlur={e => saveConsolidationEntry(h, li, 'bank_amount', e.target.value === '' ? null : Number(e.target.value))}
                                     className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
@@ -3007,7 +3034,7 @@ export default function ReconciliationPage() {
                                 )}
                               </td>
                             ))}
-                            <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmt(hotelTotalBank, country)}</td>
+                            <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(hotelTotalBank, country)}</td>
                           </tr>
                           <tr className={rowBg}>
                             <td className="px-3 py-1.5 text-muted-foreground border-t">Balance Differential</td>
@@ -3015,12 +3042,12 @@ export default function ReconciliationPage() {
                               const diff = sysByLi[i] - bankByLi[i];
                               return (
                                 <td key={li} className={`px-2 py-1.5 text-right border-t border-l tabular-nums ${diffClass(diff)}`}>
-                                  {fmtDiff(diff, country)}
+                                  {fmtDiffCents(diff, country)}
                                 </td>
                               );
                             })}
                             <td className={`px-2 py-1.5 text-right border-t border-l tabular-nums font-medium ${diffClass(hotelTotalSys - hotelTotalBank)}`}>
-                              {fmtDiff(hotelTotalSys - hotelTotalBank, country)}
+                              {fmtDiffCents(hotelTotalSys - hotelTotalBank, country)}
                             </td>
                           </tr>
                         </Fragment>
@@ -3039,16 +3066,16 @@ export default function ReconciliationPage() {
                             <td rowSpan={3} className="px-3 py-2 border-t align-top">Total</td>
                             <td className="px-3 py-2 border-t">System</td>
                             {sysByLi.map((sys, i) => (
-                              <td key={LINE_ITEMS[i]} className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(sys, country)}</td>
+                              <td key={LINE_ITEMS[i]} className="px-2 py-2 text-right border-t border-l tabular-nums">{fmtCents(sys, country)}</td>
                             ))}
-                            <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(grandSys, country)}</td>
+                            <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmtCents(grandSys, country)}</td>
                           </tr>
                           <tr className="bg-muted/40 font-semibold">
                             <td className="px-3 py-2 border-t">Bank Upload</td>
                             {bankByLi.map((bank, i) => (
-                              <td key={LINE_ITEMS[i]} className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(bank, country)}</td>
+                              <td key={LINE_ITEMS[i]} className="px-2 py-2 text-right border-t border-l tabular-nums">{fmtCents(bank, country)}</td>
                             ))}
-                            <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmt(grandBank, country)}</td>
+                            <td className="px-2 py-2 text-right border-t border-l tabular-nums">{fmtCents(grandBank, country)}</td>
                           </tr>
                           <tr className="bg-muted/40 font-semibold">
                             <td className="px-3 py-2 border-t">Balance Differential</td>
@@ -3056,12 +3083,12 @@ export default function ReconciliationPage() {
                               const diff = sys - bankByLi[i];
                               return (
                                 <td key={LINE_ITEMS[i]} className={`px-2 py-2 text-right border-t border-l tabular-nums ${diffClass(diff)}`}>
-                                  {fmtDiff(diff, country)}
+                                  {fmtDiffCents(diff, country)}
                                 </td>
                               );
                             })}
                             <td className={`px-2 py-2 text-right border-t border-l tabular-nums ${diffClass(grandSys - grandBank)}`}>
-                              {fmtDiff(grandSys - grandBank, country)}
+                              {fmtDiffCents(grandSys - grandBank, country)}
                             </td>
                           </tr>
                         </>
