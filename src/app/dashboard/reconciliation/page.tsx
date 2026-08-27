@@ -265,7 +265,10 @@ export default function ReconciliationPage() {
   // Consolidation tab: director-facing monthly bank release sign-off, spanning all
   // three hotels for the selected month regardless of the main hotel selector.
   type ConsolidationHotel = 'CSL' | 'NL' | 'CFEM';
-  const CONSOLIDATION_HOTELS: ConsolidationHotel[] = ['CSL', 'NL', 'CFEM'];
+  // Order matches the real-world bank accounts: CSL and CFEM share one bank account (a
+  // Subtotal row is inserted between them and NL on-screen/in the export to show that
+  // combined figure), NL is a separate account — see the pension bank-account note above.
+  const CONSOLIDATION_HOTELS: ConsolidationHotel[] = ['CSL', 'CFEM', 'NL'];
   type LineItem = 'basic_salary' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo' | 'pension';
   const LINE_ITEMS: LineItem[] = ['basic_salary', 'furnmart', 'afritec', 'topline', 'cbstores', 'bodulo', 'pension'];
   // Internal key stays "basic_salary" (matches the recon_consolidation DB rows already
@@ -1852,6 +1855,9 @@ export default function ReconciliationPage() {
 
   async function handleExportConsolidation() {
     const rows: Array<Array<string | number | null>> = [];
+    // CSL, CFEM, then a Subtotal (their one shared bank account), then NL's own separate
+    // account — matches the on-screen layout order (CONSOLIDATION_HOTELS is already
+    // ordered CSL/CFEM/NL for this reason).
     for (const h of CONSOLIDATION_HOTELS) {
       const sysByLi = LINE_ITEMS.map(li => consolidationSystemValue(h, li));
       const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
@@ -1860,6 +1866,13 @@ export default function ReconciliationPage() {
       rows.push([h, 'System', ...sysByLi, totalSys]);
       rows.push(['', 'Bank Upload', ...bankByLi, totalBank]);
       rows.push(['', 'Balance Differential', ...sysByLi.map((sys, i) => sys - bankByLi[i]), totalSys - totalBank]);
+
+      if (h === 'CFEM') {
+        const subSysByLi = LINE_ITEMS.map(li => consolidationSystemValue('CSL', li) + consolidationSystemValue('CFEM', li));
+        const subBankByLi = LINE_ITEMS.map(li => consolidationBankValue('CSL', li) + consolidationBankValue('CFEM', li));
+        rows.push(['Subtotal (CSL + CFEM)', 'System', ...subSysByLi, subSysByLi.reduce((a, b) => a + b, 0)]);
+        rows.push(['', 'Bank Upload', ...subBankByLi, subBankByLi.reduce((a, b) => a + b, 0)]);
+      }
     }
     const grandSysByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationSystemValue(h, li), 0));
     const grandBankByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationBankValue(h, li), 0));
@@ -2970,75 +2983,114 @@ export default function ReconciliationPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {CONSOLIDATION_HOTELS.map((h, hi) => {
-                      const rowBg = hi % 2 === 0 ? 'bg-white' : 'bg-muted/10';
-                      let hotelTotalSys = 0, hotelTotalBank = 0;
-                      const sysByLi = LINE_ITEMS.map(li => consolidationSystemValue(h, li));
-                      const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
-                      sysByLi.forEach(v => { hotelTotalSys += v; });
-                      bankByLi.forEach(v => { hotelTotalBank += v; });
-                      return (
-                        <Fragment key={h}>
-                          <tr className={rowBg}>
-                            <td rowSpan={3} className="px-3 py-1.5 font-semibold border-t align-top">{h}</td>
-                            <td className="px-3 py-1.5 text-muted-foreground border-t">System</td>
-                            {LINE_ITEMS.map((li, i) => {
-                              const sys = sysByLi[i];
-                              const manual = consolidationIsManualSystem(h, li);
-                              return (
+                    {(() => {
+                      // CSL and CFEM render first (adjacent), then a Subtotal row showing
+                      // their combined figures — the one bank account they actually share
+                      // (see the pension bank-account note on the Consolidation loader
+                      // above) — then NL's own separate account, matching real-world bank
+                      // structure rather than an arbitrary hotel order.
+                      function hotelRows(h: ConsolidationHotel, rowBg: string) {
+                        let hotelTotalSys = 0, hotelTotalBank = 0;
+                        const sysByLi = LINE_ITEMS.map(li => consolidationSystemValue(h, li));
+                        const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
+                        sysByLi.forEach(v => { hotelTotalSys += v; });
+                        bankByLi.forEach(v => { hotelTotalBank += v; });
+                        return (
+                          <Fragment key={h}>
+                            <tr className={rowBg}>
+                              <td rowSpan={3} className="px-3 py-1.5 font-semibold border-t align-top">{h}</td>
+                              <td className="px-3 py-1.5 text-muted-foreground border-t">System</td>
+                              {LINE_ITEMS.map((li, i) => {
+                                const sys = sysByLi[i];
+                                const manual = consolidationIsManualSystem(h, li);
+                                return (
+                                  <td key={li} className="px-2 py-1.5 text-right border-t border-l">
+                                    {manual ? (
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        defaultValue={sys || ''}
+                                        onBlur={e => saveConsolidationEntry(h, li, 'system_amount', e.target.value === '' ? null : Number(e.target.value))}
+                                        className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
+                                      />
+                                    ) : (
+                                      <span className="tabular-nums">{fmtCents(sys, country)}</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                              <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(hotelTotalSys, country)}</td>
+                            </tr>
+                            <tr className={rowBg}>
+                              <td className="px-3 py-1.5 text-muted-foreground border-t">Bank Upload</td>
+                              {LINE_ITEMS.map((li, i) => (
                                 <td key={li} className="px-2 py-1.5 text-right border-t border-l">
-                                  {manual ? (
+                                  {isCfemNetSalary(h, li) ? (
+                                    <span className="tabular-nums text-muted-foreground">—</span>
+                                  ) : (
                                     <input
                                       type="number"
                                       step="0.01"
-                                      defaultValue={sys || ''}
-                                      onBlur={e => saveConsolidationEntry(h, li, 'system_amount', e.target.value === '' ? null : Number(e.target.value))}
+                                      defaultValue={bankByLi[i] || ''}
+                                      onBlur={e => saveConsolidationEntry(h, li, 'bank_amount', e.target.value === '' ? null : Number(e.target.value))}
                                       className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
                                     />
-                                  ) : (
-                                    <span className="tabular-nums">{fmtCents(sys, country)}</span>
                                   )}
                                 </td>
-                              );
-                            })}
-                            <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(hotelTotalSys, country)}</td>
-                          </tr>
-                          <tr className={rowBg}>
-                            <td className="px-3 py-1.5 text-muted-foreground border-t">Bank Upload</td>
-                            {LINE_ITEMS.map((li, i) => (
-                              <td key={li} className="px-2 py-1.5 text-right border-t border-l">
-                                {isCfemNetSalary(h, li) ? (
-                                  <span className="tabular-nums text-muted-foreground">—</span>
-                                ) : (
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    defaultValue={bankByLi[i] || ''}
-                                    onBlur={e => saveConsolidationEntry(h, li, 'bank_amount', e.target.value === '' ? null : Number(e.target.value))}
-                                    className="w-24 text-right border rounded px-1.5 py-0.5 text-xs"
-                                  />
-                                )}
+                              ))}
+                              <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(hotelTotalBank, country)}</td>
+                            </tr>
+                            <tr className={rowBg}>
+                              <td className="px-3 py-1.5 text-muted-foreground border-t">Balance Differential</td>
+                              {LINE_ITEMS.map((li, i) => {
+                                const diff = sysByLi[i] - bankByLi[i];
+                                return (
+                                  <td key={li} className={`px-2 py-1.5 text-right border-t border-l tabular-nums ${diffClass(diff)}`}>
+                                    {fmtDiffCents(diff, country)}
+                                  </td>
+                                );
+                              })}
+                              <td className={`px-2 py-1.5 text-right border-t border-l tabular-nums font-medium ${diffClass(hotelTotalSys - hotelTotalBank)}`}>
+                                {fmtDiffCents(hotelTotalSys - hotelTotalBank, country)}
                               </td>
-                            ))}
-                            <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(hotelTotalBank, country)}</td>
-                          </tr>
-                          <tr className={rowBg}>
-                            <td className="px-3 py-1.5 text-muted-foreground border-t">Balance Differential</td>
-                            {LINE_ITEMS.map((li, i) => {
-                              const diff = sysByLi[i] - bankByLi[i];
-                              return (
-                                <td key={li} className={`px-2 py-1.5 text-right border-t border-l tabular-nums ${diffClass(diff)}`}>
-                                  {fmtDiffCents(diff, country)}
-                                </td>
-                              );
-                            })}
-                            <td className={`px-2 py-1.5 text-right border-t border-l tabular-nums font-medium ${diffClass(hotelTotalSys - hotelTotalBank)}`}>
-                              {fmtDiffCents(hotelTotalSys - hotelTotalBank, country)}
-                            </td>
-                          </tr>
-                        </Fragment>
+                            </tr>
+                          </Fragment>
+                        );
+                      }
+
+                      const subSysByLi = LINE_ITEMS.map(li => consolidationSystemValue('CSL', li) + consolidationSystemValue('CFEM', li));
+                      const subBankByLi = LINE_ITEMS.map(li => consolidationBankValue('CSL', li) + consolidationBankValue('CFEM', li));
+                      const subTotalSys = subSysByLi.reduce((a, b) => a + b, 0);
+                      const subTotalBank = subBankByLi.reduce((a, b) => a + b, 0);
+
+                      return (
+                        <>
+                          {hotelRows('CSL', 'bg-white')}
+                          {hotelRows('CFEM', 'bg-muted/10')}
+                          {/* Subtotal: CSL + CFEM's one shared bank statement. System +
+                              Bank Upload only (no Balance Differential row), per explicit
+                              request. */}
+                          <Fragment key="subtotal-csl-cfem">
+                            <tr className="bg-amber-50">
+                              <td rowSpan={2} className="px-3 py-1.5 font-semibold border-t align-top">Subtotal (CSL + CFEM)</td>
+                              <td className="px-3 py-1.5 text-muted-foreground border-t">System</td>
+                              {subSysByLi.map((sys, i) => (
+                                <td key={LINE_ITEMS[i]} className="px-2 py-1.5 text-right border-t border-l tabular-nums">{fmtCents(sys, country)}</td>
+                              ))}
+                              <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(subTotalSys, country)}</td>
+                            </tr>
+                            <tr className="bg-amber-50">
+                              <td className="px-3 py-1.5 text-muted-foreground border-t">Bank Upload</td>
+                              {subBankByLi.map((bank, i) => (
+                                <td key={LINE_ITEMS[i]} className="px-2 py-1.5 text-right border-t border-l tabular-nums">{fmtCents(bank, country)}</td>
+                              ))}
+                              <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(subTotalBank, country)}</td>
+                            </tr>
+                          </Fragment>
+                          {hotelRows('NL', 'bg-white')}
+                        </>
                       );
-                    })}
+                    })()}
                   </tbody>
                   <tfoot>
                     {(() => {
