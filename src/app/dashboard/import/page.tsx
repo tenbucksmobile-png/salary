@@ -470,6 +470,15 @@ export default function ImportPage() {
         const nameKey = `${emp.surname.toLowerCase()}|${emp.firstName.toLowerCase()}`;
         const codeKey = emp.employeeCode ? emp.employeeCode.toUpperCase() : '';
         const existingId = (codeKey ? existingCodeMap.get(codeKey) : undefined) ?? existingNameMap.get(nameKey);
+        // A file carrying separate Structure + Basic Salary columns alongside
+        // Gross (Basic Salary = Total Earnings − Structure, same relationship
+        // the employee detail page enforces) splits basic_salary out of the
+        // structure allowance instead of writing the full gross into basic —
+        // provident fund and every other basic-driven figure must be
+        // calculated against real basic, not gross inflated by structure.
+        // Files with no dedicated Basic Salary column keep the old
+        // behaviour (basic = gross) via the basicSalaryFile ?? fallback.
+        const basicSalary = emp.basicSalaryFile ?? emp.grossSalary;
         return {
           importType: 'employee' as const,
           action: existingId ? 'update' as const : 'add' as const,
@@ -481,8 +490,8 @@ export default function ImportPage() {
           department: emp.department,
           jobTitle: emp.jobTitle,
           idNumber: emp.idNumber, paypoint: '', category: 0, jobGrade: 0,
-          allowances: {},
-          basicSalary: emp.grossSalary,
+          allowances: (emp.structureAllowance ? { structure: emp.structureAllowance } : {}) as Record<string, number>,
+          basicSalary,
           totalEarnings: emp.grossSalary,
           taxPaye: 0, uifEmployee: 0, medicalEmployee: 0,
           ancillaEmployee: 0, providentEmployee: 0, totalDeductions: 0,
@@ -1040,7 +1049,7 @@ export default function ImportPage() {
               period_month: periodMonth,
               period_year: periodYear,
               basic_salary: row.basicSalary,
-              allowances: {},
+              allowances: row.allowances,
               total_earnings: row.totalEarnings,
               tax_paye: 0, uif_employee: 0, medical_employee: 0,
               ancilla_employee: 0, provident_employee: 0, total_deductions: 0,
@@ -1054,7 +1063,11 @@ export default function ImportPage() {
               mgmt_incentive: 0, severance: 0, gratuity: 0,
               increase_amount: 0, adjustment: 0, increase_pct: 0,
               new_basic: 0, new_ctc: 0,
-              net_salary: row.basicSalary,
+              // Net salary before any deductions (none tracked at this
+              // minimal HR List stage) is the full gross paid, not basic
+              // alone — basic now legitimately excludes the structure
+              // allowance for files that carry one (see allowances above).
+              net_salary: row.totalEarnings,
               ctc: row.totalEarnings + row.medicalCompany,
               total_cost: row.totalEarnings + row.medicalCompany,
             } : {

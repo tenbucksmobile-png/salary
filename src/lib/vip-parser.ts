@@ -198,6 +198,15 @@ export interface TSVEmployee {
   medicalCompany: number;
   idNumber: string;
   employeeCode: string;
+  // Structure allowance split — present only on HR List files that carry
+  // separate "Structure" and "Basic Salary" columns alongside Gross (e.g.
+  // "Basic Salary = Total Earnings − Structure", the same relationship the
+  // employee detail page already enforces). structureAllowance defaults to 0
+  // when absent; basicSalaryFile is null (not 0) when there's no dedicated
+  // Basic Salary column at all, so callers can tell "no basic column, fall
+  // back to gross" apart from "a real basic figure of 0".
+  structureAllowance: number;
+  basicSalaryFile: number | null;
 }
 
 function parseTSVDate(s: string): string | null {
@@ -359,6 +368,15 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
     medical:   header.findIndex(h => h.includes('medical')),
     idNumber:  header.findIndex(h => h.includes('omang') || h === 'id number' || h === 'id_number' || h === 'id no' || h === 'national id' || h.includes('identity')),
     empCode:   header.findIndex(h => h === 'emp code' || h === 'employee code' || h === 'emp no' || h === 'employee no' || h === 'staff no' || h === 'staff code' || h === 'emp #' || h === 'emp#'),
+    // Structure allowance split — a file carrying both a Structure and a
+    // dedicated Basic Salary column alongside Gross (Basic Salary = Total
+    // Earnings − Structure, same relationship the employee detail page
+    // already enforces). idx.gross above already resolves to the Gross
+    // column when both exist (it appears earlier in the header and
+    // `includes('gross')` matches before the Basic-Salary-only fallback
+    // clause is reached), so this doesn't disturb that lookup.
+    structure:      header.findIndex(h => h === 'structure' || h === 'structure allowance'),
+    basicSalaryCol: header.findIndex(h => h === 'basic salary' || h === 'basicsalary'),
   };
   // A bare "Name" header with no separate Surname column at all (e.g. NL's
   // FTC list: "NAME, Basic Salary") is a combined full name, not a
@@ -403,6 +421,8 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
       medicalCompany: parseTabularAmount(get('medical')),
       idNumber:       get('idNumber'),
       employeeCode:   get('empCode'),
+      structureAllowance: parseTabularAmount(get('structure')),
+      basicSalaryFile:    idx.basicSalaryCol >= 0 ? parseTabularAmount(get('basicSalaryCol')) : null,
     });
   }
   return { employees, errors };
