@@ -355,12 +355,14 @@ export default function BursPage() {
     setUploadError(null);
     try {
       // ILG's own payroll export is either a plain-text "12 Month Analysis
-      // Report" or a plain-text Payroll List (Salary/PAYE/Provident sections
-      // — both saved with a .csv extension but not real delimited CSV);
-      // CFEM's own RPRT739 export is deductions-only and needs basic salary
-      // enriched from the employees table — all three detected by content,
-      // not extension. Everything else is a real tabular spreadsheet via
-      // parsePayrollXlsx.
+      // Report" or a "LIST OF:"-sectioned Payroll List (Salary/PAYE/Provident
+      // — both saved with a .csv extension but not real delimited CSV); CFEM's
+      // own payroll system can export the same "LIST OF:"-sectioned Payroll
+      // List too (different section-label spellings, handled generically —
+      // see parseIlgPayrollList), or its narrower RPRT739 report, which is
+      // deductions-only and needs basic salary enriched from the employees
+      // table. All detected by content, not extension. Everything else is a
+      // real tabular spreadsheet via parsePayrollXlsx.
       const text = await file.text();
       const parsed = isRprt739File(text)
         ? await enrichRprt739WithBasicSalary(parseRprt739(text), hotelId ?? '', file.name)

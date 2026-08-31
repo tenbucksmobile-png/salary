@@ -934,28 +934,38 @@ export function isIlgAnalysisReportFile(text: string): boolean {
   return ILG_REPORT_LABEL_RE.test(text) && /^\s*MONTHS\b/m.test(text);
 }
 
-// ── ILG Payroll List (plain-text, saved as .csv) ──────────────────────────────
-// A second, distinct ILG payroll export — not the "12 Month Analysis Report"
-// above. Same "LIST OF: <Vendor> METHOD NO: ALL (Current period)" sectioned
-// shape as CFEM's deductions reports (parseCfemDeductions/parseCfemPensionCsv),
-// but for ILG's own payroll system, and (confirmed on a real file) carrying
-// THREE sections: "Salary" (basic salary — a genuinely different, narrower
-// column shape: just EMP.CODE / EMPLOYEE NAME / EMP.AMOUNT, no CO.CONTRIB/
-// TOTAL at all, since there's no employer-side "salary contribution"), "PAYE"
-// (EMP.CODE / NAME / CO.CONTRIB / EMP.AMOUNT / TOTAL — CO.CONTRIB always 0,
-// PAYE has no employer side), and "PROVIDENT" (same 3-column shape, CO.CONTRIB
-// = employer contribution, EMP.AMOUNT = employee contribution). Every section
-// needed for a BURS submission (basic, PAYE, pension) is present directly in
-// this one file — no DB enrichment needed, unlike CFEM's RPRT739 (which is
-// deductions-only with no salary figure at all, since CFEM's payroll is
-// confidential — see enrichRprt739WithBasicSalary in burs/page.tsx).
-// PAYE only lists employees who actually owe tax that period (8 of the
-// Salary section's 37 on the confirmed sample) — union the employee set from
-// the Salary section (the full roster) and default PAYE/Provident to 0 for
-// anyone missing from those sections. A terminated employee's row can carry
-// a trailing "TERM DD/MM/YYYY" note after their amount (e.g. "1717.30
-// TERM 19/08/2026") — harmless, since name/values are sliced from the code
-// up to the first matched number, well before that trailing text.
+// ── "LIST OF:" Payroll List (plain-text, saved as .csv) ───────────────────────
+// A payroll export format shared by more than one hotel's own payroll system
+// — same "LIST OF: <Vendor> METHOD NO: ALL (Current period)" sectioned shape
+// as CFEM's deductions reports (parseCfemDeductions/parseCfemPensionCsv), but
+// carrying full payroll sections rather than just deductions. Confirmed on
+// two real files with DIFFERENT vendor-label spellings for the same concepts
+// — ILG's own export uses "Salary"/"PAYE"/"PROVIDENT"; CFEM's own export uses
+// "Basic Salary"/"Paye"/"Pension Fund", plus extra "Severance N/Tax",
+// "Severance Taxed", and "Commission" sections ILG's doesn't have. Section
+// lookup below is therefore substring-based (`salary` matches both "Salary"
+// and "Basic Salary"; `pension`/`provident` covers both spellings), not an
+// exact key match. The basic/salary section is a genuinely narrower column
+// shape than the rest — just EMP.CODE / EMPLOYEE NAME / EMP.AMOUNT, no
+// CO.CONTRIB/TOTAL, since there's no employer-side "salary contribution";
+// PAYE/Provident/Commission/Severance sections are EMP.CODE / NAME /
+// CO.CONTRIB / EMP.AMOUNT / TOTAL. Every section needed for a BURS submission
+// (basic, PAYE, pension, and — when present — commission/non-taxable
+// severance) is self-contained in one file, no DB enrichment needed (unlike
+// CFEM's RPRT739 report, which is deductions-only with no salary figure at
+// all — see enrichRprt739WithBasicSalary in burs/page.tsx, still used for
+// months CFEM instead exports that narrower format).
+// PAYE/Provident/etc. sections only list employees who actually have a
+// nonzero figure that period (confirmed: ILG's Salary section had 37
+// employees, its PAYE section only 8) — union the employee set from the
+// basic/salary section (the full roster) and default every other figure to 0
+// for anyone missing from a given section. An empty section still prints its
+// own "LIST OF:"/header/divider/"(      Empls)" scaffold with zero data rows
+// — handled the same as a populated one, just contributing nothing.
+// A terminated employee's row can carry a trailing "TERM DD/MM/YYYY" note
+// after their amount (e.g. "1717.30 TERM 19/08/2026") — harmless, since
+// name/values are sliced from the code up to the first matched number, well
+// before that trailing text.
 const ILG_LIST_HEADER_RE = /^LIST OF:/i;
 const ILG_LIST_SUMMARY_RE = /empl/i;
 const ILG_LIST_NUM_RE = /-?\d*\.\d{2}/g;
@@ -997,23 +1007,43 @@ function parseIlgListSections(text: string): Map<string, IlgListLine[]> {
   return sections;
 }
 
+// Section labels vary by hotel's own payroll system (see comment above) —
+// match by substring against whichever of the given keywords appears in a
+// section's lowercased vendor label, rather than an exact key.
+function findIlgListSection(sections: Map<string, IlgListLine[]>, keywords: string[]): IlgListLine[] {
+  for (const [key, lines] of sections) {
+    if (keywords.some(k => key.includes(k))) return lines;
+  }
+  return [];
+}
+
 export function isIlgPayrollListFile(text: string): boolean {
   return /LIST OF:/i.test(text) && /METHOD NO:/i.test(text) && !ILG_REPORT_LABEL_RE.test(text);
 }
 
 export function parseIlgPayrollList(text: string, fileName: string): ParsedPayroll {
   const sections = parseIlgListSections(text);
-  const salaryLines = sections.get('salary') ?? [];
-  const payeLines = sections.get('paye') ?? [];
-  const providentLines = sections.get('provident') ?? [];
+  const salaryLines = findIlgListSection(sections, ['salary']);
+  const payeLines = findIlgListSection(sections, ['paye']);
+  const providentLines = findIlgListSection(sections, ['provident', 'pension']);
+  const commissionLines = findIlgListSection(sections, ['commission']);
+  const severanceNonTaxLines = findIlgListSection(sections, ['severance n/tax', 'severance non']);
 
-  const payeByCode = new Map(payeLines.map(l => [l.empCode, l]));
-  const providentByCode = new Map(providentLines.map(l => [l.empCode, l]));
+  const byCode = (lns: IlgListLine[]) => new Map(lns.map(l => [l.empCode, l]));
+  const payeByCode = byCode(payeLines);
+  const providentByCode = byCode(providentLines);
+  const commissionByCode = byCode(commissionLines);
+  const severanceByCode = byCode(severanceNonTaxLines);
 
   const lines: PayrollLine[] = salaryLines.map(s => {
     const basic = s.values[0] ?? 0;
-    const paye = payeByCode.get(s.empCode)?.values[1] ?? 0; // [CO.CONTRIB, EMP.AMOUNT, TOTAL]
+    // [CO.CONTRIB, EMP.AMOUNT, TOTAL] — EMP.AMOUNT (index 1) is the
+    // employee-side figure for every 3-column section (PAYE has no employer
+    // side, so CO.CONTRIB is always 0 there anyway).
+    const paye = payeByCode.get(s.empCode)?.values[1] ?? 0;
     const pensionEe = providentByCode.get(s.empCode)?.values[1] ?? 0;
+    const bonusCommission = commissionByCode.get(s.empCode)?.values[1] ?? 0;
+    const severanceNonTaxable = severanceByCode.get(s.empCode)?.values[1] ?? 0;
     return {
       empCode: s.empCode,
       name: s.name,
@@ -1027,6 +1057,8 @@ export function parseIlgPayrollList(text: string, fileName: string): ParsedPayro
       afritecLoans: 0, toplineLoans: 0, staffLoans: 0,
       deductionTotal: paye + pensionEe,
       nettPay: basic - paye - pensionEe,
+      bonusCommission,
+      severanceNonTaxable,
     };
   });
 
