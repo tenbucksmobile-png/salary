@@ -305,7 +305,7 @@ export function parseMedicalAidFile(text: string): { employees: MedicalAidEntry[
 
 export function isTabularEmployeeFile(firstLine: string): boolean {
   const l = normalizeHeaderCell(firstLine);
-  const hasName   = l.includes('surname') || l.includes('first name');
+  const hasName   = l.includes('surname') || l.includes('first name') || l.includes('name');
   const hasSalary = l.includes('gross')   || l.includes('salary') || l.includes('earnings');
   const hasId     = l.includes('omang')   || l.includes('id number')  || l.includes('national id') || l.includes('identity');
   const hasDept   = (l.includes('department') || l.includes('dept'))  && (l.includes('title') || l.includes('position'));
@@ -347,6 +347,10 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
   const idx = {
     surname:   header.findIndex(h => h === 'surname' || h === 'surnmae' || h === 'last name' || h === 'lastname'),
     firstName: header.findIndex(h => h === 'name' || h === 'first name' || h === 'firstname'),
+    // Some exports (e.g. "Emp Code, Employee Name, Basic Salary") give one
+    // combined "Employee Name" column instead of separate surname/first name —
+    // split it token-wise below, same convention as the Leave Balance parser.
+    fullName:  header.findIndex(h => h === 'employee name' || h === 'full name'),
     department:header.findIndex(h => h.includes('department') || h.includes('dept')),
     jobTitle:  header.findIndex(h => h.includes('title') || h.includes('position')),
     startDate: header.findIndex(h => h.includes('start') || h.includes('date') || h.includes('commencement')),
@@ -361,11 +365,26 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
     const cols = splitCSVLine(lines[i], delim).map(c => c.trim().replace(/^"|"$/g, ''));
     if (cols.every(c => !c)) continue;
     const get = (k: keyof typeof idx) => idx[k] >= 0 ? cols[idx[k]] ?? '' : '';
-    const surname = get('surname');
+
+    let surname = get('surname');
+    let firstName = get('firstName');
+    if (!surname && !firstName && idx.fullName >= 0) {
+      // Combined name columns run Title FirstName Surname (e.g. "MR Modimoosi
+      // Lala Baakile") — strip the salutation, last token is the surname,
+      // everything before it is the first name.
+      const toTitle = (s: string) => s.split(' ').filter(Boolean).map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
+      const tokens = nameTokens(get('fullName'));
+      if (tokens.length === 1) {
+        surname = toTitle(tokens[0]);
+      } else if (tokens.length > 1) {
+        surname = toTitle(tokens[tokens.length - 1]);
+        firstName = toTitle(tokens.slice(0, -1).join(' '));
+      }
+    }
     if (!surname) continue;
     employees.push({
       surname,
-      firstName:      get('firstName'),
+      firstName,
       department:     get('department'),
       jobTitle:       get('jobTitle'),
       employmentDate: parseTSVDate(get('startDate')),
