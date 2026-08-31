@@ -934,6 +934,105 @@ export function isIlgAnalysisReportFile(text: string): boolean {
   return ILG_REPORT_LABEL_RE.test(text) && /^\s*MONTHS\b/m.test(text);
 }
 
+// ── ILG Payroll List (plain-text, saved as .csv) ──────────────────────────────
+// A second, distinct ILG payroll export — not the "12 Month Analysis Report"
+// above. Same "LIST OF: <Vendor> METHOD NO: ALL (Current period)" sectioned
+// shape as CFEM's deductions reports (parseCfemDeductions/parseCfemPensionCsv),
+// but for ILG's own payroll system, and (confirmed on a real file) carrying
+// THREE sections: "Salary" (basic salary — a genuinely different, narrower
+// column shape: just EMP.CODE / EMPLOYEE NAME / EMP.AMOUNT, no CO.CONTRIB/
+// TOTAL at all, since there's no employer-side "salary contribution"), "PAYE"
+// (EMP.CODE / NAME / CO.CONTRIB / EMP.AMOUNT / TOTAL — CO.CONTRIB always 0,
+// PAYE has no employer side), and "PROVIDENT" (same 3-column shape, CO.CONTRIB
+// = employer contribution, EMP.AMOUNT = employee contribution). Every section
+// needed for a BURS submission (basic, PAYE, pension) is present directly in
+// this one file — no DB enrichment needed, unlike CFEM's RPRT739 (which is
+// deductions-only with no salary figure at all, since CFEM's payroll is
+// confidential — see enrichRprt739WithBasicSalary in burs/page.tsx).
+// PAYE only lists employees who actually owe tax that period (8 of the
+// Salary section's 37 on the confirmed sample) — union the employee set from
+// the Salary section (the full roster) and default PAYE/Provident to 0 for
+// anyone missing from those sections. A terminated employee's row can carry
+// a trailing "TERM DD/MM/YYYY" note after their amount (e.g. "1717.30
+// TERM 19/08/2026") — harmless, since name/values are sliced from the code
+// up to the first matched number, well before that trailing text.
+const ILG_LIST_HEADER_RE = /^LIST OF:/i;
+const ILG_LIST_SUMMARY_RE = /empl/i;
+const ILG_LIST_NUM_RE = /-?\d*\.\d{2}/g;
+
+interface IlgListLine {
+  empCode: string;
+  name: string;
+  values: number[];
+}
+
+function parseIlgListSections(text: string): Map<string, IlgListLine[]> {
+  const sections = new Map<string, IlgListLine[]>();
+  let current: IlgListLine[] | null = null;
+
+  for (const raw of text.split(/\r?\n/)) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+
+    if (ILG_LIST_HEADER_RE.test(trimmed)) {
+      const rest = trimmed.replace(ILG_LIST_HEADER_RE, '').trim();
+      const vendor = rest.split(/\s{2,}/)[0]?.trim().toLowerCase() || 'unknown';
+      current = [];
+      sections.set(vendor, current);
+      continue;
+    }
+    if (!current) continue;
+    if (trimmed.startsWith('(') && ILG_LIST_SUMMARY_RE.test(trimmed)) continue; // "( N Empls)" totals row
+
+    const nums = [...raw.matchAll(ILG_LIST_NUM_RE)];
+    if (nums.length === 0) continue; // header row, dashed divider, blank line
+
+    const codeMatch = raw.match(/^\s*(\S+)/);
+    if (!codeMatch) continue;
+    const empCode = normalizeCode(codeMatch[1]);
+    const name = raw.slice(codeMatch[0].length, nums[0].index).replace(/\s+/g, ' ').trim();
+    if (!name) continue; // guards against a stray numeric-only line
+    current.push({ empCode, name, values: nums.map(n => parseFloat(n[0]) || 0) });
+  }
+  return sections;
+}
+
+export function isIlgPayrollListFile(text: string): boolean {
+  return /LIST OF:/i.test(text) && /METHOD NO:/i.test(text) && !ILG_REPORT_LABEL_RE.test(text);
+}
+
+export function parseIlgPayrollList(text: string, fileName: string): ParsedPayroll {
+  const sections = parseIlgListSections(text);
+  const salaryLines = sections.get('salary') ?? [];
+  const payeLines = sections.get('paye') ?? [];
+  const providentLines = sections.get('provident') ?? [];
+
+  const payeByCode = new Map(payeLines.map(l => [l.empCode, l]));
+  const providentByCode = new Map(providentLines.map(l => [l.empCode, l]));
+
+  const lines: PayrollLine[] = salaryLines.map(s => {
+    const basic = s.values[0] ?? 0;
+    const paye = payeByCode.get(s.empCode)?.values[1] ?? 0; // [CO.CONTRIB, EMP.AMOUNT, TOTAL]
+    const pensionEe = providentByCode.get(s.empCode)?.values[1] ?? 0;
+    return {
+      empCode: s.empCode,
+      name: s.name,
+      idNumber: '',
+      basic,
+      incomeTotal: basic,
+      furnmart: 0, cbStores: 0, bodulo: 0,
+      pensionEe,
+      paye,
+      medAidEe: 0,
+      afritecLoans: 0, toplineLoans: 0, staffLoans: 0,
+      deductionTotal: paye + pensionEe,
+      nettPay: basic - paye - pensionEe,
+    };
+  });
+
+  return { lines, totals: {}, fileName };
+}
+
 const ILG_EMPLOYEE_HEADER_RE = /^([A-Z0-9]{3,10})\s+(.+?)\s*\[/;
 
 function ilgCurrentMonthValue(trimmedLine: string): number {

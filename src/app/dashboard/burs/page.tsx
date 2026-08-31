@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, BursUpload } from '@/types/database';
 import { sortHotels, MONTH_NAMES } from '@/lib/utils';
-import { parsePayrollXlsx, isIlgAnalysisReportFile, parseIlgAnalysisReport, isRprt739File, parseRprt739, nameKey, type ParsedPayroll, type PayrollLine } from '@/lib/recon-parsers';
+import { parsePayrollXlsx, isIlgAnalysisReportFile, parseIlgAnalysisReport, isIlgPayrollListFile, parseIlgPayrollList, isRprt739File, parseRprt739, nameKey, type ParsedPayroll, type PayrollLine } from '@/lib/recon-parsers';
 import { Receipt, Upload, Download, AlertTriangle, Trash2 } from 'lucide-react';
 
 // BURS = Botswana Unified Revenue Service. Monthly PAYE submission covering
@@ -354,16 +354,20 @@ export default function BursPage() {
     setUploading(true);
     setUploadError(null);
     try {
-      // ILG's own payroll export is a plain-text "12 Month Analysis Report"
-      // (saved with a .csv extension but not real delimited CSV); CFEM's own
-      // RPRT739 export is deductions-only and needs basic salary enriched
-      // from the employees table — both detected by content, not extension.
-      // Everything else is a real tabular spreadsheet via parsePayrollXlsx.
+      // ILG's own payroll export is either a plain-text "12 Month Analysis
+      // Report" or a plain-text Payroll List (Salary/PAYE/Provident sections
+      // — both saved with a .csv extension but not real delimited CSV);
+      // CFEM's own RPRT739 export is deductions-only and needs basic salary
+      // enriched from the employees table — all three detected by content,
+      // not extension. Everything else is a real tabular spreadsheet via
+      // parsePayrollXlsx.
       const text = await file.text();
       const parsed = isRprt739File(text)
         ? await enrichRprt739WithBasicSalary(parseRprt739(text), hotelId ?? '', file.name)
         : isIlgAnalysisReportFile(text)
         ? parseIlgAnalysisReport(text, file.name)
+        : isIlgPayrollListFile(text)
+        ? parseIlgPayrollList(text, file.name)
         : await parsePayrollXlsx(await file.arrayBuffer(), file.name);
       const { data, error } = await sb
         .from('burs_uploads')
