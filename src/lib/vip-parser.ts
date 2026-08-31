@@ -360,6 +360,16 @@ export function parseTSVEmployeeFile(text: string): { employees: TSVEmployee[]; 
     idNumber:  header.findIndex(h => h.includes('omang') || h === 'id number' || h === 'id_number' || h === 'id no' || h === 'national id' || h.includes('identity')),
     empCode:   header.findIndex(h => h === 'emp code' || h === 'employee code' || h === 'emp no' || h === 'employee no' || h === 'staff no' || h === 'staff code' || h === 'emp #' || h === 'emp#'),
   };
+  // A bare "Name" header with no separate Surname column at all (e.g. NL's
+  // FTC list: "NAME, Basic Salary") is a combined full name, not a
+  // first-name-only column — reroute it through the same fullName splitter
+  // used for "Employee Name"/"Full Name" headers. Only when there's genuinely
+  // no Surname column to pair it with, matching the disambiguation already
+  // used by the Leave Balance parser.
+  if (idx.surname < 0 && idx.fullName < 0 && idx.firstName >= 0) {
+    idx.fullName = idx.firstName;
+    idx.firstName = -1;
+  }
 
   for (let i = 1; i < lines.length; i++) {
     const cols = splitCSVLine(lines[i], delim).map(c => c.trim().replace(/^"|"$/g, ''));
