@@ -765,13 +765,22 @@ export async function parsePayrollXlsx(buf: ArrayBuffer, fileName: string): Prom
 
 // ── Pom Pom Staff Payroll (differently-shaped tabular .xlsx) ─────────────────
 // Header row anchored on "Last Name" (col A) instead of "Code" — everything
-// else about the layout differs too: employee code lives in "Emp. Number",
+// else about the layout differs too: employee code lives in an "Emp." column,
 // the name is split across "Last Name"/"First Name", and there's a genuine
 // "omang" column BURS matching doesn't need but a future Omang import could
 // use. Vendor deduction columns (Afritec life/Loan, Curios, Flights,
 // Furniture Mart) use PomPom's own vocabulary, not the SA/CSL vendor set —
 // irrelevant to BURS (which only reads basic/incomeTotal/pensionEe/paye), so
 // left at 0 rather than guessing a mapping with no consumer to verify against.
+//
+// Two real shapes seen so far, both handled here:
+//  - the original detailed export ("Emp. Number", "Total Allowances", "Total
+//    Deductions", "Total Net Pay", "Leave Pay"/"Overtime"/"Tip Pom Pom")
+//  - a simpler HR-produced export (confirmed Aug 2026, "PP_Staff Payroll_
+//    August 2026_HR_.xlsx"): just Last Name / First Name / "Emp. Code " /
+//    "Omang " / "Basic Pay" / "Other Payments" / "PAYE" / "Pension EE", no
+//    Total Allowances/Deductions/Net Pay columns at all — "Other Payments" is
+//    already the exact BURS OtherPayments figure, not something to derive.
 function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll {
   const headerIdx = rows.findIndex(r =>
     String(r[0] || '').trim().toLowerCase() === 'last name' &&
@@ -789,26 +798,42 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
 
   const colSurname   = 0;
   const colFirstName = col('first name');
-  const colCode       = col(/emp\.?\s*number|emp\.?\s*no/);
+  // "Emp. Number"/"Emp No" (original export) or "Emp. Code" (HR export).
+  const colCode       = col(/emp\.?\s*(number|no|code)/);
   const colOmang       = col('omang');
   const colBasic       = col('basic pay');
   const colIncome      = col('total allowances'); // misleadingly named — this is the gross earnings total
-  const colPension     = col(/pension\s*employee/);
+  // "Pension Employee" (original) or "Pension EE" (HR export) — both contain
+  // "pension" and nothing else in this file does, so a broad match is safe.
+  const colPension     = col('pension');
   const colPaye        = col(/paye|pay as you earn/);
   const colMedAid      = col(/medical.*aid.*employee/);
   const colDedTotal    = col('total deductions');
   const colNett        = col('total net pay');
   // BURS OtherPayments — Pom Pom has no numeric account codes (unlike
-  // CSL/NL), just plain labels. Explicit per instruction: Leave Pay +
-  // Overtime + Tip Pom Pom only. Deliberately NOT the same as `incomeTotal -
-  // basic` (= Total Allowances - Basic Pay), since that also folds in Unpaid
-  // Leave, which isn't part of this definition.
+  // CSL/NL), just plain labels.
+  //   Original export: Leave Pay + Overtime + Tip Pom Pom (explicit per
+  //   instruction — deliberately NOT `incomeTotal - basic`, since that also
+  //   folds in Unpaid Leave, which isn't part of this definition).
+  //   HR export: a single "Other Payments" column that already IS the
+  //   figure — used directly when present, taking priority over the
+  //   Leave/Overtime/Tip derivation since that shape has no such columns.
   const colLeavePay    = col('leave pay');
   const colOvertime    = col(/^overtime$/);
   const colTip         = col(/tip pom pom/);
+  const colOtherPayments = col('other payments');
 
+  // Amounts in the HR export are formatted strings ("2,940.00", padded with
+  // spaces) rather than raw numbers, and a blank PAYE cell comes through as
+  // null (no tax owed that period, not zero-but-missing) — plain Number(...)
+  // returns NaN on the thousands separator, so strip everything but
+  // digits/dot/minus first, same tolerant pattern used elsewhere in this file.
   function n(row: any[], c: number): number {
-    return c >= 0 ? Number(row[c]) || 0 : 0;
+    if (c < 0) return 0;
+    const v = row[c];
+    if (typeof v === 'number') return v;
+    const cleaned = String(v ?? '').replace(/[^0-9.\-]/g, '');
+    return Number(cleaned) || 0;
   }
 
   const lines: PayrollLine[] = [];
@@ -822,21 +847,36 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
 
     if (!surname && !firstName) {
       // No name — either a genuinely blank row, or (if there are real
-      // numeric totals) the sheet's final totals row.
-      const isTotalsRow = n(row, colIncome) > 0 || n(row, colDedTotal) > 0 || n(row, colNett) > 0;
+      // numeric totals) the sheet's final totals row. The HR export has no
+      // Total Allowances/Deductions/Net Pay columns at all, so also check
+      // Basic/PAYE/Pension — that shape's totals row still carries those.
+      const isTotalsRow = n(row, colIncome) > 0 || n(row, colDedTotal) > 0 || n(row, colNett) > 0
+        || n(row, colBasic) > 0 || n(row, colPaye) > 0 || n(row, colPension) > 0;
       if (isTotalsRow) {
+        const otherPaymentsTotal = colOtherPayments >= 0 ? n(row, colOtherPayments) : (n(row, colLeavePay) + n(row, colOvertime) + n(row, colTip));
         totals = {
           basic: n(row, colBasic),
-          incomeTotal: n(row, colIncome),
+          incomeTotal: colIncome >= 0 ? n(row, colIncome) : n(row, colBasic) + otherPaymentsTotal,
           pensionEe: n(row, colPension),
           paye: n(row, colPaye),
           medAidEe: n(row, colMedAid),
           deductionTotal: n(row, colDedTotal),
           nettPay: n(row, colNett),
+          otherPayments: otherPaymentsTotal,
         };
       }
       continue;
     }
+
+    // HR export: "Other Payments" is already the exact BURS figure — use it
+    // directly (and derive incomeTotal from it) rather than the original
+    // export's Leave Pay + Overtime + Tip derivation, which doesn't apply
+    // here (those columns don't exist in this shape).
+    const otherPayments = colOtherPayments >= 0
+      ? n(row, colOtherPayments)
+      : n(row, colLeavePay) + n(row, colOvertime) + n(row, colTip);
+    const basic = n(row, colBasic);
+    const incomeTotal = colIncome >= 0 ? n(row, colIncome) : basic + otherPayments;
 
     lines.push({
       empCode: normalizeCode(code),
@@ -844,8 +884,8 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
       firstName,
       surname,
       idNumber: colOmang >= 0 ? String(row[colOmang] || '').trim() : '',
-      basic: n(row, colBasic),
-      incomeTotal: n(row, colIncome),
+      basic,
+      incomeTotal,
       furnmart: 0,
       cbStores: 0,
       bodulo: 0,
@@ -857,7 +897,7 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
       staffLoans: 0,
       deductionTotal: n(row, colDedTotal),
       nettPay: n(row, colNett),
-      otherPayments: n(row, colLeavePay) + n(row, colOvertime) + n(row, colTip),
+      otherPayments,
     });
   }
 
