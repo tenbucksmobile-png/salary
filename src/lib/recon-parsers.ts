@@ -57,6 +57,7 @@ export interface PayrollLine {
   otherPayments?: number;       // 1000 - Overtime PPHoliday, 1003 - General Staff Tip, 1004 - Notice pay, 5321/5323 - Overtime — NOT 1001 (Maternity Leave-NegativeIncome, confirmed a different item despite the similar numbering)
   bonusCommission?: number;     // 5300 - Commission
   severanceNonTaxable?: number; // 5771 - Severance Pay - Non Taxable Portion
+  housingBenefit?: number;      // CFEM's "LIST OF: Housing Allowance" section — maps to ITW8 BenefitsHousing
 }
 
 export interface ParsedPayroll {
@@ -1068,12 +1069,20 @@ export function parseIlgPayrollList(text: string, fileName: string): ParsedPayro
   const providentLines = findIlgListSection(sections, ['provident', 'pension']);
   const commissionLines = findIlgListSection(sections, ['commission']);
   const severanceNonTaxLines = findIlgListSection(sections, ['severance n/tax', 'severance non']);
+  // CFEM's revised export adds a "Housing Allowance" section — narrow 2-column
+  // shape (EMP.CODE / NAME / EMP.AMOUNT, no CO.CONTRIB/TOTAL), same shape as
+  // the Salary section above, so its single value is index 0, not index 1.
+  // Maps to the ITW8 BenefitsHousing field — a benefit, kept separate from
+  // basic/incomeTotal rather than folded in, since ITW8 tracks it as its own
+  // column distinct from SalaryWages.
+  const housingLines = findIlgListSection(sections, ['housing']);
 
   const byCode = (lns: IlgListLine[]) => new Map(lns.map(l => [l.empCode, l]));
   const payeByCode = byCode(payeLines);
   const providentByCode = byCode(providentLines);
   const commissionByCode = byCode(commissionLines);
   const severanceByCode = byCode(severanceNonTaxLines);
+  const housingByCode = byCode(housingLines);
 
   const lines: PayrollLine[] = salaryLines.map(s => {
     const basic = s.values[0] ?? 0;
@@ -1084,6 +1093,7 @@ export function parseIlgPayrollList(text: string, fileName: string): ParsedPayro
     const pensionEe = providentByCode.get(s.empCode)?.values[1] ?? 0;
     const bonusCommission = commissionByCode.get(s.empCode)?.values[1] ?? 0;
     const severanceNonTaxable = severanceByCode.get(s.empCode)?.values[1] ?? 0;
+    const housingBenefit = housingByCode.get(s.empCode)?.values[0] ?? 0;
     return {
       empCode: s.empCode,
       name: s.name,
@@ -1099,6 +1109,7 @@ export function parseIlgPayrollList(text: string, fileName: string): ParsedPayro
       nettPay: basic - paye - pensionEe,
       bonusCommission,
       severanceNonTaxable,
+      housingBenefit,
     };
   });
 

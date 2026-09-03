@@ -188,7 +188,8 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
       'N',
       money(line.basic),
       money(bonusCommission),
-      '0', '0', '0', '0',
+      money(line.housingBenefit ?? 0), // BenefitsHousing — CFEM's "Housing Allowance" section; 0 for every other source (no equivalent column upstream)
+      '0', '0', '0',
       money(severanceNonTaxable),
       severanceDate,
       '', // RetrenchmentPaymentDate
@@ -805,6 +806,9 @@ export default function BursPage() {
                 <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Salary/Wages</th>
                 <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Pension Contrib</th>
                 <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Commission</th>
+                {taxpayerTab === 'combined' && (
+                  <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Housing Benefit</th>
+                )}
                 <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Other Income</th>
                 <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Tax Deducted</th>
               </tr>
@@ -826,6 +830,9 @@ export default function BursPage() {
                     <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{line.basic.toLocaleString('en-ZA')}</td>
                     <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{line.pensionEe.toLocaleString('en-ZA')}</td>
                     <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{bonusCommission ? bonusCommission.toLocaleString('en-ZA') : '—'}</td>
+                    {taxpayerTab === 'combined' && (
+                      <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{line.housingBenefit ? line.housingBenefit.toLocaleString('en-ZA') : '—'}</td>
+                    )}
                     <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{otherPayments ? otherPayments.toLocaleString('en-ZA') : '—'}</td>
                     <td className="px-5 py-2.5 text-right font-mono">{line.paye.toLocaleString('en-ZA')}</td>
                   </tr>
