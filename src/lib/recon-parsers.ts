@@ -1069,13 +1069,21 @@ export function parseIlgPayrollList(text: string, fileName: string): ParsedPayro
   const providentLines = findIlgListSection(sections, ['provident', 'pension']);
   const commissionLines = findIlgListSection(sections, ['commission']);
   const severanceNonTaxLines = findIlgListSection(sections, ['severance n/tax', 'severance non']);
-  // CFEM's revised export adds a "Housing Allowance" section — narrow 2-column
+  // CFEM's revised export adds a housing-benefit section — narrow 2-column
   // shape (EMP.CODE / NAME / EMP.AMOUNT, no CO.CONTRIB/TOTAL), same shape as
   // the Salary section above, so its single value is index 0, not index 1.
   // Maps to the ITW8 BenefitsHousing field — a benefit, kept separate from
   // basic/incomeTotal rather than folded in, since ITW8 tracks it as its own
-  // column distinct from SalaryWages.
-  const housingLines = findIlgListSection(sections, ['housing']);
+  // column distinct from SalaryWages. The section's own label has changed
+  // between exports — an earlier sample called it "Housing Allowance"; the
+  // confirmed live one (Sep 2026) calls it "PerksResidential Accom." (no
+  // space between "Perks" and "Residential", and no "METHOD NO:" on its
+  // header line, unlike every other section — parseIlgListSections doesn't
+  // require METHOD NO to detect a header, so this doesn't break detection).
+  // Matched by substring the same way every other section here is, so
+  // either label (or "Housing"/"Perks"/"Accom" in some other combination)
+  // resolves to the same field.
+  const housingLines = findIlgListSection(sections, ['housing', 'perks', 'accom']);
 
   const byCode = (lns: IlgListLine[]) => new Map(lns.map(l => [l.empCode, l]));
   const payeByCode = byCode(payeLines);
