@@ -565,9 +565,36 @@ export async function parsePensionSchedule(
   const colCode = col(codeColPattern);
   const colFirst = col(/first.?name|forename/i);
   const colSur = col(/surname/i);
-  const colMember = col(/member\s*contribution\s*amount|employee\s*contribution\s*amount/i);
-  const colEmployer = col(/employer\s*contribution\s*amount/i);
-  const colAvc = col(/member\s*avc\s*contribution/i);
+  // Some schedules (e.g. CSL/NL's short monthly export) use bare "EE"/"ER"
+  // headers instead of the full "Member/Employer Contribution Amount" wording —
+  // fall back to those when the longer pattern isn't found. Confirmed live: a
+  // Code/FIRST NAMES/SURNAME/EE/ER(/AVC) sheet parsed zero lines with only the
+  // long-form patterns, since every row's ee/er computed as 0.
+  const colMember = (() => {
+    const long = col(/member\s*contribution\s*amount|employee\s*contribution\s*amount/i);
+    return long >= 0 ? long : col(/^ee$/i);
+  })();
+  const colEmployer = (() => {
+    const long = col(/employer\s*contribution\s*amount/i);
+    return long >= 0 ? long : col(/^er$/i);
+  })();
+  const colAvc = col(/member\s*avc\s*contribution|^avc$/i);
+
+  // Tolerant numeric parse: handles a European decimal comma ("646,05") as well
+  // as plain numbers — confirmed live on a real CSL export where most amounts
+  // parse fine as numbers but at least one cell ("646,05") is a text string
+  // whose comma would otherwise be silently stripped by a naive digit-only clean,
+  // turning 646.05 into 64605.
+  const parseAmount = (v: unknown): number => {
+    if (typeof v === 'number') return v;
+    const clean = String(v ?? '').replace(/[^0-9.,\-]/g, '');
+    if (!clean) return 0;
+    if (clean.includes(',') && !clean.includes('.')) {
+      if (/^-?\d{1,3}(,\d{3})+$/.test(clean)) return parseFloat(clean.replace(/,/g, '')) || 0;
+      return parseFloat(clean.replace(',', '.')) || 0;
+    }
+    return parseFloat(clean.replace(/,/g, '')) || 0;
+  };
 
   const lines: ReconLine[] = [];
   const unmatchedLines: ReconLine[] = [];
@@ -590,9 +617,9 @@ export async function parsePensionSchedule(
     const sur = String(row[colSur] ?? '').trim();
     if (/total/i.test(rawCode) || /total/i.test(first) || /total/i.test(sur)) continue;
 
-    const ee = colMember >= 0 ? Number(row[colMember]) || 0 : 0;
-    const er = colEmployer >= 0 ? Number(row[colEmployer]) || 0 : 0;
-    const avc = colAvc >= 0 ? Number(row[colAvc]) || 0 : 0;
+    const ee = colMember >= 0 ? parseAmount(row[colMember]) : 0;
+    const er = colEmployer >= 0 ? parseAmount(row[colEmployer]) : 0;
+    const avc = colAvc >= 0 ? parseAmount(row[colAvc]) : 0;
     // Member AVC is a voluntary contribution BY the employee, so it belongs on
     // the EE side alongside the mandatory member contribution, not left out.
     const eeTotal = ee + avc;
