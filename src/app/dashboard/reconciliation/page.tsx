@@ -645,11 +645,27 @@ export default function ReconciliationPage() {
         // actually gets paid to the fund administrator — not the EE-only `total` used
         // everywhere else (Deductions Check compares EE-only against payroll's own
         // EE-only pensionEe column). Falls back to `total` for a statement with no
-        // EE/ER split at all. Each hotel's own uploaded schedule, unadjusted — see the
-        // note above on why no cross-hotel movement happens here.
-        const getPensionBank = (byType: Map<string, any>) => {
+        // EE/ER split at all.
+        //
+        // CSL's and NL's own schedules also physically carry a handful of CFE
+        // Management employees (embedded — see isEmbeddedCfePensionLine), and CFEM
+        // separately uploads its own full pension schedule for those same people —
+        // so left unadjusted, that money was being counted twice in the CSL+CFEM
+        // subtotal (once inside CSL's own bankTotal, once inside CFEM's). Fixed by
+        // subtracting each embedded line's bankAmount from CSL's/NL's own total —
+        // CFEM's own schedule is the one place that money should be counted.
+        // Confirmed live 2026-09-22: CSL's own total was 198,734.53 (incl. embedded
+        // CFE employees) and CFEM's own was 63,220.66, summing to a double-counted
+        // 261,955.19 on the Subtotal row.
+        const getPensionBank = (byType: Map<string, any>, excludeEmbeddedCfe: boolean) => {
           const stmt = byType.get('pension') as ParsedStatement | undefined;
-          return stmt?.bankTotal ?? stmt?.total ?? 0;
+          if (!stmt) return 0;
+          const bank = stmt.bankTotal ?? stmt.total ?? 0;
+          if (!excludeEmbeddedCfe) return bank;
+          const embedded = (stmt.lines ?? [])
+            .filter(l => isEmbeddedCfePensionLine(l))
+            .reduce((s, l) => s + (l.bankAmount ?? l.amount), 0);
+          return bank - embedded;
         };
 
         function buildTotals(shortCode: ConsolidationHotel, byType: Map<string, any>): SystemTotals {
@@ -664,8 +680,10 @@ export default function ReconciliationPage() {
               const t = lookupCfemVendorType(sec.vendor);
               if (t) totals[t] = sec.total;
             });
-            // Pension isn't part of the combined CFEM Deductions Summary — it's its own upload.
-            totals.pension = getPensionBank(byType);
+            // Pension isn't part of the combined CFEM Deductions Summary — it's its own
+            // upload, and it's the one place embedded CFE employees' pension money is
+            // kept (not excluded here, unlike CSL's/NL's own schedules above).
+            totals.pension = getPensionBank(byType, false);
             return totals;
           }
 
@@ -677,7 +695,7 @@ export default function ReconciliationPage() {
             basic_salary: netSalary,
             furnmart: get('furnmart'), afritec: get('afritec'), topline: get('topline'),
             cbstores: get('cbstores'), bodulo: get('bodulo'),
-            pension: getPensionBank(byType),
+            pension: getPensionBank(byType, true),
           };
         }
 
@@ -691,7 +709,7 @@ export default function ReconciliationPage() {
       }
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, year, month, hotels]);
+  }, [tab, year, month, hotels, cfeEmployees]);
 
   async function saveConsolidationEntry(
     hotelCode: ConsolidationHotel,
