@@ -204,7 +204,11 @@ export default function ReconciliationPage() {
   // at all (by design), so it isn't part of this comparison; it keeps its own separate
   // Deductions Check cross-reference below.
   type PayrollReconHotel = 'CSL' | 'NL';
-  const PAYROLL_RECON_HOTELS: PayrollReconHotel[] = ['CSL', 'NL'];
+  // NL's Increase List reconciliation was completed in August 2026 and is no longer
+  // an ongoing requirement — narrowed to CSL only per explicit instruction. NL keeps
+  // its own reconciliation_periods/recon_uploads history untouched (nothing deleted),
+  // it's simply no longer loaded/rebuilt/shown on the Employees tab going forward.
+  const PAYROLL_RECON_HOTELS: PayrollReconHotel[] = ['CSL'];
 
   // Current + previous period's payroll lines per hotel — the sole basis for the
   // Employees tab's three sections. Never compared against the DB employee list.
@@ -434,11 +438,12 @@ export default function ReconciliationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, year, month, hotels]);
 
-  // Increase List upload — one workbook covers both CSL and NL sheets, so this isn't
-  // scoped to whichever hotel pill happens to be selected; each sheet is split out and
+  // Increase List upload — the workbook still carries both CSL and NL sheets, but only
+  // the CSL sheet is saved (PAYROLL_RECON_HOTELS is CSL-only — NL's reconciliation was
+  // completed in August 2026). Not scoped to whichever hotel pill happens to be selected;
   // saved against that hotel's own reconciliation_periods row (created if it doesn't
   // exist yet — unlike ensurePeriod() below, this can't rely on the single `period`
-  // component state, since it may need to create/find TWO hotels' period rows in one go).
+  // component state).
   async function ensurePeriodForHotel(hid: string): Promise<string> {
     const { data: existing } = await supabase
       .from('reconciliation_periods')
@@ -1600,7 +1605,7 @@ export default function ReconciliationPage() {
   const pensionScheduleTotal = (pensionStmt?.total ?? 0) + embeddedScheduleLines.reduce((s, l) => s + l.amount, 0);
 
   // ── Employees tab: Increase List cross-referenced against this period's Payroll
-  // Spreadsheet upload (CSL/NL only) ──────────────────────────────────────────────
+  // Spreadsheet upload (CSL only — NL's reconciliation was completed in August 2026) ──
   // Replaces the earlier month-to-month payroll comparison (Basic Salary Mismatch /
   // New Appointments / Terminations) entirely — per explicit instruction, this is now
   // the one table for the Employees tab: Name, Increase File - Current Salary, Payroll
@@ -1672,10 +1677,10 @@ export default function ReconciliationPage() {
     PAYROLL_RECON_HOTELS.map(h => [h, buildMergedIncreaseTable(increaseListByHotel[h], termPayrollByHotel[h].current)])
   ) as Record<PayrollReconHotel, MergedIncreaseRow[]>;
 
-  // The Employees tab always reflects whichever hotel is currently selected via the
-  // header pill (CSL or NL) — no separate internal sub-tab, so what you see always
-  // matches the pill you're on.
-  const employeesActiveHotel: PayrollReconHotel = hotel?.short_code === 'NL' ? 'NL' : 'CSL';
+  // The Employees tab is CSL-only now (see PAYROLL_RECON_HOTELS above), so this always
+  // resolves to CSL — kept as a variable rather than a literal since the surrounding
+  // code (table lookups, approval keys) still reads through it.
+  const employeesActiveHotel: PayrollReconHotel = 'CSL';
   const activeMergedIncreaseTable = mergedIncreaseTableByHotel[employeesActiveHotel];
 
   const employeesTabBadgeCount = activeMergedIncreaseTable.length;
@@ -2050,8 +2055,9 @@ export default function ReconciliationPage() {
                 {t === 'deductions' ? 'Deductions Check' : 'Upload'}
               </button>
             ))}
-            {/* Employees only applies to CSL/NL — CFE has no payroll upload to compare month-to-month */}
-            {(hotel?.short_code === 'CSL' || hotel?.short_code === 'NL') && (
+            {/* Employees only applies to CSL — NL's Increase List reconciliation was completed
+                in August 2026, CFE has no payroll upload to compare month-to-month */}
+            {hotel?.short_code === 'CSL' && (
               <button
                 onClick={() => setTab('crossref')}
                 className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
@@ -2827,7 +2833,8 @@ export default function ReconciliationPage() {
                 Increase List — Payroll Reconciliation ({activeMergedIncreaseTable.length})
               </h2>
               <p className="text-xs text-muted-foreground mb-2">
-                One workbook covers both CSL and NL sheets — uploading it updates both hotels at once.
+                Only the CSL sheet of the uploaded workbook is used — NL&apos;s Increase List reconciliation
+                was completed in August 2026 and is no longer tracked here.
                 Flag Differences: <strong>Applied</strong> — payroll&apos;s new Basic already matches the Increase
                 File&apos;s New Gross Salary; <strong>Pending</strong> — payroll still shows the old Current Salary;
                 <strong> Mismatch</strong> (amber) — payroll&apos;s Basic matches neither figure; greyed rows have no
