@@ -1055,10 +1055,27 @@ export default function ReconciliationPage() {
     pension_stmt: number | null;  pension_pay: number | null;
   }
 
-  function buildEmpMap<T extends ReconLine>(lines?: T[]): Map<string, T> {
+  // Two different people can coincidentally share the same empCode on the SAME
+  // statement — not a duplicate row for one employee, a genuine collision (confirmed
+  // live: CSL's own Sept 2026 Pension Schedule lists both "Calvin Makwati" (CFE
+  // Management, R1,312.50) and "Mary Makina" (a real CSL employee, R179) under the
+  // identical auto-generated code MAK001). A plain Map can only hold one line per
+  // code, so the loser is silently invisible from every per-employee table below
+  // while still counted in the statement's own declared `total` — producing exactly
+  // a "Summary total is higher than any employee row explains" gap with no way to
+  // spot which employee it belongs to. `collisions` carries the line(s) that lost
+  // the last-write-wins race (same code, different name) so callers can route them
+  // through the same name-based second-pass matching every other unmatched line
+  // already goes through, instead of letting them vanish.
+  function buildEmpMap<T extends ReconLine>(lines?: T[]): { map: Map<string, T>; collisions: T[] } {
     const m = new Map<string, T>();
-    lines?.forEach(l => m.set(l.empCode, l));
-    return m;
+    const collisions: T[] = [];
+    lines?.forEach(l => {
+      const existing = m.get(l.empCode);
+      if (existing && nameKey(existing.name) !== nameKey(l.name)) collisions.push(existing);
+      m.set(l.empCode, l);
+    });
+    return { map: m, collisions };
   }
 
   // Build payMap from permanent payroll, then add any FTC employees not already present
@@ -1075,14 +1092,14 @@ export default function ReconciliationPage() {
   // a fallback below once a vendor map has resolved a real name for an unmatched code.
   const ftcByName = new Map((ftcPayroll?.lines ?? []).map(l => [l.empCode, l]));
 
-  const furnMap    = buildEmpMap(furnmartStmt?.lines);
-  const afritecMap = buildEmpMap(afritecStmt?.lines);
+  const { map: furnMap,    collisions: furnmartCollisions } = buildEmpMap(furnmartStmt?.lines);
+  const { map: afritecMap, collisions: afritecCollisions }  = buildEmpMap(afritecStmt?.lines);
   // CB Stores / Topline may use matchByName — their empCode is a nameKey, not a hotel code.
   // Build the same way; lookups switch from payroll empCode to nameKey(payroll name).
-  const toplineMap = buildEmpMap(toplineStmt?.lines);
-  const cbMap      = buildEmpMap(cbStmt?.lines);
-  const boduloMap  = buildEmpMap(boduloStmt?.lines);
-  const pensionMap = buildEmpMap(pensionStmt?.lines);
+  const { map: toplineMap, collisions: toplineCollisions } = buildEmpMap(toplineStmt?.lines);
+  const { map: cbMap,      collisions: cbCollisions }      = buildEmpMap(cbStmt?.lines);
+  const { map: boduloMap,  collisions: boduloCollisions }  = buildEmpMap(boduloStmt?.lines);
+  const { map: pensionMap, collisions: pensionCollisions } = buildEmpMap(pensionStmt?.lines);
 
   // Code-based allCodes excludes name-matched statements (their keys aren't hotel emp codes)
   const allCodes = new Set<string>([
@@ -1287,17 +1304,27 @@ export default function ReconciliationPage() {
     }
   }
 
-  if (furnmartStmt) tryResolveByName(furnmartStmt.unmatchedLines, resolvedFurnmart,
+  // Each vendor's list also includes that statement's own same-code collisions (see the
+  // buildEmpMap comment above) — the losing line of a coincidental code collision goes
+  // through the identical name-based resolution as any other unmatched entry.
+  const furnmartUnresolved = [...(furnmartStmt?.unmatchedLines ?? []), ...furnmartCollisions];
+  const afritecUnresolved  = [...(afritecStmt?.unmatchedLines  ?? []), ...afritecCollisions];
+  const cbUnresolved       = [...(cbStmt?.unmatchedLines       ?? []), ...cbCollisions];
+  const toplineUnresolved  = [...(toplineStmt?.unmatchedLines  ?? []), ...toplineCollisions];
+  const boduloUnresolved   = [...(boduloStmt?.unmatchedLines   ?? []), ...boduloCollisions];
+  const pensionUnresolved  = [...(pensionStmt?.unmatchedLines  ?? []), ...pensionCollisions];
+
+  if (furnmartStmt) tryResolveByName(furnmartUnresolved, resolvedFurnmart,
     (r, l) => { if (r.furnmart_stmt == null) r.furnmart_stmt = l.amount; });
-  if (afritecStmt) tryResolveByName(afritecStmt.unmatchedLines, resolvedAfritec,
+  if (afritecStmt) tryResolveByName(afritecUnresolved, resolvedAfritec,
     (r, l) => { if (r.afritec_stmt == null) r.afritec_stmt = l.amount; });
-  if (cbStmt) tryResolveByName(cbStmt.unmatchedLines, resolvedCb,
+  if (cbStmt) tryResolveByName(cbUnresolved, resolvedCb,
     (r, l) => { if (r.cb_stmt == null) { r.cb_stmt = l.amount; if (!r.section) r.section = l.section; } });
-  if (toplineStmt) tryResolveByName(toplineStmt.unmatchedLines, resolvedTopline,
+  if (toplineStmt) tryResolveByName(toplineUnresolved, resolvedTopline,
     (r, l) => { if (r.topline_stmt == null) { r.topline_stmt = l.amount; if (!r.section) r.section = l.section; } });
-  if (boduloStmt) tryResolveByName(boduloStmt.unmatchedLines, resolvedBodulo,
+  if (boduloStmt) tryResolveByName(boduloUnresolved, resolvedBodulo,
     (r, l) => { if (r.bodulo_stmt == null) r.bodulo_stmt = l.amount; });
-  if (pensionStmt) tryResolveByName(pensionStmt.unmatchedLines, resolvedPension,
+  if (pensionStmt) tryResolveByName(pensionUnresolved, resolvedPension,
     (r, l) => { if (r.pension_stmt == null) r.pension_stmt = l.amount; });
 
   // Add entries that are truly absent from payroll (no match by code or name).
@@ -1317,12 +1344,12 @@ export default function ReconciliationPage() {
     }
   }
 
-  addNoPayrollRow(furnmartStmt?.unmatchedLines ?? [], resolvedFurnmart, l => ({ furnmart_stmt: l.amount }));
-  addNoPayrollRow(afritecStmt?.unmatchedLines ?? [], resolvedAfritec, l => ({ afritec_stmt: l.amount }));
-  addNoPayrollRow(cbStmt?.unmatchedLines ?? [], resolvedCb, l => ({ cb_stmt: l.amount }));
-  addNoPayrollRow(toplineStmt?.unmatchedLines ?? [], resolvedTopline, l => ({ topline_stmt: l.amount }));
-  addNoPayrollRow(boduloStmt?.unmatchedLines ?? [], resolvedBodulo, l => ({ bodulo_stmt: l.amount }));
-  addNoPayrollRow(pensionStmt?.unmatchedLines ?? [], resolvedPension, l => ({ pension_stmt: l.amount }));
+  addNoPayrollRow(furnmartUnresolved, resolvedFurnmart, l => ({ furnmart_stmt: l.amount }));
+  addNoPayrollRow(afritecUnresolved, resolvedAfritec, l => ({ afritec_stmt: l.amount }));
+  addNoPayrollRow(cbUnresolved, resolvedCb, l => ({ cb_stmt: l.amount }));
+  addNoPayrollRow(toplineUnresolved, resolvedTopline, l => ({ topline_stmt: l.amount }));
+  addNoPayrollRow(boduloUnresolved, resolvedBodulo, l => ({ bodulo_stmt: l.amount }));
+  addNoPayrollRow(pensionUnresolved, resolvedPension, l => ({ pension_stmt: l.amount }));
 
   // Separate management employees (from MGMT sections) into their own bucket.
   // `.section` only exists on CB Stores/Topline lines (parseCbToplineFormat splits the file
