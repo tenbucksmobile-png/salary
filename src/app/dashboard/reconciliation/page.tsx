@@ -1767,7 +1767,7 @@ export default function ReconciliationPage() {
   // `balances` is true only when both sides exist and agree within 0.5 — everything
   // else (new / missing / a genuine amount change) is a Mismatch, per instruction.
   interface NlEmployeeRow {
-    name: string; displayName: string; empCode: string;
+    name: string; surname: string; firstName: string; empCode: string;
     prevBasic: number | null; currBasic: number | null;
     category: ReconApprovalCategory;
     balances: boolean;
@@ -1790,8 +1790,12 @@ export default function ReconciliationPage() {
       else if (!curr) { category = 'termination'; reason = 'missing'; balances = false; }
       else if (Math.abs(curr.basic - prev.basic) > 0.5) { category = 'basic_mismatch'; reason = 'amount_changed'; balances = false; }
       else { category = 'basic_mismatch'; reason = null; balances = true; }
+      // splitNameForNewEmployee() strips any salutation (Mr/Mrs/…) and splits the
+      // payroll file's one combined name field into { surname, firstName } — same
+      // convention used for the new-appointment confirmation popup.
+      const { surname, firstName } = splitNameForNewEmployee(base.name);
       rows.push({
-        name: base.name, displayName: surnameFirst(base.name), empCode: base.empCode,
+        name: base.name, surname, firstName, empCode: base.empCode,
         prevBasic: prev?.basic ?? null, currBasic: curr?.basic ?? null,
         category, balances, reason,
       });
@@ -3086,10 +3090,12 @@ export default function ReconciliationPage() {
                     {activeNlEmployeesTable.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No employees found on either period&apos;s payroll.</p>
                     ) : (
-                      <table className="text-sm border rounded w-full max-w-3xl">
+                      <table className="text-sm border rounded w-full max-w-4xl">
                         <thead>
                           <tr className="bg-muted/40">
                             <th className="px-3 py-2 text-center">Approve</th>
+                            <th className="px-3 py-2 text-left">Code</th>
+                            <th className="px-3 py-2 text-left">Surname</th>
                             <th className="px-3 py-2 text-left">Name</th>
                             <th className="px-3 py-2 text-right">Current Basic Salary (Prior Month)</th>
                             <th className="px-3 py-2 text-right">New Payroll Upload — Basic Salary</th>
@@ -3108,8 +3114,10 @@ export default function ReconciliationPage() {
                                     onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
                                   />
                                 </td>
+                                <td className="px-3 py-1.5">{r.empCode || '—'}</td>
+                                <td className="px-3 py-1.5">{r.surname}</td>
                                 <td className="px-3 py-1.5">
-                                  {r.displayName}
+                                  {r.firstName}
                                   {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
                                     <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
                                   )}
@@ -3135,7 +3143,7 @@ export default function ReconciliationPage() {
                         </tbody>
                         <tfoot>
                           <tr className="border-t bg-muted/40 font-semibold">
-                            <td className="px-3 py-1.5" colSpan={2}>Total</td>
+                            <td className="px-3 py-1.5" colSpan={3}>Total</td>
                             <td className="px-3 py-1.5 text-right tabular-nums">
                               {fmt(activeNlEmployeesTable.reduce((s, r) => s + (r.prevBasic ?? 0), 0), country)}
                             </td>
