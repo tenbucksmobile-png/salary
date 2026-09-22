@@ -1739,9 +1739,6 @@ export default function ReconciliationPage() {
   // period's payroll upload against the PREVIOUS period's payroll upload only — never
   // against the employees table, which stays static regardless of how many payroll-only
   // months are uploaded and would just re-flag the same people every month.
-  interface BasicMismatchRow { name: string; empCode: string; prevBasic: number; currBasic: number; diff: number }
-  interface RosterChangeRow { name: string; empCode: string; basic: number }
-
   // These payroll files give one combined name field ("Mr XXX Surname") — the last
   // whitespace-separated word is taken as the surname for alphabetical sorting, since
   // there's no separate surname column to sort on directly.
@@ -1762,34 +1759,49 @@ export default function ReconciliationPage() {
     return `${surname}, ${words.join(' ')}`;
   }
 
-  function buildEmployeesComparison(state: TermPayrollState) {
+  // One row per employee — the union of last period's and this period's payroll
+  // (like CSL's merged Increase List table, but comparing prior-month payroll against
+  // this month's uploaded payroll schedule instead of an Increase List). `prevBasic`
+  // is null for a brand-new appointment (no prior-period line); `currBasic` is null
+  // for someone missing this period (a termination or an omission to chase up).
+  // `balances` is true only when both sides exist and agree within 0.5 — everything
+  // else (new / missing / a genuine amount change) is a Mismatch, per instruction.
+  interface NlEmployeeRow {
+    name: string; displayName: string; empCode: string;
+    prevBasic: number | null; currBasic: number | null;
+    category: ReconApprovalCategory;
+    balances: boolean;
+    reason: 'new' | 'missing' | 'amount_changed' | null;
+  }
+  function buildNlEmployeesTable(state: TermPayrollState): NlEmployeeRow[] {
     const prevByKey = new Map(state.previous.map(l => [nameKey(l.name), l]));
     const currByKey = new Map(state.current.map(l => [nameKey(l.name), l]));
+    const allKeys = new Set([...prevByKey.keys(), ...currByKey.keys()]);
 
-    const basicMismatches: BasicMismatchRow[] = [];
-    const newAppointments: RosterChangeRow[] = [];
-    for (const l of state.current) {
-      const prev = prevByKey.get(nameKey(l.name));
-      if (!prev) {
-        newAppointments.push({ name: l.name, empCode: l.empCode, basic: l.basic });
-      } else if (Math.abs(l.basic - prev.basic) > 0.5) {
-        basicMismatches.push({ name: l.name, empCode: l.empCode, prevBasic: prev.basic, currBasic: l.basic, diff: l.basic - prev.basic });
-      }
-    }
-    const terminations: RosterChangeRow[] = state.previous
-      .filter(l => !currByKey.has(nameKey(l.name)))
-      .map(l => ({ name: l.name, empCode: l.empCode, basic: l.basic }));
-
-    return {
-      basicMismatches: bySurname(basicMismatches),
-      newAppointments: bySurname(newAppointments),
-      terminations: bySurname(terminations),
-    };
+    const rows: NlEmployeeRow[] = [];
+    allKeys.forEach(k => {
+      const prev = prevByKey.get(k);
+      const curr = currByKey.get(k);
+      const base = curr ?? prev!;
+      let category: ReconApprovalCategory;
+      let reason: NlEmployeeRow['reason'];
+      let balances: boolean;
+      if (!prev) { category = 'new_appointment'; reason = 'new'; balances = false; }
+      else if (!curr) { category = 'termination'; reason = 'missing'; balances = false; }
+      else if (Math.abs(curr.basic - prev.basic) > 0.5) { category = 'basic_mismatch'; reason = 'amount_changed'; balances = false; }
+      else { category = 'basic_mismatch'; reason = null; balances = true; }
+      rows.push({
+        name: base.name, displayName: surnameFirst(base.name), empCode: base.empCode,
+        prevBasic: prev?.basic ?? null, currBasic: curr?.basic ?? null,
+        category, balances, reason,
+      });
+    });
+    return bySurname(rows);
   }
 
-  const employeesComparisonByHotel = Object.fromEntries(
-    PAYROLL_RECON_HOTELS.map(h => [h, buildEmployeesComparison(termPayrollByHotel[h])])
-  ) as Record<PayrollReconHotel, ReturnType<typeof buildEmployeesComparison>>;
+  const nlEmployeesTableByHotel = Object.fromEntries(
+    PAYROLL_RECON_HOTELS.map(h => [h, buildNlEmployeesTable(termPayrollByHotel[h])])
+  ) as Record<PayrollReconHotel, NlEmployeeRow[]>;
 
   // Employees tab tracks whichever of CSL/NL is the currently-selected hotel pill.
   // Falls back to CSL if some other hotel is selected (the tab button itself is only
@@ -1799,19 +1811,15 @@ export default function ReconciliationPage() {
     hotel?.short_code === 'NL' ? 'NL' : 'CSL';
   const isNlEmployeesView = employeesActiveHotel === 'NL';
   const activeMergedIncreaseTable = mergedIncreaseTableByHotel[employeesActiveHotel] ?? [];
-  const activeEmployeesComparison = employeesComparisonByHotel[employeesActiveHotel];
+  const activeNlEmployeesTable = nlEmployeesTableByHotel[employeesActiveHotel];
   const activeTermPayrollForEmployees = termPayrollByHotel[employeesActiveHotel];
 
   const employeesTabBadgeCount = isNlEmployeesView
-    ? activeEmployeesComparison.basicMismatches.length + activeEmployeesComparison.newAppointments.length + activeEmployeesComparison.terminations.length
+    ? activeNlEmployeesTable.length
     : activeMergedIncreaseTable.length;
 
   const visibleApprovalKeys = isNlEmployeesView
-    ? [
-        ...activeEmployeesComparison.basicMismatches.map(r => approvalKey('basic_mismatch', r.name)),
-        ...activeEmployeesComparison.newAppointments.map(r => approvalKey('new_appointment', r.name)),
-        ...activeEmployeesComparison.terminations.map(r => approvalKey('termination', r.name)),
-      ]
+    ? activeNlEmployeesTable.map(r => approvalKey(r.category, r.name))
     : activeMergedIncreaseTable.map(r => approvalKey('basic_mismatch', r.name));
   const tickedApprovalCount = visibleApprovalKeys.filter(k => approvalTicks[k]).length;
 
@@ -1833,24 +1841,20 @@ export default function ReconciliationPage() {
     if (!hotelId) return;
     setSubmittingApprovals(true);
     try {
-      // NL's detail always carries `listNew` too (equal to the new/current basic to
-      // write) even though it isn't sourced from an Increase List — commitEmployeeApprovals'
-      // basic_mismatch branch reads that one field regardless of which hotel/view produced it.
+      // NL's basic_mismatch detail always carries `listNew` too (equal to the new/current
+      // basic to write) even though it isn't sourced from an Increase List —
+      // commitEmployeeApprovals' basic_mismatch branch reads that one field regardless
+      // of which hotel/view produced it. A `balances` row still commits its own
+      // (unchanged) basic_salary — harmless, since it's writing the same figure back.
       const rows = isNlEmployeesView
-        ? [
-            ...activeEmployeesComparison.basicMismatches.map(r => ({
-              category: 'basic_mismatch' as ReconApprovalCategory, name: r.name, code: r.empCode,
-              detail: { prevBasic: r.prevBasic, currBasic: r.currBasic, diff: r.diff, listNew: r.currBasic },
-            })),
-            ...activeEmployeesComparison.newAppointments.map(r => ({
-              category: 'new_appointment' as ReconApprovalCategory, name: r.name, code: r.empCode,
-              detail: { basic: r.basic },
-            })),
-            ...activeEmployeesComparison.terminations.map(r => ({
-              category: 'termination' as ReconApprovalCategory, name: r.name, code: r.empCode,
-              detail: { basic: r.basic },
-            })),
-          ]
+        ? activeNlEmployeesTable.map(r => ({
+            category: r.category, name: r.name, code: r.empCode,
+            detail: r.category === 'new_appointment'
+              ? { basic: r.currBasic ?? 0 }
+              : r.category === 'termination'
+              ? { basic: r.prevBasic ?? 0 }
+              : { prevBasic: r.prevBasic ?? 0, currBasic: r.currBasic ?? 0, diff: (r.currBasic ?? 0) - (r.prevBasic ?? 0), listNew: r.currBasic ?? 0 },
+          }))
         : activeMergedIncreaseTable.map(r => ({
             category: 'basic_mismatch' as ReconApprovalCategory, name: r.name, code: r.empCode,
             detail: { listCurrent: r.listCurrent, payrollNewBasic: r.payrollNewBasic, listNew: r.listNew, flag: r.flag },
@@ -3061,11 +3065,11 @@ export default function ReconciliationPage() {
             {isNlEmployeesView && (
               <>
                 <p className="text-sm text-muted-foreground max-w-3xl">
-                  Compares this period&apos;s uploaded Payroll Spreadsheet against the <strong>previous period&apos;s</strong> upload
-                  — never against the HR List (employees table). Matched names with a different Basic Salary show as
-                  Basic Salary Mismatch; names new this period show as New Appointments; names in last period&apos;s payroll
-                  but missing this period show as Terminations. Approve + Submit stages a row; the admin-only Commit
-                  button (top of page) writes it to the employees table.
+                  Lists every NL employee on either this period&apos;s uploaded Payroll Spreadsheet or the <strong>previous
+                  period&apos;s</strong> — never against the HR List (employees table). A tick means Current and New Basic
+                  Salary agree; <strong>Mismatch</strong> covers a genuine amount change, a new appointment (no prior-period
+                  line), or someone missing this period (a termination). Approve + Submit stages a row; the admin-only
+                  Commit button (top of page) writes it to the employees table.
                 </p>
 
                 {!activeTermPayrollForEmployees.loaded ? (
@@ -3075,161 +3079,75 @@ export default function ReconciliationPage() {
                     No payroll uploaded for NL&apos;s previous period — nothing to compare against yet.
                   </p>
                 ) : (
-                  <>
-                    {/* Basic Salary Mismatch */}
-                    <div>
-                      <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                        Basic Salary Mismatch ({activeEmployeesComparison.basicMismatches.length})
-                      </h2>
-                      {activeEmployeesComparison.basicMismatches.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">No basic salary changes from prior month.</p>
-                      ) : (
-                        <table className="text-sm border rounded w-full max-w-2xl">
-                          <thead>
-                            <tr className="bg-muted/40">
-                              <th className="px-3 py-2 text-center">Approve</th>
-                              <th className="px-3 py-2 text-left">Name</th>
-                              <th className="px-3 py-2 text-right">Prior Basic</th>
-                              <th className="px-3 py-2 text-right">Current Basic</th>
-                              <th className="px-3 py-2 text-right">Change</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {activeEmployeesComparison.basicMismatches.map((r, i) => {
-                              const key = approvalKey('basic_mismatch', r.name);
-                              return (
-                                <tr key={i} className="border-t">
-                                  <td className="px-3 py-1.5 text-center">
-                                    <input
-                                      type="checkbox"
-                                      checked={!!approvalTicks[key]}
-                                      onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
-                                    />
-                                  </td>
-                                  <td className="px-3 py-1.5">
-                                    {surnameFirst(r.name)}
-                                    {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
-                                      <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
-                                    )}
-                                  </td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.prevBasic, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.currBasic, country)}</td>
-                                  <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${r.diff > 0 ? 'text-green-700' : 'text-red-600'}`}>
-                                    {r.diff > 0 ? '+' : ''}{fmt(r.diff, country)}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                          <tfoot>
-                            <tr className="border-t bg-muted/40 font-semibold">
-                              <td className="px-3 py-1.5" colSpan={2}>Total</td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">
-                                {fmt(activeEmployeesComparison.basicMismatches.reduce((s, r) => s + r.prevBasic, 0), country)}
-                              </td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">
-                                {fmt(activeEmployeesComparison.basicMismatches.reduce((s, r) => s + r.currBasic, 0), country)}
-                              </td>
-                              {(() => {
-                                const totalDiff = activeEmployeesComparison.basicMismatches.reduce((s, r) => s + r.diff, 0);
-                                return (
-                                  <td className={`px-3 py-1.5 text-right tabular-nums ${totalDiff > 0 ? 'text-green-700' : totalDiff < 0 ? 'text-red-600' : ''}`}>
-                                    {totalDiff > 0 ? '+' : ''}{fmt(totalDiff, country)}
-                                  </td>
-                                );
-                              })()}
-                            </tr>
-                          </tfoot>
-                        </table>
-                      )}
-                    </div>
-
-                    {/* New Appointments */}
-                    <div>
-                      <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                        New Appointments ({activeEmployeesComparison.newAppointments.length})
-                      </h2>
-                      {activeEmployeesComparison.newAppointments.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">None — headcount unchanged.</p>
-                      ) : (
-                        <table className="text-sm border rounded w-full max-w-xl">
-                          <thead>
-                            <tr className="bg-muted/40">
-                              <th className="px-3 py-2 text-center">Approve</th>
-                              <th className="px-3 py-2 text-left">Name</th>
-                              <th className="px-3 py-2 text-right">Basic</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {activeEmployeesComparison.newAppointments.map((r, i) => {
-                              const key = approvalKey('new_appointment', r.name);
-                              return (
-                                <tr key={i} className="border-t">
-                                  <td className="px-3 py-1.5 text-center">
-                                    <input
-                                      type="checkbox"
-                                      checked={!!approvalTicks[key]}
-                                      onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
-                                    />
-                                  </td>
-                                  <td className="px-3 py-1.5">
-                                    {surnameFirst(r.name)}
-                                    {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
-                                      <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
-                                    )}
-                                  </td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-
-                    {/* Terminations */}
-                    <div>
-                      <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                        Terminations ({activeEmployeesComparison.terminations.length})
-                      </h2>
-                      {activeEmployeesComparison.terminations.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">None — no departures.</p>
-                      ) : (
-                        <table className="text-sm border rounded w-full max-w-xl">
-                          <thead>
-                            <tr className="bg-muted/40">
-                              <th className="px-3 py-2 text-center">Approve</th>
-                              <th className="px-3 py-2 text-left">Name</th>
-                              <th className="px-3 py-2 text-right">Prior Basic</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {activeEmployeesComparison.terminations.map((r, i) => {
-                              const key = approvalKey('termination', r.name);
-                              return (
-                                <tr key={i} className="border-t">
-                                  <td className="px-3 py-1.5 text-center">
-                                    <input
-                                      type="checkbox"
-                                      checked={!!approvalTicks[key]}
-                                      onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
-                                    />
-                                  </td>
-                                  <td className="px-3 py-1.5">
-                                    {surnameFirst(r.name)}
-                                    {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
-                                      <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
-                                    )}
-                                  </td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.basic, country)}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  </>
+                  <div>
+                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                      Employees — Prior Month vs Payroll Upload ({activeNlEmployeesTable.length})
+                    </h2>
+                    {activeNlEmployeesTable.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No employees found on either period&apos;s payroll.</p>
+                    ) : (
+                      <table className="text-sm border rounded w-full max-w-3xl">
+                        <thead>
+                          <tr className="bg-muted/40">
+                            <th className="px-3 py-2 text-center">Approve</th>
+                            <th className="px-3 py-2 text-left">Name</th>
+                            <th className="px-3 py-2 text-right">Current Basic Salary (Prior Month)</th>
+                            <th className="px-3 py-2 text-right">New Payroll Upload — Basic Salary</th>
+                            <th className="px-3 py-2 text-left">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeNlEmployeesTable.map((r, i) => {
+                            const key = approvalKey(r.category, r.name);
+                            return (
+                              <tr key={i} className={`border-t ${!r.balances ? 'bg-amber-50' : ''}`}>
+                                <td className="px-3 py-1.5 text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!approvalTicks[key]}
+                                    onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
+                                  />
+                                </td>
+                                <td className="px-3 py-1.5">
+                                  {r.displayName}
+                                  {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
+                                    <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-1.5 text-right tabular-nums">{r.prevBasic == null ? '—' : fmt(r.prevBasic, country)}</td>
+                                <td className="px-3 py-1.5 text-right tabular-nums">{r.currBasic == null ? '—' : fmt(r.currBasic, country)}</td>
+                                <td className="px-3 py-1.5 text-xs">
+                                  {r.balances ? (
+                                    <span className="text-green-700">✓ Balances</span>
+                                  ) : (
+                                    <span className="text-amber-700" title={
+                                      r.reason === 'new' ? 'New appointment — no prior-period line' :
+                                      r.reason === 'missing' ? 'Missing this period — possible termination' :
+                                      'Basic Salary changed from prior month'
+                                    }>
+                                      Mismatch ⚠ {r.reason === 'new' ? '(New)' : r.reason === 'missing' ? '(Missing)' : '(Amount changed)'}
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t bg-muted/40 font-semibold">
+                            <td className="px-3 py-1.5" colSpan={2}>Total</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {fmt(activeNlEmployeesTable.reduce((s, r) => s + (r.prevBasic ?? 0), 0), country)}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums">
+                              {fmt(activeNlEmployeesTable.reduce((s, r) => s + (r.currBasic ?? 0), 0), country)}
+                            </td>
+                            <td className="px-3 py-1.5" />
+                          </tr>
+                        </tfoot>
+                      </table>
+                    )}
+                  </div>
                 )}
               </>
             )}
