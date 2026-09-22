@@ -3143,7 +3143,7 @@ export default function ReconciliationPage() {
                         </tbody>
                         <tfoot>
                           <tr className="border-t bg-muted/40 font-semibold">
-                            <td className="px-3 py-1.5" colSpan={3}>Total</td>
+                            <td className="px-3 py-1.5" colSpan={4}>Total</td>
                             <td className="px-3 py-1.5 text-right tabular-nums">
                               {fmt(activeNlEmployeesTable.reduce((s, r) => s + (r.prevBasic ?? 0), 0), country)}
                             </td>
