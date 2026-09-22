@@ -1474,6 +1474,15 @@ export async function parseIncreaseList(buf: ArrayBuffer): Promise<{ CSL: Increa
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '' });
     result[code] = parseIncreaseSheet(rows);
   });
+  // Fallback: a single-sheet workbook with no sheet literally named "CSL"/"NL" (e.g. a
+  // plain "Sheet1") — confirmed live on a real Sept 2026 CSL Increase List export that
+  // otherwise silently parsed zero rows for both hotels. Since CSL is the only hotel
+  // this feature still tracks (NL's reconciliation was completed in August 2026 — see
+  // reconciliation/page.tsx), an unlabelled single sheet is treated as CSL's data.
+  if (result.CSL.length === 0 && result.NL.length === 0 && wb.SheetNames.length === 1) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+    result.CSL = parseIncreaseSheet(rows);
+  }
   return result;
 }
 
