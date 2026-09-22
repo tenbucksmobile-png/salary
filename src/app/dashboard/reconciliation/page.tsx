@@ -208,7 +208,7 @@ export default function ReconciliationPage() {
   // an ongoing requirement — narrowed to CSL only per explicit instruction. NL keeps
   // its own reconciliation_periods/recon_uploads history untouched (nothing deleted),
   // it's simply no longer loaded/rebuilt/shown on the Employees tab going forward.
-  const PAYROLL_RECON_HOTELS: PayrollReconHotel[] = ['CSL'];
+  const PAYROLL_RECON_HOTELS: PayrollReconHotel[] = ['CSL', 'NL'];
 
   // Current + previous period's payroll lines per hotel — the sole basis for the
   // Employees tab's three sections. Never compared against the DB employee list.
@@ -438,9 +438,10 @@ export default function ReconciliationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, year, month, hotels]);
 
-  // Increase List upload — the workbook still carries both CSL and NL sheets, but only
-  // the CSL sheet is saved (PAYROLL_RECON_HOTELS is CSL-only — NL's reconciliation was
-  // completed in August 2026). Not scoped to whichever hotel pill happens to be selected;
+  // Increase List upload — the workbook carries both CSL and NL sheets, and both are
+  // saved (PAYROLL_RECON_HOTELS covers both — re-widened 2026-09-22 for ongoing
+  // month-to-month payroll-vs-HR-List reconciliation on both hotels). Not scoped to
+  // whichever hotel pill happens to be selected;
   // saved against that hotel's own reconciliation_periods row (created if it doesn't
   // exist yet — unlike ensurePeriod() below, this can't rely on the single `period`
   // component state).
@@ -1704,10 +1705,12 @@ export default function ReconciliationPage() {
     PAYROLL_RECON_HOTELS.map(h => [h, buildMergedIncreaseTable(increaseListByHotel[h], termPayrollByHotel[h].current)])
   ) as Record<PayrollReconHotel, MergedIncreaseRow[]>;
 
-  // The Employees tab is CSL-only now (see PAYROLL_RECON_HOTELS above), so this always
-  // resolves to CSL — kept as a variable rather than a literal since the surrounding
-  // code (table lookups, approval keys) still reads through it.
-  const employeesActiveHotel: PayrollReconHotel = 'CSL';
+  // Employees tab tracks whichever of CSL/NL is the currently-selected hotel pill
+  // (re-widened 2026-09-22 — PAYROLL_RECON_HOTELS covers both again). Falls back to
+  // CSL if some other hotel is selected (the tab button itself is only shown for
+  // CSL/NL, so this only matters transiently).
+  const employeesActiveHotel: PayrollReconHotel =
+    hotel?.short_code === 'NL' ? 'NL' : 'CSL';
   const activeMergedIncreaseTable = mergedIncreaseTableByHotel[employeesActiveHotel];
 
   const employeesTabBadgeCount = activeMergedIncreaseTable.length;
@@ -2082,9 +2085,9 @@ export default function ReconciliationPage() {
                 {t === 'deductions' ? 'Deductions Check' : 'Upload'}
               </button>
             ))}
-            {/* Employees only applies to CSL — NL's Increase List reconciliation was completed
-                in August 2026, CFE has no payroll upload to compare month-to-month */}
-            {hotel?.short_code === 'CSL' && (
+            {/* Employees applies to CSL and NL — CFE has no payroll upload to compare
+                month-to-month, so it's excluded */}
+            {(hotel?.short_code === 'CSL' || hotel?.short_code === 'NL') && (
               <button
                 onClick={() => setTab('crossref')}
                 className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
