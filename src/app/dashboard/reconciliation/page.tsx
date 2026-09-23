@@ -30,7 +30,7 @@ import {
 import type { ParsedStatement, ParsedPayroll, ReconLine, ParsedCfemDeductions } from '@/lib/recon-parsers';
 import { exportReport, type ReportSheet } from '@/lib/reports-export';
 
-// â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Config ────────────────────────────────────────────────────────────────────
 
 interface UploadConfig {
   type: ReconUploadType;
@@ -80,12 +80,12 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
   },
   {
     type: 'pension', label: 'Pension Schedule', required: false,
-    accept: '.xls,.xlsx', desc: 'Monthly pension/provident fund contribution schedule from the fund administrator â€” uploaded per hotel, including CFEM',
+    accept: '.xls,.xlsx', desc: 'Monthly pension/provident fund contribution schedule from the fund administrator — uploaded per hotel, including CFEM',
     payrollKey: 'pensionEe',
   },
   {
     type: 'pension_deductions', label: 'Pension Deductions (Payroll)', required: false,
-    accept: '.csv,.txt', desc: 'CFEM only â€” CFEM\'s own payroll system\'s pension deductions report ("LIST OF: Pension Fund"), checked against the Pension Schedule above',
+    accept: '.csv,.txt', desc: 'CFEM only — CFEM\'s own payroll system\'s pension deductions report ("LIST OF: Pension Fund"), checked against the Pension Schedule above',
     payrollKey: null,
   },
   {
@@ -95,13 +95,13 @@ const UPLOAD_CONFIGS: UploadConfig[] = [
   },
 ];
 
-// CFEM has its own confidential payroll and never uploads any salary data here â€”
+// CFEM has its own confidential payroll and never uploads any salary data here —
 // its combined deductions report and the two pension documents below are the only
 // upload slots shown ("12 Months Payroll Report" is also a salary document, so it's
 // excluded too, not just Payroll Spreadsheet). Pension is the one line item CFEM gets
 // TWO slots for: unlike the other 5 vendors (which arrive mixed into CSL's/NL's shared
 // statements for CFE), pension is administered directly per hotel, so there's no
-// CSL/NL side to check it against â€” instead, CFEM's own Pension Schedule (from the
+// CSL/NL side to check it against — instead, CFEM's own Pension Schedule (from the
 // fund administrator) is checked against CFEM's own payroll pension deductions report,
 // two genuinely separate documents that used to share one upload slot and clobber
 // each other.
@@ -111,7 +111,7 @@ const NON_CFEM_UPLOAD_TYPES: ReconUploadType[] = UPLOAD_CONFIGS
   .filter(t => t !== 'cfem_deductions' && t !== 'pension_deductions');
 
 // Maps a CFEM Deductions Summary section's vendor label to the existing vendor upload_type
-// keys the Deductions Check tab already knows how to render â€” "Afri Insurance" is CFEM's
+// keys the Deductions Check tab already knows how to render — "Afri Insurance" is CFEM's
 // name for the same kind of deduction CSL/NL call "Bodulo Funeral Scheme"; "Taku" has no
 // current equivalent (zero entries so far) and is intentionally left unmapped/unused.
 const CFEM_VENDOR_TO_TYPE: Record<string, 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo'> = {
@@ -121,7 +121,7 @@ const CFEM_VENDOR_TO_TYPE: Record<string, 'furnmart' | 'afritec' | 'topline' | '
   'CB Stores': 'cbstores',
   'Afri Insurance': 'bodulo',
 };
-// Case-insensitive index of the map above â€” CFEM's export casing for a "LIST OF: <Vendor>"
+// Case-insensitive index of the map above — CFEM's export casing for a "LIST OF: <Vendor>"
 // label isn't guaranteed to match these labels exactly (e.g. "FURNMART" vs "Furnmart"), and
 // an exact-key miss here silently drops that vendor's section rather than erroring.
 const CFEM_VENDOR_TO_TYPE_UPPER: Record<string, 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo'> =
@@ -131,7 +131,7 @@ function lookupCfemVendorType(vendor: string) {
 }
 
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 const STATUS_LABELS: Record<string, string> = {
   open: 'Open',
@@ -146,7 +146,7 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 function fmt(n: number | null | undefined, country: string) {
-  if (n == null || n === 0) return 'â€”';
+  if (n == null || n === 0) return '—';
   return fmtCurrency(n, country);
 }
 
@@ -156,30 +156,30 @@ function diffClass(diff: number) {
 }
 
 function fmtDiff(diff: number, country: string) {
-  if (Math.abs(diff) < 0.01) return 'âœ“';
+  if (Math.abs(diff) < 0.01) return '✓';
   const sign = diff > 0 ? '+' : '';
   return sign + fmtCurrency(diff, country);
 }
 
-// Cents-aware variants of fmt()/fmtDiff() â€” Consolidation only. fmtCurrency() rounds
+// Cents-aware variants of fmt()/fmtDiff() — Consolidation only. fmtCurrency() rounds
 // to whole units everywhere else in the app by design, but Consolidation is a bank
 // reconciliation where a genuine few-cent gap is exactly what it needs to surface, not
 // round away.
 const _zarCentsFmt = new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const _numCentsFmt = new Intl.NumberFormat('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function fmtCents(n: number | null | undefined, country: string) {
-  if (n == null || n === 0) return 'â€”';
+  if (n == null || n === 0) return '—';
   const bw = country.toLowerCase().includes('botswana');
   return bw ? `P ${_numCentsFmt.format(n)}` : _zarCentsFmt.format(n);
 }
 
 function fmtDiffCents(diff: number, country: string) {
-  if (Math.abs(diff) < 0.005) return 'âœ“';
+  if (Math.abs(diff) < 0.005) return '✓';
   const sign = diff > 0 ? '+' : '';
   return sign + fmtCents(diff, country);
 }
 
-// â”€â”€ Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ReconciliationPage() {
   const supabase = createClient();
@@ -200,41 +200,41 @@ export default function ReconciliationPage() {
   const [cfeEmployees, setCfeEmployees] = useState<Employee[]>([]);
 
   // The Employees tab now does month-to-month payroll comparison (Basic Salary Mismatch /
-  // New Appointments / Terminations) for CSL and NL only â€” CFE has no payroll uploaded here
+  // New Appointments / Terminations) for CSL and NL only — CFE has no payroll uploaded here
   // at all (by design), so it isn't part of this comparison; it keeps its own separate
   // Deductions Check cross-reference below.
   type PayrollReconHotel = 'CSL' | 'NL';
   const PAYROLL_RECON_HOTELS: PayrollReconHotel[] = ['CSL', 'NL'];
-  // NL's Increase List reconciliation was completed in August 2026 â€” the increase is
+  // NL's Increase List reconciliation was completed in August 2026 — the increase is
   // already keyed into payroll, so NL no longer needs the Increase List upload/table at
   // all (re-confirmed 2026-09-22, after briefly narrowing the whole Employees tab to
   // CSL-only and reverting that). Only CSL still uses the Increase List cross-reference;
   // NL's Employees tab instead shows the older month-to-month payroll comparison (Basic
   // Salary Mismatch / New Appointments / Terminations, current period's payroll upload
-  // vs the previous period's â€” see buildEmployeesComparison below). NL keeps its own
+  // vs the previous period's — see buildEmployeesComparison below). NL keeps its own
   // increase_list recon_uploads history untouched (nothing deleted), it's simply no
   // longer loaded/rebuilt/shown.
   const INCREASE_LIST_HOTELS: PayrollReconHotel[] = ['CSL'];
 
-  // Current + previous period's payroll lines per hotel â€” the sole basis for the
+  // Current + previous period's payroll lines per hotel — the sole basis for the
   // Employees tab's three sections. Never compared against the DB employee list.
   type TermPayrollState = { current: PayrollLine[]; previous: PayrollLine[]; loaded: boolean };
   const emptyTermPayroll: TermPayrollState = { current: [], previous: [], loaded: false };
   const [termPayrollByHotel, setTermPayrollByHotel] = useState<Record<PayrollReconHotel, TermPayrollState>>({ CSL: emptyTermPayroll, NL: emptyTermPayroll });
 
-  // Increase List cross-reference (Employees tab, CSL/NL only) â€” a salary-review workbook
+  // Increase List cross-reference (Employees tab, CSL/NL only) — a salary-review workbook
   // with one sheet per hotel (Surname/First Name/Current Gross/New Gross/remarks),
   // imported once and split into each hotel's own recon_uploads row (upload_type
   // 'increase_list'), then diffed against that hotel's CURRENT period payroll upload
-  // (not the prior period â€” the increase list is scoped to the period it takes effect in).
+  // (not the prior period — the increase list is scoped to the period it takes effect in).
   const [increaseListByHotel, setIncreaseListByHotel] = useState<Record<PayrollReconHotel, IncreaseRow[]>>({ CSL: [], NL: [] });
   const [increaseListUploading, setIncreaseListUploading] = useState(false);
   const increaseListFileRef = useRef<HTMLInputElement | null>(null);
 
-  // Employees tab approvals â€” per-record tickbox state, persisted so it survives navigation.
+  // Employees tab approvals — per-record tickbox state, persisted so it survives navigation.
   // Loaded from DB on tab open; ticking a checkbox only updates local state (approvalTicks);
   // clicking Submit is what writes the current tick state to recon_employee_approvals.
-  // Purely a staging record for now â€” nothing here writes to the employees table yet.
+  // Purely a staging record for now — nothing here writes to the employees table yet.
   const [employeeApprovals, setEmployeeApprovals] = useState<ReconEmployeeApproval[]>([]);
   const [approvalTicks, setApprovalTicks] = useState<Record<string, boolean>>({});
   const [submittingApprovals, setSubmittingApprovals] = useState(false);
@@ -242,7 +242,7 @@ export default function ReconciliationPage() {
     return `${category}|${name}`;
   }
 
-  // Commit â€” admin-only, writes approved (submitted + ticked) rows into employees/
+  // Commit — admin-only, writes approved (submitted + ticked) rows into employees/
   // salary_records for CSL/NL. Gated behind a confirm popup showing exactly what will be
   // written (including how each new-appointment name gets split into surname/first name,
   // since that's inherently ambiguous from a payroll file's single name column).
@@ -252,11 +252,11 @@ export default function ReconciliationPage() {
   // CFE cross-reference (Deductions Check, CFEM only): CSL's and NL's own vendor
   // statement uploads for the same period, so CFEM's report can be diffed against
   // whatever CFE-employee lines are mixed into the shared third-party statements.
-  // 'pension' is included here too â€” unlike the other 5 vendors, pension is normally
+  // 'pension' is included here too — unlike the other 5 vendors, pension is normally
   // administered directly per hotel, but some CFE Management employees (confirmed:
   // MOJ001/PHO001/TSH001/TSH002) are actually on NL's OWN pension schedule instead of
   // CFEM's, so the same embedded-in-a-shared-file pattern applies to a subset of pension
-  // lines too â€” see pensionCrossCheck below, which merges these in.
+  // lines too — see pensionCrossCheck below, which merges these in.
   type CfeVendorType = 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo';
   type OtherHotelStmts = Partial<Record<CfeVendorType | 'pension', ParsedStatement>>;
   const emptyOtherHotelStmts: { CSL: OtherHotelStmts; NL: OtherHotelStmts; loaded: boolean } = { CSL: {}, NL: {}, loaded: false };
@@ -266,7 +266,7 @@ export default function ReconciliationPage() {
   // load CFEM's own report (cfem_deductions + its separate pension upload) for the SAME
   // period, so the Management (CFE) section below can show a live CFEM Report figure and
   // discrepancy next to each extracted statement line, instead of the previous permanent
-  // "â€”" Payroll placeholder (CFEM payroll is never uploaded here, so there was never
+  // "—" Payroll placeholder (CFEM payroll is never uploaded here, so there was never
   // anything to reconcile against until this).
   type MgtCfeVendorType = CfeVendorType | 'pension';
   const emptyCfemForMgt: { statements: Partial<Record<MgtCfeVendorType, ParsedStatement>>; loaded: boolean } = { statements: {}, loaded: false };
@@ -277,7 +277,7 @@ export default function ReconciliationPage() {
   type ConsolidationHotel = 'CSL' | 'NL' | 'CFEM';
   // CFEM's deductions (pension included) are already inside CSL's/NL's shared vendor
   // statements, and CSL's figures are the one bank upload carrying CFEM's. So CFEM's row
-  // is shown for reference only â€” System totals, no Bank Upload / Balance Differential â€”
+  // is shown for reference only — System totals, no Bank Upload / Balance Differential —
   // and only CONSOLIDATION_BANK_HOTELS are summed into the Total (summing CFEM as well
   // double-counted it against the bank).
   const CONSOLIDATION_HOTELS: ConsolidationHotel[] = ['CSL', 'CFEM', 'NL'];
@@ -285,7 +285,7 @@ export default function ReconciliationPage() {
   type LineItem = 'basic_salary' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo' | 'pension';
   const LINE_ITEMS: LineItem[] = ['basic_salary', 'furnmart', 'afritec', 'topline', 'cbstores', 'bodulo', 'pension'];
   // Internal key stays "basic_salary" (matches the recon_consolidation DB rows already
-  // saved under it â€” see migration 021) even though it now represents Net Salary; this is
+  // saved under it — see migration 021) even though it now represents Net Salary; this is
   // a display/computation change only, not a data migration.
   const LINE_ITEM_LABELS: Record<LineItem, string> = {
     basic_salary: 'Net Salary', furnmart: 'Furnmart', afritec: 'Afritec',
@@ -293,7 +293,7 @@ export default function ReconciliationPage() {
   };
   // null = no automatic source in this app for that line item. CFEM's Net Salary is
   // deliberately netted out entirely rather than falling back to a manual entry like every
-  // other "no source" cell does elsewhere â€” CFEM runs its own confidential payroll that must
+  // other "no source" cell does elsewhere — CFEM runs its own confidential payroll that must
   // never be visible in this shared CSL/NL/CFEM reconciliation view, so unlike Furnmart/
   // Afritec/etc (where CFEM's own deductions report supplies a real figure), there's no
   // CFEM salary figure that should ever appear here, manually entered or otherwise.
@@ -306,7 +306,7 @@ export default function ReconciliationPage() {
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // â”€â”€ Load â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Load ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     fetch('/api/auth/me')
@@ -350,7 +350,7 @@ export default function ReconciliationPage() {
     loadPeriod();
   }, [hotelId, year, month]);
 
-  // The Employees tab only applies to CSL/NL â€” if the hotel pill switches to CFEM
+  // The Employees tab only applies to CSL/NL — if the hotel pill switches to CFEM
   // while it's open, drop back to Upload rather than showing a stale/mislabeled view.
   useEffect(() => {
     if (tab !== 'crossref') return;
@@ -379,7 +379,7 @@ export default function ReconciliationPage() {
       ...((payUp?.parsed_data as any)?.lines ?? []),
       ...((ftcUp?.parsed_data as any)?.lines ?? []),
     ];
-    // Deduplicate by nameKey â€” employee may appear in both permanent and FTC uploads
+    // Deduplicate by nameKey — employee may appear in both permanent and FTC uploads
     const seen = new Set<string>();
     return merged.filter(l => {
       const k = nameKey(l.name);
@@ -390,7 +390,7 @@ export default function ReconciliationPage() {
   }
 
   // Employees tab: compare the current period's payroll upload against the PREVIOUS
-  // period's payroll upload only, for CSL and NL â€” never against the DB employee list,
+  // period's payroll upload only, for CSL and NL — never against the DB employee list,
   // which stays static regardless of how many payroll-only months are uploaded and would
   // just re-flag the same people every month. Triggered when the Employees tab opens or
   // year/month/hotels changes.
@@ -415,7 +415,7 @@ export default function ReconciliationPage() {
     });
   }, [tab, year, month, hotels]);
 
-  // Increase List cross-reference â€” loaded for the CURRENT period (the period the
+  // Increase List cross-reference — loaded for the CURRENT period (the period the
   // increase takes effect in), not the prior one. Also re-run after a fresh upload.
   async function loadIncreaseLists() {
     async function loadFor(shortCode: PayrollReconHotel): Promise<IncreaseRow[]> {
@@ -438,7 +438,7 @@ export default function ReconciliationPage() {
       return ((up?.parsed_data as any)?.rows ?? []) as IncreaseRow[];
     }
     const results = await Promise.all(INCREASE_LIST_HOTELS.map(loadFor));
-    // Merge rather than replace â€” increaseListByHotel's state type covers both CSL/NL
+    // Merge rather than replace — increaseListByHotel's state type covers both CSL/NL
     // keys even though only CSL is ever loaded now, so NL's initial empty array stays
     // in place rather than being dropped from the object.
     setIncreaseListByHotel(prev => ({ ...prev, ...Object.fromEntries(INCREASE_LIST_HOTELS.map((h, i) => [h, results[i]])) }));
@@ -450,11 +450,11 @@ export default function ReconciliationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, year, month, hotels]);
 
-  // Increase List upload â€” the workbook carries both CSL and NL sheets, but only the
-  // CSL sheet is saved (INCREASE_LIST_HOTELS is CSL-only â€” NL's Increase List
+  // Increase List upload — the workbook carries both CSL and NL sheets, but only the
+  // CSL sheet is saved (INCREASE_LIST_HOTELS is CSL-only — NL's Increase List
   // reconciliation is complete, see the note above). Not scoped to whichever hotel
   // pill happens to be selected; saved against that hotel's own reconciliation_periods
-  // row (created if it doesn't exist yet â€” unlike ensurePeriod() below, this can't rely
+  // row (created if it doesn't exist yet — unlike ensurePeriod() below, this can't rely
   // on the single `period` component state).
   async function ensurePeriodForHotel(hid: string): Promise<string> {
     const { data: existing } = await supabase
@@ -483,7 +483,7 @@ export default function ReconciliationPage() {
         parsedByHotel = await parseIncreaseList(buf);
       } catch (e: any) {
         if (/password/i.test(e?.message ?? '')) {
-          throw new Error('this workbook is password-protected. Remove the password in Excel (File â†’ Info â†’ Protect Workbook â†’ Encrypt with Password â†’ clear it), save, and upload again.');
+          throw new Error('this workbook is password-protected. Remove the password in Excel (File → Info → Protect Workbook → Encrypt with Password → clear it), save, and upload again.');
         }
         throw e;
       }
@@ -525,7 +525,7 @@ export default function ReconciliationPage() {
   }
 
   // Load any previously-submitted approvals for the currently selected hotel/period, so
-  // ticks survive navigating away and back. Not gated to the Employees tab â€” the Commit
+  // ticks survive navigating away and back. Not gated to the Employees tab — the Commit
   // button lives in the header and needs an accurate pending count regardless of which
   // sub-tab is open.
   useEffect(() => {
@@ -609,7 +609,7 @@ export default function ReconciliationPage() {
       if (parsed) {
         for (const section of parsed.sections) {
           const vendorType = lookupCfemVendorType(section.vendor);
-          if (!vendorType) continue; // e.g. "Taku" â€” no equivalent slot yet
+          if (!vendorType) continue; // e.g. "Taku" — no equivalent slot yet
           statements[vendorType] = {
             uploadType: vendorType,
             lines: section.lines.map(l => ({ empCode: l.empCode, name: l.name, amount: l.empAmount })),
@@ -628,15 +628,15 @@ export default function ReconciliationPage() {
   }, [tab, hotelId, year, month, hotels]);
 
   // Consolidation tab: load each hotel's "system" totals (auto from whatever's already
-  // parsed â€” payroll spreadsheets for CSL/NL, the CFEM Deductions Summary for CFEM) plus
+  // parsed — payroll spreadsheets for CSL/NL, the CFEM Deductions Summary for CFEM) plus
   // any manual bank/system figures already saved for this period, for all 3 hotels at once.
   //
   // Pension is intentionally NOT adjusted for CFE Management employees embedded in NL's
   // own schedule (MOJ001/PHO001/TSH001/TSH002), even though the Deductions Check tab's
   // CFE Cross-Reference correctly pulls those same lines in for a per-employee visibility
-  // check â€” the two features answer different questions. This tab tracks actual BANK
+  // check — the two features answer different questions. This tab tracks actual BANK
   // ACCOUNTS, and CSL+CFEM share one bank account while NL is a separate one (per explicit
-  // confirmation) â€” so whichever hotel's own file a pension line physically sits on is
+  // confirmation) — so whichever hotel's own file a pension line physically sits on is
   // exactly which bank account pays it, regardless of which hotel's payroll the employee
   // administratively belongs to. Moving those 4 employees' pension into CFEM's figure (an
   // earlier version of this effect did exactly that) was wrong: it inflated CFEM's bank
@@ -675,14 +675,14 @@ export default function ReconciliationPage() {
     setConsolidationSystem(s => ({ ...s, loaded: false }));
     Promise.all([loadUploadsByType('CSL'), loadUploadsByType('NL'), loadUploadsByType('CFEM'), loadEntries()]).then(
       ([cslByType, nlByType, cfemByType, entries]) => {
-        // Pension's Consolidation figure is the combined EE+ER contribution â€” what
-        // actually gets paid to the fund administrator â€” not the EE-only `total` used
+        // Pension's Consolidation figure is the combined EE+ER contribution — what
+        // actually gets paid to the fund administrator — not the EE-only `total` used
         // everywhere else (Deductions Check compares EE-only against payroll's own
         // EE-only pensionEe column). Falls back to `total` for a statement with no
         // EE/ER split at all.
         //
         // CSL's and NL's own schedules are taken in full, CFE Management employees
-        // included â€” CSL's figures already carry CFEM's, and are the bank upload.
+        // included — CSL's figures already carry CFEM's, and are the bank upload.
         // CFEM's own row is reference-only and never summed (see
         // CONSOLIDATION_BANK_HOTELS), so nothing is double-counted.
         const getPensionBank = (byType: Map<string, any>) => {
@@ -696,14 +696,14 @@ export default function ReconciliationPage() {
 
           if (shortCode === 'CFEM') {
             const cfem = byType.get('cfem_deductions') as ParsedCfemDeductions | undefined;
-            // Net Salary stays 0 for CFEM â€” netted out entirely, never a manual entry
+            // Net Salary stays 0 for CFEM — netted out entirely, never a manual entry
             // either (see consolidationIsManualSystem/consolidationSystemValue below).
             const totals: SystemTotals = { ...emptySystemTotals };
             cfem?.sections.forEach(sec => {
               const t = lookupCfemVendorType(sec.vendor);
               if (t) totals[t] = sec.total;
             });
-            // Pension isn't part of the combined CFEM Deductions Summary â€” it's its own
+            // Pension isn't part of the combined CFEM Deductions Summary — it's its own
             // upload. Shown for reference only, like the rest of CFEM's row.
             totals.pension = getPensionBank(byType);
             return totals;
@@ -786,7 +786,7 @@ export default function ReconciliationPage() {
     }
   }
 
-  // â”€â”€ Period management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Period management ─────────────────────────────────────────────────────
 
   async function ensurePeriod(): Promise<string> {
     if (period) return period.id;
@@ -800,14 +800,14 @@ export default function ReconciliationPage() {
     return data.id;
   }
 
-  // â”€â”€ File upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── File upload ───────────────────────────────────────────────────────────
 
   async function handleUpload(type: ReconUploadType, file: File) {
     setUploading(type);
     try {
       const buf = await file.arrayBuffer();
 
-      // CFEM Deductions Summary â€” plain text/CSV, multi-vendor sections, own shape
+      // CFEM Deductions Summary — plain text/CSV, multi-vendor sections, own shape
       if (type === 'cfem_deductions') {
         const text = new TextDecoder().decode(buf);
         const parsedCfem = parseCfemDeductions(text, file.name);
@@ -833,11 +833,11 @@ export default function ReconciliationPage() {
       else if (type === 'furnmart') parsed = await parseFurnmart(buf, file.name);
       else if (type === 'bodulo')   parsed = await parseBodulo(buf, file.name);
       else if (type === 'pension') parsed = await parsePensionSchedule(buf, file.name, month, year);
-      // CFEM only â€” its own payroll system's pension deductions report, the exact same
+      // CFEM only — its own payroll system's pension deductions report, the exact same
       // "LIST OF: Pension Fund METHOD NO: ALL" sectioned plain-text/CSV shape as the
       // combined CFEM Deductions Summary (parseCfemDeductions), just for one vendor.
       // Genuinely separate from the Pension Schedule above (a different document from a
-      // different source, the fund administrator) â€” the two used to share the "pension"
+      // different source, the fund administrator) — the two used to share the "pension"
       // upload slot with CSV-vs-xlsx routing, silently clobbering each other.
       else if (type === 'pension_deductions') parsed = parseCfemPensionCsv(new TextDecoder().decode(buf), file.name);
       else                          parsed = await parseAfritecXls(buf, file.name, type, hotelCode);
@@ -883,7 +883,7 @@ export default function ReconciliationPage() {
     setUploads(u => u.filter(x => x.id !== id));
   }
 
-  // â”€â”€ Status actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Status actions ────────────────────────────────────────────────────────
 
   async function updateStatus(status: string) {
     if (!period) return;
@@ -906,13 +906,13 @@ export default function ReconciliationPage() {
     await supabase.from('reconciliation_periods').update({ notes }).eq('id', period.id);
   }
 
-  // â”€â”€ Cross-check computation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Cross-check computation ───────────────────────────────────────────────
 
   const hotel = hotels.find(h => h.id === hotelId);
   const country = hotel?.country ?? '';
   const isCfem = hotel?.short_code === 'CFEM';
 
-  // CFEM never uploads salaries â€” its one combined deductions file replaces the
+  // CFEM never uploads salaries — its one combined deductions file replaces the
   // 5 individual vendor slots (and the Payroll Spreadsheet, which doesn't apply here).
   const visibleUploadConfigs = UPLOAD_CONFIGS.filter(c =>
     isCfem ? CFEM_UPLOAD_TYPES.includes(c.type) : NON_CFEM_UPLOAD_TYPES.includes(c.type)
@@ -951,7 +951,7 @@ export default function ReconciliationPage() {
   if (cfemParsed) {
     for (const section of cfemParsed.sections) {
       const vendorType = lookupCfemVendorType(section.vendor);
-      if (!vendorType) continue; // e.g. "Taku" â€” no equivalent slot yet
+      if (!vendorType) continue; // e.g. "Taku" — no equivalent slot yet
       cfemStatements[vendorType] = {
         uploadType: vendorType,
         lines: section.lines.map(l => ({ empCode: l.empCode, name: l.name, amount: l.empAmount })),
@@ -972,8 +972,8 @@ export default function ReconciliationPage() {
   // pensionStmt = the fund administrator's own Schedule (parsePensionSchedule / the
   // "LIST OF: Pension Fund" CSV variant, whichever CFEM uploads to the Pension slot).
   // pensionDeductionsStmt = CFEM-only: its own payroll system's pension deductions
-  // report (a second, separate upload â€” see the Pension Deductions (Payroll) config)
-  // â€” the two used to be uploaded to the SAME slot (one clobbering the other), which
+  // report (a second, separate upload — see the Pension Deductions (Payroll) config)
+  // — the two used to be uploaded to the SAME slot (one clobbering the other), which
   // is why CFEM's pension previously had no real cross-check at all.
   const pensionStmt  = getStmt('pension');
   const pensionDeductionsStmt = isCfem ? getStmt('pension_deductions') : undefined;
@@ -985,7 +985,7 @@ export default function ReconciliationPage() {
 
   // Summary rows for the deductions tab
   // pay/diff are null when payroll has no comparable column (statement shown for reference only).
-  // CFEM never has payroll data at all â€” its rows always show stmt-only (pay/diff null).
+  // CFEM never has payroll data at all — its rows always show stmt-only (pay/diff null).
   type SummaryRow = { label: string; stmt: number; pay: number | null; diff: number | null; isCombined?: boolean; isMgmt?: boolean };
   const summaryRows: SummaryRow[] = [];
   if (hasAnyPayroll || isCfem) {
@@ -1029,7 +1029,7 @@ export default function ReconciliationPage() {
       });
     }
 
-    // Combined loan reconciliation row â€” only needed when both lenders present
+    // Combined loan reconciliation row — only needed when both lenders present
     // but payroll has no separate columns (each row above shows stmt only in that case)
     if (bothLenders && !payrollHasSeparateLoanCols && !isCfem) {
       summaryRows.push({
@@ -1060,7 +1060,7 @@ export default function ReconciliationPage() {
   // above ticks against payroll) should equal the sum of its own parsed `lines` +
   // `unmatchedLines` (what the Employee Detail table below actually attributes to
   // people). Several parsers (parseFurnmart, parseBodulo, ...) prefer a totals-row read
-  // straight from the file over the sum of what they managed to parse into rows â€” if the
+  // straight from the file over the sum of what they managed to parse into rows — if the
   // file's totals row doesn't match what the parser actually captured (a mis-detected
   // column, a filtered/skipped row, a stale summary cell), the Summary tick can show
   // "equal" against payroll while the per-employee breakdown underneath silently doesn't
@@ -1097,12 +1097,12 @@ export default function ReconciliationPage() {
   }
 
   // Two different people can coincidentally share the same empCode on the SAME
-  // statement â€” not a duplicate row for one employee, a genuine collision (confirmed
+  // statement — not a duplicate row for one employee, a genuine collision (confirmed
   // live: CSL's own Sept 2026 Pension Schedule lists both "Calvin Makwati" (CFE
   // Management, R1,312.50) and "Mary Makina" (a real CSL employee, R179) under the
   // identical auto-generated code MAK001). A plain Map can only hold one line per
   // code, so the loser is silently invisible from every per-employee table below
-  // while still counted in the statement's own declared `total` â€” producing exactly
+  // while still counted in the statement's own declared `total` — producing exactly
   // a "Summary total is higher than any employee row explains" gap with no way to
   // spot which employee it belongs to. `collisions` carries the line(s) that lost
   // the last-write-wins race (same code, different name) so callers can route them
@@ -1123,11 +1123,11 @@ export default function ReconciliationPage() {
   const payMap = new Map((payroll?.lines ?? []).map(l => [l.empCode, l]));
   (ftcPayroll?.lines ?? []).forEach(l => { if (!payMap.has(l.empCode)) payMap.set(l.empCode, l); });
 
-  // FTC employees have no real employee code â€” parseFtcPayrollXls keys them by nameKey
+  // FTC employees have no real employee code — parseFtcPayrollXls keys them by nameKey
   // since none exists in the source file. But another vendor file can still assign the
   // same FTC employee a real, vendor-generated code (confirmed on a real July 2026 CSL
   // file: Joyce Rungwe, an FTC employee, keyed "RUN001" in Furnmart while her FTC/payroll
-  // record is keyed by her nameKey) â€” payMap.get(code) alone can never find her in that
+  // record is keyed by her nameKey) — payMap.get(code) alone can never find her in that
   // case, since "RUN001" and nameKey("Joyce Rungwe") are different strings. ftcByName is
   // the same map keyed the same way (ftc lines' empCode already IS their nameKey), used as
   // a fallback below once a vendor map has resolved a real name for an unmatched code.
@@ -1135,7 +1135,7 @@ export default function ReconciliationPage() {
 
   const { map: furnMap,    collisions: furnmartCollisions } = buildEmpMap(furnmartStmt?.lines);
   const { map: afritecMap, collisions: afritecCollisions }  = buildEmpMap(afritecStmt?.lines);
-  // CB Stores / Topline may use matchByName â€” their empCode is a nameKey, not a hotel code.
+  // CB Stores / Topline may use matchByName — their empCode is a nameKey, not a hotel code.
   // Build the same way; lookups switch from payroll empCode to nameKey(payroll name).
   const { map: toplineMap, collisions: toplineCollisions } = buildEmpMap(toplineStmt?.lines);
   const { map: cbMap,      collisions: cbCollisions }      = buildEmpMap(cbStmt?.lines);
@@ -1163,14 +1163,14 @@ export default function ReconciliationPage() {
     .map(code => {
       // Direct code lookup first; if that misses, try the name a vendor map already has
       // for this code against ftcByName (see the ftcByName comment above for why this is
-      // needed â€” an FTC employee's own record is nameKey-keyed, not code-keyed).
+      // needed — an FTC employee's own record is nameKey-keyed, not code-keyed).
       const statementName = furnMap.get(code)?.name ?? afritecMap.get(code)?.name
         ?? boduloMap.get(code)?.name ?? cbMap.get(code)?.name ?? toplineMap.get(code)?.name
         ?? pensionMap.get(code)?.name;
       const payFromCode = payMap.get(code);
       const pay = payFromCode ?? (statementName ? ftcByName.get(nameKey(statementName)) : undefined);
       // parseFtcPayrollXls only extracts whichever vendor-deduction columns a given FTC
-      // file actually has (varies month to month â€” some CSL FTC exports carry Furnmart/
+      // file actually has (varies month to month — some CSL FTC exports carry Furnmart/
       // Bodulo("Funeral Cover")/Afritec loan columns, others carry only Afritec, others
       // none at all); every column it didn't find is a hardcoded 0 placeholder, not real
       // data. Trusting an untracked column's 0 as a genuine payroll figure would show a
@@ -1189,7 +1189,7 @@ export default function ReconciliationPage() {
       const trustToplineLoans = !!payFromCode; // FTC parser has no Topline column detection
       // FTC's staffLoans mirrors whatever it read into afritecLoans (see parseFtcPayrollXls)
       const trustStaffLoansCombined = trustAfritecLoans;
-      // Per-employee loan payroll amounts â€” null when payroll has no separate column
+      // Per-employee loan payroll amounts — null when payroll has no separate column
       // and both lenders are present (can't split combined staffLoans per employee)
       const afritecPay = payrollHasSeparateLoanCols
         ? (trustAfritecLoans ? pay!.afritecLoans : null)
@@ -1230,14 +1230,14 @@ export default function ReconciliationPage() {
         empCode: code,
         // cbMap/toplineMap/pensionMap included so a CFE Management employee whose ONLY
         // code-based entry this month is CB Stores/Topline/Pension (e.g. no Furnmart/Bodulo
-        // line) still gets their real name instead of falling back to their raw code â€” a
+        // line) still gets their real name instead of falling back to their raw code — a
         // code like "MAS001" can never match matchCfeEmployee()'s name-token check below,
         // which silently misclassifies them as regular staff instead of Management. CB
         // Stores and Topline can appear here in EITHER shape month to month: the structural
         // multi-section "CUSTOMER NAME" format (matchByName=true, never reaches this code
-        // path â€” see the toplineStmt.matchByName branches above) or a plain code-based
+        // path — see the toplineStmt.matchByName branches above) or a plain code-based
         // export with real employee codes and no MGMT section markers at all (seen on a real
-        // July 2026 CSL CB Stores file for MAS001/Onkagetse Maseko) â€” cbMap/toplineMap are
+        // July 2026 CSL CB Stores file for MAS001/Onkagetse Maseko) — cbMap/toplineMap are
         // harmless to check unconditionally since they're keyed by nameKey (never colliding
         // with a real code) whenever the statement actually is matchByName.
         name: pay?.name
@@ -1263,15 +1263,15 @@ export default function ReconciliationPage() {
       };
     });
 
-  // Single nameâ†’row index, live-updated as rows are created below, so a person who
-  // appears across multiple vendor files â€” some matched by code, some (CB/Topline) only
-  // matchable by name â€” always resolves to ONE row instead of fragmenting into
+  // Single name→row index, live-updated as rows are created below, so a person who
+  // appears across multiple vendor files — some matched by code, some (CB/Topline) only
+  // matchable by name — always resolves to ONE row instead of fragmenting into
   // disconnected duplicates. This was the actual cause of a CFE Management employee's
   // Topline figure appearing on the CFEM Cross-Reference (which matches by name against
   // the raw statement lines directly) but not showing up against that same person's row
   // in CSL/NL's own Management (CFE) section: e.g. an employee with a Pension entry
   // (code-based, creates a row in the main allCodes pass above) and a Topline entry
-  // (name-based, no CSL/NL payroll code to key off) used to land as two separate rows â€”
+  // (name-based, no CSL/NL payroll code to key off) used to land as two separate rows —
   // the Topline amount sat on a second, disconnected, empty-code row instead of merging
   // into the row showing their Pension figure.
   const nameIndex = new Map<string, EmpRow>();
@@ -1301,7 +1301,7 @@ export default function ReconciliationPage() {
   }
 
   // Append name-matched statement entries that had no payroll counterpart
-  // (in statement but not in payroll â€” payroll side shows â€”)
+  // (in statement but not in payroll — payroll side shows —)
   if (cbStmt?.matchByName) {
     for (const [key, line] of cbMap) {
       if (!matchedCbKeys.has(key)) mergeOrCreateRow(line.name, line.section, { cb_stmt: line.amount });
@@ -1313,11 +1313,11 @@ export default function ReconciliationPage() {
     }
   }
 
-  // â”€â”€ Second-pass: name-match ALL statement unmatchedLines against payroll â”€â”€â”€â”€â”€â”€
+  // ── Second-pass: name-match ALL statement unmatchedLines against payroll ──────
   // Afritec/Furnmart put unrecognised-code entries into unmatchedLines; CB/Topline
   // (old-format uploads) also store everything in unmatchedLines. Cross-check them
   // against payroll employees by sorted-word name key before surfacing in the callout.
-  // Deliberately restricted to rows with a real employee code â€” this pass only attaches
+  // Deliberately restricted to rows with a real employee code — this pass only attaches
   // a stray unmatched-code entry to a KNOWN CSL/NL payroll employee found by name; it must
   // never silently attach staff-vendor data onto a Management row (those go through
   // addNoPayrollRow below, via the shared nameIndex, instead).
@@ -1346,7 +1346,7 @@ export default function ReconciliationPage() {
   }
 
   // Each vendor's list also includes that statement's own same-code collisions (see the
-  // buildEmpMap comment above) â€” the losing line of a coincidental code collision goes
+  // buildEmpMap comment above) — the losing line of a coincidental code collision goes
   // through the identical name-based resolution as any other unmatched entry.
   const furnmartUnresolved = [...(furnmartStmt?.unmatchedLines ?? []), ...furnmartCollisions];
   const afritecUnresolved  = [...(afritecStmt?.unmatchedLines  ?? []), ...afritecCollisions];
@@ -1394,7 +1394,7 @@ export default function ReconciliationPage() {
 
   // Separate management employees (from MGMT sections) into their own bucket.
   // `.section` only exists on CB Stores/Topline lines (parseCbToplineFormat splits the file
-  // into "TO: <label>" sections structurally) â€” Furnmart, Afritec, Bodulo, and Pension have
+  // into "TO: <label>" sections structurally) — Furnmart, Afritec, Bodulo, and Pension have
   // no such marker at all, so a CFE Management employee whose deduction is embedded in one of
   // those files (e.g. Baboloki Baakile appearing in CSL's Bodulo/Furnmart statement) was never
   // being pulled out: it stayed lumped into "staff", counted in that vendor's statement total
@@ -1402,7 +1402,7 @@ export default function ReconciliationPage() {
   // the Statement-vs-Payroll diff for that vendor without ever showing up in the Management
   // (CFE) section. Fall back to a name match against the CFE roster for rows with no
   // structural section AND no CSL/NL payroll figure at all on any vendor (a real CSL/NL staff
-  // member always has at least one payroll-side figure) â€” the payroll-figure guard keeps this
+  // member always has at least one payroll-side figure) — the payroll-figure guard keeps this
   // from ever reclassifying an actual CSL/NL employee whose name happens to collide with a CFE
   // one (see the surname+initial hardening note on matchCfeEmployee above for why that
   // collision risk is real, not hypothetical).
@@ -1413,16 +1413,16 @@ export default function ReconciliationPage() {
     if (hasAnyPayrollFigure) return false;
     if (matchCfeEmployee(r.name)) return true;
     // Name-first is authoritative (matchCfeEmployee, and resolveCfemLine's identical
-    // precedent below) â€” but different systems can disagree on someone's first name for
+    // precedent below) — but different systems can disagree on someone's first name for
     // the exact same code: confirmed on real July 2026 data, CFEM's own report calls
     // NGW001 "Ernerst Ngwananaang" while CSL's own Furnmart file calls the same code
     // "Kagiso Ngwananaang". matchCfeEmployee correctly rejects that as a surname-only
     // overlap (the same guard that rejects the unrelated Dorcus/Nkwazi false positives),
     // so it's a real miss here despite being the same person. Fall back to the row's own
-    // employee code against the CFE roster â€” only reachable once hasAnyPayrollFigure is
+    // employee code against the CFE roster — only reachable once hasAnyPayrollFigure is
     // already false, so this can never reclassify an actual CSL/NL staff member (they
     // always have a payroll figure, even where their code coincidentally collides with an
-    // unrelated CFE code â€” see the Thapelo/Sanyumba/Tshekonyane collisions noted elsewhere).
+    // unrelated CFE code — see the Thapelo/Sanyumba/Tshekonyane collisions noted elsewhere).
     return !!(r.empCode && cfeEmployees.some(e => e.employee_code?.toUpperCase() === r.empCode.toUpperCase()));
   };
 
@@ -1438,7 +1438,7 @@ export default function ReconciliationPage() {
   const staffEmpRows = empRows.filter(r => !isMgt(r) && hasAnyDeduction(r));
   const mgtEmpRows   = empRows.filter(r => isMgt(r)  && hasAnyDeduction(r));
 
-  // Per-vendor management amounts â€” used to split summary rows into Staff + Mgmt sub-rows
+  // Per-vendor management amounts — used to split summary rows into Staff + Mgmt sub-rows
   const mgtVendorTotals = {
     furnmart: mgtEmpRows.reduce((s, r) => s + (r.furnmart_stmt ?? 0), 0),
     afritec:  mgtEmpRows.reduce((s, r) => s + (r.afritec_stmt  ?? 0), 0),
@@ -1448,16 +1448,16 @@ export default function ReconciliationPage() {
     pension:  mgtEmpRows.reduce((s, r) => s + (r.pension_stmt  ?? 0), 0),
   };
 
-  // Code index for CFEM's own report lines â€” used only as a FALLBACK when name resolution
+  // Code index for CFEM's own report lines — used only as a FALLBACK when name resolution
   // fails outright, never to override a name match. CFEM's own report isn't fully self-
   // consistent: one CB Stores line lists "MRS D FRENCH" (Diane) tagged with code "FRE002",
-  // which actually belongs to James French in the DB (Diane's real code is "FRE001") â€”
+  // which actually belongs to James French in the DB (Diane's real code is "FRE001") —
   // trusting code over name here would misattribute Diane's deduction to James. Name
   // (surname + first-initial, see matchCfeEmployee below) stays authoritative.
   const cfeCodeIndex = new Map<string, Employee>();
   cfeEmployees.forEach(e => { if (e.employee_code) cfeCodeIndex.set(e.employee_code.toUpperCase(), e); });
 
-  // Requires the SURNAME to appear as a token AND the first name's initial to match â€” not
+  // Requires the SURNAME to appear as a token AND the first name's initial to match — not
   // just any single shared token. Pure "any token" matching (an earlier version) produced
   // false positives on real July data: a different CSL employee named "Dorcus" (matched CFE's
   // Dorcus Shamukuni on first name alone) and a different CSL employee surnamed "Nkwazi"
@@ -1471,12 +1471,12 @@ export default function ReconciliationPage() {
       const surnameTokens = nameTokens(e.surname);
       if (!surnameTokens.some(st => tokens.includes(st))) continue;
       const firstInitial = nameTokens(e.first_name)[0]?.[0];
-      // Excludes the matched surname token(s) from the initial check â€” otherwise a
+      // Excludes the matched surname token(s) from the initial check — otherwise a
       // surname that happens to start with the same letter as the required first
       // initial trivially "passes" on its own, with no real first-name token involved
       // at all. Confirmed live: NL's own "MODIMOOSI BAAKILE" (a real NL employee,
       // unrelated to CFEM's Baboloki Baakile) satisfied the old unguarded check purely
-      // because "BAAKILE" itself starts with "B", the same initial as "Baboloki" â€”
+      // because "BAAKILE" itself starts with "B", the same initial as "Baboloki" —
       // wrongly moving her pension contribution onto CFEM's books during the NL pension
       // cross-hotel check. Same "exclude the surname token from the initial check"
       // pattern already used by matchPayrollLineForIncrease on the Employees tab.
@@ -1488,18 +1488,18 @@ export default function ReconciliationPage() {
 
   // CSL's and NL's own pension schedules can carry a genuine CFE Management employee
   // (confirmed live on NL: MOJ001/PHO001/TSH001/TSH002), but matching those lines by
-  // employee code ALONE is unsafe here â€” unlike CFEM's own report (where code drift is
+  // employee code ALONE is unsafe here — unlike CFEM's own report (where code drift is
   // the exception matchCfeEmployee's code fallback exists for), CSL's own auto-generated
   // codes (makeSyntheticCode: surname+first-name initials) routinely COLLIDE with
   // CFEM's unrelated codes by pure coincidence. Confirmed live: CSL's own pension
   // schedule has SAN001/MAK001/THA001/BAA001 too, but they're real CSL employees
-  // (Dikeledi Sanyumba, Mary Makina, Olopeng Thapelo, Dennis Baani) â€” not CFE Management
-  // â€” so matching by code there would wrongly strip real CSL staff out of CSL's own
+  // (Dikeledi Sanyumba, Mary Makina, Olopeng Thapelo, Dennis Baani) — not CFE Management
+  // — so matching by code there would wrongly strip real CSL staff out of CSL's own
   // pension total. matchCfeEmployee's surname+initial rule already rejects all four.
   // PHO001 is the one confirmed exception the generic rule can't catch: NL's schedule
   // spells her first name as the nickname "Tiny" instead of her DB first name
   // "Boikhutso" (initial T vs B), failing the initial check even though she's genuinely
-  // CFE Management â€” a one-employee override, not a reason to loosen the generic rule.
+  // CFE Management — a one-employee override, not a reason to loosen the generic rule.
   const PENSION_NICKNAME_OVERRIDES: Record<string, string> = { 'TINY PHOFU': 'PHO001' };
   function isEmbeddedCfePensionLine(line: { empCode: string; name: string }): boolean {
     if (matchCfeEmployee(line.name)) return true;
@@ -1507,7 +1507,7 @@ export default function ReconciliationPage() {
     return PENSION_NICKNAME_OVERRIDES[normName] === line.empCode.toUpperCase();
   }
 
-  // Name first (authoritative â€” see note above), code only as a fallback if the name
+  // Name first (authoritative — see note above), code only as a fallback if the name
   // doesn't resolve to anyone at all.
   function resolveCfemLine(l: ReconLine): Employee | undefined {
     const byName = matchCfeEmployee(l.name);
@@ -1517,7 +1517,7 @@ export default function ReconciliationPage() {
 
   // Reverse lookup for the Management (CFE) section on CSL's/NL's own tab: given an
   // already-resolved CFE employee and a vendor, find their amount on CFEM's OWN report
-  // (cfemForMgt, loaded for the same period) â€” same resolveCfemLine matching, just
+  // (cfemForMgt, loaded for the same period) — same resolveCfemLine matching, just
   // searched from the employee side instead of iterating CFEM's report lines directly.
   function cfemReportAmountFor(emp: Employee | undefined, vendorType: 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo' | 'pension'): number | null {
     if (!emp) return null;
@@ -1529,7 +1529,7 @@ export default function ReconciliationPage() {
     return null;
   }
 
-  // Map vendor label â†’ management amount so we can split summary rows
+  // Map vendor label → management amount so we can split summary rows
   const VENDOR_MGT: Record<string, number> = {
     'Furnmart':       mgtVendorTotals.furnmart,
     'Afritec Loans':  mgtVendorTotals.afritec,
@@ -1541,8 +1541,8 @@ export default function ReconciliationPage() {
   };
 
   // Expand each vendor summary row: when management amounts exist, split into
-  // a staff sub-row (stmt vs payroll â†’ should reconcile) + a management sub-row
-  // (stmt only â€” CFE payroll is separate). The staff stmt already excludes mgmt.
+  // a staff sub-row (stmt vs payroll → should reconcile) + a management sub-row
+  // (stmt only — CFE payroll is separate). The staff stmt already excludes mgmt.
   const expandedSummaryRows: SummaryRow[] = [];
   for (const row of summaryRows) {
     const mgtAmt = row.isCombined ? 0 : (VENDOR_MGT[row.label] ?? 0);
@@ -1560,10 +1560,10 @@ export default function ReconciliationPage() {
     }
   }
 
-  // â”€â”€ CFE cross-reference (CFEM tab only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── CFE cross-reference (CFEM tab only) ──────────────────────────────────
   // Diffs CFEM's own combined deductions report against whatever CFE-employee
   // lines are mixed into CSL's/NL's own shared vendor statements for the same
-  // period â€” the actual "merge the cross reference" ask, not just a viewer.
+  // period — the actual "merge the cross reference" ask, not just a viewer.
   const CFEM_VENDOR_LABELS: Record<CfeVendorType, string> = {
     furnmart: 'Furnmart', afritec: 'Afritec', topline: 'Topline', cbstores: 'CB Stores', bodulo: 'Bodulo / Afri Insurance',
   };
@@ -1589,7 +1589,7 @@ export default function ReconciliationPage() {
       });
       // Resolve each line to the CFE employee it represents (via the same token-overlap
       // match), so "MR B.A. BAAKILE" (CFEM's own report, initials) and "BABOLOKI BAAKILE"
-      // (CSL's statement, full name) are recognised as the same person by identity â€”
+      // (CSL's statement, full name) are recognised as the same person by identity —
       // comparing raw name strings here would wrongly list him as unmatched on both sides.
       const cfemByEmp = new Map<string, ReconLine>();
       cfemLines.forEach(l => { const emp = resolveCfemLine(l); if (emp) cfemByEmp.set(emp.id, l); });
@@ -1617,21 +1617,21 @@ export default function ReconciliationPage() {
       };
     }) : [];
 
-  // Pension (CFEM only) â€” two genuinely separate CFEM uploads: the fund
+  // Pension (CFEM only) — two genuinely separate CFEM uploads: the fund
   // administrator's own Schedule (pensionStmt) and CFEM's own payroll pension
   // deductions report (pensionDeductionsStmt). Both use the same employee-code
-  // scheme (CFEM's own systems), so matched by code alone â€” every employee
+  // scheme (CFEM's own systems), so matched by code alone — every employee
   // appearing on either side gets a row, with a null on whichever side is missing
   // so a genuine gap is visible rather than silently dropped.
   //
   // A handful of CFE Management employees (confirmed live: MOJ001, PHO001, TSH001,
-  // TSH002) are NOT on CFEM's own Pension Schedule at all â€” they're embedded in NL's
+  // TSH002) are NOT on CFEM's own Pension Schedule at all — they're embedded in NL's
   // own pension schedule instead, the same "mixed into a shared hotel's statement"
   // pattern the other 5 vendors already have (see the CFE Cross-Reference above), just
   // for pension specifically it's CSL's/NL's own Pension Schedule upload rather than a
   // combined third-party statement. Embedded lines are pulled in here (CSL checked too,
   // for symmetry, even though only NL has been confirmed so far) and merged into the
-  // schedule side, matched via isEmbeddedCfePensionLine (name-based â€” see its comment
+  // schedule side, matched via isEmbeddedCfePensionLine (name-based — see its comment
   // above for why code-only matching is unsafe here specifically: CSL's own auto-
   // generated codes genuinely collide with unrelated CFE codes).
   interface PensionCrossCheckRow {
@@ -1672,21 +1672,21 @@ export default function ReconciliationPage() {
     })() : [];
   const pensionScheduleTotal = (pensionStmt?.total ?? 0) + embeddedScheduleLines.reduce((s, l) => s + l.amount, 0);
 
-  // â”€â”€ Employees tab: Increase List cross-referenced against this period's Payroll
-  // Spreadsheet upload (CSL only â€” NL's reconciliation was completed in August 2026) â”€â”€
+  // ── Employees tab: Increase List cross-referenced against this period's Payroll
+  // Spreadsheet upload (CSL only — NL's reconciliation was completed in August 2026) ──
   // Replaces the earlier month-to-month payroll comparison (Basic Salary Mismatch /
-  // New Appointments / Terminations) entirely â€” per explicit instruction, this is now
+  // New Appointments / Terminations) entirely — per explicit instruction, this is now
   // the one table for the Employees tab: Name, Increase File - Current Salary, Payroll
   // Upload - New Basic Salary, Increase File - New Gross Salary, Flag Differences.
-  // FTC payroll lines have no real employee code â€” parseFtcPayrollXls stores
+  // FTC payroll lines have no real employee code — parseFtcPayrollXls stores
   // nameKey(name) in empCode purely for matching. Those rows are listed in their own
-  // Fixed Term section below permanent staff, with Code shown as "â€”".
+  // Fixed Term section below permanent staff, with Code shown as "—".
   function isFtcPayrollLine(l: PayrollLine): boolean {
     return !l.empCode || l.empCode === nameKey(l.name);
   }
 
   interface MergedIncreaseRow {
-    name: string;        // "Surname FirstName" â€” identity used for approvalKey/commit matching
+    name: string;        // "Surname FirstName" — identity used for approvalKey/commit matching
     surname: string; firstName: string;
     isFtc: boolean;
     empCode: string;
@@ -1695,16 +1695,16 @@ export default function ReconciliationPage() {
     flag: 'applied' | 'pending' | 'mismatch' | 'unmatched' | 'ambiguous';
   }
   // Two-pass, same pattern as the CFE Management matchCfeEmployee() above: an exact
-  // name match (nameKey â€” full token-set equality) first, since the increase list's
+  // name match (nameKey — full token-set equality) first, since the increase list's
   // First Name field sometimes carries only a nickname/middle name rather than the
   // payroll's full given name (confirmed live: increase list "Chiziyo, Chibi" vs
-  // payroll "MRS MAVIS CHIBI CHIZIYO" â€” exact match fails on the missing "Mavis").
+  // payroll "MRS MAVIS CHIBI CHIZIYO" — exact match fails on the missing "Mavis").
   // Falls back to surname-token + first-initial matching, excluding the surname token
   // itself from the initial check (otherwise a surname that happens to start with the
-  // same letter as the target's first initial creates a false match â€” confirmed live:
+  // same letter as the target's first initial creates a false match — confirmed live:
   // "Kamwi, Kahimbi" matching "MR BOTSHELO KAMWI" purely because "KAMWI" starts with K).
   // If more than one payroll line still matches after that (two people, same surname
-  // AND same first initial â€” confirmed live for "Matengu"), the match is left ambiguous
+  // AND same first initial — confirmed live for "Matengu"), the match is left ambiguous
   // rather than guessed, so a salary is never silently attributed to the wrong person.
   function matchPayrollLineForIncrease(r: IncreaseRow, payrollLines: PayrollLine[]): { line: PayrollLine | null; ambiguous: boolean } {
     const exact = payrollLines.find(l => nameKey(l.name) === nameKey(`${r.surname} ${r.firstName}`));
@@ -1731,7 +1731,7 @@ export default function ReconciliationPage() {
     return { line: null, ambiguous: candidates.length > 1 };
   }
   // Flag Differences: payroll's Basic is checked against BOTH the list's Current and
-  // New figure â€” confirmed live that for the period being viewed, payroll's own Basic
+  // New figure — confirmed live that for the period being viewed, payroll's own Basic
   // already equals the list's New Gross for most matched employees (the increase is
   // already keyed into payroll), so "applied" is the common/expected case, not an
   // anomaly. "mismatch" is the one that needs attention: payroll's Basic matches
@@ -1763,15 +1763,15 @@ export default function ReconciliationPage() {
     INCREASE_LIST_HOTELS.map(h => [h, buildMergedIncreaseTable(increaseListByHotel[h], termPayrollByHotel[h].current)])
   ) as Record<PayrollReconHotel, MergedIncreaseRow[]>;
 
-  // â”€â”€ NL's Employees tab: month-to-month payroll comparison (restored 2026-09-22) â”€â”€
-  // Matched by name, not employee code â€” a hotel's payroll provider can change code
+  // ── NL's Employees tab: month-to-month payroll comparison (restored 2026-09-22) ──
+  // Matched by name, not employee code — a hotel's payroll provider can change code
   // formats between periods (observed for NL: "NL0020"-style in one month, "BAB001"
   // mnemonic-style the next), which would otherwise make every employee look like a
   // termination/new-appointment even though nothing actually changed. Compares this
-  // period's payroll upload against the PREVIOUS period's payroll upload only â€” never
+  // period's payroll upload against the PREVIOUS period's payroll upload only — never
   // against the employees table, which stays static regardless of how many payroll-only
   // months are uploaded and would just re-flag the same people every month.
-  // These payroll files give one combined name field ("Mr XXX Surname") â€” the last
+  // These payroll files give one combined name field ("Mr XXX Surname") — the last
   // whitespace-separated word is taken as the surname for alphabetical sorting, since
   // there's no separate surname column to sort on directly.
   function surnameKey(name: string): string {
@@ -1781,7 +1781,7 @@ export default function ReconciliationPage() {
   function bySurname<T extends { name: string }>(rows: T[]): T[] {
     return [...rows].sort((a, b) => surnameKey(a.name).localeCompare(surnameKey(b.name)));
   }
-  // Display-only reordering â€” moves the last word (surname) to the front, e.g.
+  // Display-only reordering — moves the last word (surname) to the front, e.g.
   // "MR GODFREY DIILE" -> "DIILE, MR GODFREY". Matching/sorting still use the
   // original name via nameKey()/surnameKey() above; this only affects what's shown.
   function surnameFirst(name: string): string {
@@ -1791,12 +1791,12 @@ export default function ReconciliationPage() {
     return `${surname}, ${words.join(' ')}`;
   }
 
-  // One row per employee â€” the union of last period's and this period's payroll
+  // One row per employee — the union of last period's and this period's payroll
   // (like CSL's merged Increase List table, but comparing prior-month payroll against
   // this month's uploaded payroll schedule instead of an Increase List). `prevBasic`
   // is null for a brand-new appointment (no prior-period line); `currBasic` is null
   // for someone missing this period (a termination or an omission to chase up).
-  // `balances` is true only when both sides exist and agree within 0.5 â€” everything
+  // `balances` is true only when both sides exist and agree within 0.5 — everything
   // else (new / missing / a genuine amount change) is a Mismatch, per instruction.
   interface NlEmployeeRow {
     name: string; surname: string; firstName: string; empCode: string;
@@ -1823,8 +1823,8 @@ export default function ReconciliationPage() {
       else if (!curr) { category = 'termination'; reason = 'missing'; balances = false; }
       else if (Math.abs(curr.basic - prev.basic) > 0.5) { category = 'basic_mismatch'; reason = 'amount_changed'; balances = false; }
       else { category = 'basic_mismatch'; reason = null; balances = true; }
-      // splitNameForNewEmployee() strips any salutation (Mr/Mrs/â€¦) and splits the
-      // payroll file's one combined name field into { surname, firstName } â€” same
+      // splitNameForNewEmployee() strips any salutation (Mr/Mrs/…) and splits the
+      // payroll file's one combined name field into { surname, firstName } — same
       // convention used for the new-appointment confirmation popup.
       const { surname, firstName } = splitNameForNewEmployee(base.name);
       const isFtc = isFtcPayrollLine(base);
@@ -1837,7 +1837,7 @@ export default function ReconciliationPage() {
     return permanentThenFtc(bySurname(rows));
   }
 
-  // Permanent staff (real employee code) first, Fixed Term below â€” each group keeps
+  // Permanent staff (real employee code) first, Fixed Term below — each group keeps
   // its existing surname order.
   function permanentThenFtc<T extends { isFtc: boolean }>(rows: T[]): T[] {
     return [...rows.filter(r => !r.isFtc), ...rows.filter(r => r.isFtc)];
@@ -1867,7 +1867,7 @@ export default function ReconciliationPage() {
     : activeMergedIncreaseTable.map(r => approvalKey('basic_mismatch', r.name));
   const tickedApprovalCount = visibleApprovalKeys.filter(k => approvalTicks[k]).length;
 
-  // Last-submitted state per row, keyed the same way as approvalTicks â€” drives both the
+  // Last-submitted state per row, keyed the same way as approvalTicks — drives both the
   // per-name "Confirmed" badge and whether the Submit button reads "Submitted" (in sync
   // with what's persisted) vs. "Submit (X of Y ticked)" (local ticks have diverged since
   // the last submit, e.g. a new tick or untick that hasn't been saved yet).
@@ -1878,18 +1878,18 @@ export default function ReconciliationPage() {
   });
 
   // Writes the CURRENT tick state for every row currently visible on the Employees tab to
-  // recon_employee_approvals (upsert â€” ticked rows become approved:true, unticked rows
+  // recon_employee_approvals (upsert — ticked rows become approved:true, unticked rows
   // become approved:false, so un-ticking something previously submitted also persists).
-  // Purely a staging record â€” nothing here touches the employees table.
+  // Purely a staging record — nothing here touches the employees table.
   async function submitEmployeeApprovals() {
     if (!hotelId) return;
     setSubmittingApprovals(true);
     try {
       // NL's basic_mismatch detail always carries `listNew` too (equal to the new/current
-      // basic to write) even though it isn't sourced from an Increase List â€”
+      // basic to write) even though it isn't sourced from an Increase List —
       // commitEmployeeApprovals' basic_mismatch branch reads that one field regardless
       // of which hotel/view produced it. A `balances` row still commits its own
-      // (unchanged) basic_salary â€” harmless, since it's writing the same figure back.
+      // (unchanged) basic_salary — harmless, since it's writing the same figure back.
       const rows = isNlEmployeesView
         ? activeNlEmployeesTable.map(r => ({
             category: r.category, name: r.name, code: r.empCode,
@@ -1927,7 +1927,7 @@ export default function ReconciliationPage() {
     }
   }
 
-  // Splits a raw payroll name into { surname, firstName } for a new employees row â€”
+  // Splits a raw payroll name into { surname, firstName } for a new employees row —
   // inherently a guess (payroll files store names inconsistently: "Title First Last",
   // "Last First", multiple middle names). Convention: strip any salutation, treat the
   // LAST word as surname, everything before it as first name. Shown in the commit
@@ -1943,7 +1943,7 @@ export default function ReconciliationPage() {
   const pendingCommitApprovals = employeeApprovals.filter(a => a.approved && !a.committed_at);
 
   // Admin-only. Resolves each approved row to an existing employee (code first, then name)
-  // and writes directly to employees/salary_records â€” no re-flagging, per instruction this
+  // and writes directly to employees/salary_records — no re-flagging, per instruction this
   // is a straight update/override. Only ever touches CSL/NL, matching this tab's scope.
   async function commitEmployeeApprovals() {
     if (userRole !== 'admin' || !hotelId || pendingCommitApprovals.length === 0) return;
@@ -2018,11 +2018,11 @@ export default function ReconciliationPage() {
     }
   }
 
-  // â”€â”€ Consolidation (director bank-release sign-off) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Consolidation (director bank-release sign-off) ────────────────────────
   function getConsolidationEntry(hotelCode: ConsolidationHotel, lineItem: LineItem) {
     return consolidationEntries.find(e => e.hotel_short_code === hotelCode && e.line_item === lineItem);
   }
-  // CFEM's Net Salary is netted out entirely â€” never manual, never editable, always 0 â€”
+  // CFEM's Net Salary is netted out entirely — never manual, never editable, always 0 —
   // since CFEM's payroll is confidential and must never surface in this shared view (unlike
   // Furnmart/Afritec/etc, CFEM has no deductions-report equivalent for salary that would
   // make a real figure safe to show here).
@@ -2032,14 +2032,14 @@ export default function ReconciliationPage() {
     if (isCfemNetSalary(hotelCode, lineItem)) return false;
     return consolidationSystem[hotelCode][lineItem] == null;
   }
-  // Rounded to whole CENTS (2 decimals), not whole currency units â€” this tab is a
+  // Rounded to whole CENTS (2 decimals), not whole currency units — this tab is a
   // director-facing bank reconciliation, where a real few-cent gap (e.g. from a pension
   // AVC split) is exactly the kind of thing it exists to surface, not hide. Whole-unit
   // rounding (matching fmt()/fmtCurrency() elsewhere in the app, which never shows
   // cents) was previously used here too, which could either mask a genuine sub-Rand/
-  // Pula discrepancy or manufacture a phantom Â±1 "Balance Differential" out of pure
+  // Pula discrepancy or manufacture a phantom ±1 "Balance Differential" out of pure
   // rounding noise. Diffs must be computed on these same cents-rounded values shown on
-  // screen so a Bank figure keyed in to match System exactly always reads as âœ“.
+  // screen so a Bank figure keyed in to match System exactly always reads as ✓.
   function consolidationSystemValue(hotelCode: ConsolidationHotel, lineItem: LineItem): number {
     if (isCfemNetSalary(hotelCode, lineItem)) return 0;
     const auto = consolidationSystem[hotelCode][lineItem];
@@ -2053,12 +2053,12 @@ export default function ReconciliationPage() {
 
   async function handleExportConsolidation() {
     const rows: Array<Array<string | number | null>> = [];
-    // Same order as on screen: CSL, CFEM (reference only â€” System row, not summed), NL.
+    // Same order as on screen: CSL, CFEM (reference only — System row, not summed), NL.
     for (const h of CONSOLIDATION_HOTELS) {
       const sysByLi = LINE_ITEMS.map(li => consolidationSystemValue(h, li));
       const totalSys = sysByLi.reduce((a, b) => a + b, 0);
       if (h === 'CFEM') {
-        rows.push(['CFEM (reference only â€” included in CSL/NL)', 'System', ...sysByLi, totalSys]);
+        rows.push(['CFEM (reference only — included in CSL/NL)', 'System', ...sysByLi, totalSys]);
         continue;
       }
       const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
@@ -2085,7 +2085,7 @@ export default function ReconciliationPage() {
       headers,
       rows,
       isTotalsRow: rows.map(r => r[0] === 'Total'),
-      // Cents shown, not rounded to whole units â€” see fmtCents/consolidationSystemValue
+      // Cents shown, not rounded to whole units — see fmtCents/consolidationSystemValue
       // above for why: this is a bank reconciliation, where a genuine few-cent gap is
       // exactly what it exists to surface.
       numberFormat: '#,##0.00',
@@ -2093,15 +2093,15 @@ export default function ReconciliationPage() {
     await exportReport('Consolidation', `Consolidation_${MONTH_NAMES[month - 1]}_${year}.xlsx`, [sheet]);
   }
 
-  // â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Render ────────────────────────────────────────────────────────────────
 
-  if (loading) return <div className="p-8 text-muted-foreground">Loadingâ€¦</div>;
+  if (loading) return <div className="p-8 text-muted-foreground">Loading…</div>;
 
   const years = [year - 1, year, year + 1];
 
   return (
     <div className="flex flex-col h-full">
-      {/* â”€â”€ Header â”€â”€ */}
+      {/* ── Header ── */}
       <div className="border-b bg-white px-6 py-4">
         <div className="flex flex-wrap items-center gap-4">
           <h1 className="text-lg font-semibold text-foreground">Payroll Reconciliation</h1>
@@ -2132,7 +2132,7 @@ export default function ReconciliationPage() {
             >
               Consolidation
             </button>
-            {/* Commit â€” admin-only, applies only to CSL/NL (the Employees tab's scope).
+            {/* Commit — admin-only, applies only to CSL/NL (the Employees tab's scope).
                 Lives here rather than inside the Employees tab content so it's always
                 reachable regardless of which sub-tab is open. */}
             {userRole === 'admin' && (hotel?.short_code === 'CSL' || hotel?.short_code === 'NL') && (
@@ -2146,7 +2146,7 @@ export default function ReconciliationPage() {
             )}
           </div>
 
-          {/* Status + workflow â€” right side */}
+          {/* Status + workflow — right side */}
           <div className="flex items-center gap-2 ml-auto">
             {period && (
               <span className={`px-2 py-0.5 rounded text-xs font-semibold ${STATUS_COLORS[period.status]}`}>
@@ -2182,10 +2182,10 @@ export default function ReconciliationPage() {
         </div>
       </div>
 
-      {/* Commit confirmation popup â€” lives at the top level (not nested in the Employees
+      {/* Commit confirmation popup — lives at the top level (not nested in the Employees
           tab) since the Commit button that opens it is now in the header and reachable
           from any sub-tab. Secondary confirm/cancel before anything is written, per
-          instruction â€” shows exactly what will change, including the surname/first-name
+          instruction — shows exactly what will change, including the surname/first-name
           split for new appointments (inherently a guess from a single payroll name
           column) so there's a last visual check before commit. */}
       {showCommitConfirm && (
@@ -2193,7 +2193,7 @@ export default function ReconciliationPage() {
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-auto p-6">
             <h3 className="text-base font-semibold mb-1">Commit to HR List?</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              This writes directly to the employees table for {employeesActiveHotel} â€” new appointments are
+              This writes directly to the employees table for {employeesActiveHotel} — new appointments are
               added, terminations are marked, basic salary changes are applied. This cannot be undone from here.
             </p>
             <div className="border rounded divide-y mb-4">
@@ -2201,10 +2201,10 @@ export default function ReconciliationPage() {
                 <div key={a.id} className="px-3 py-2 text-sm">
                   {a.category === 'new_appointment' && (() => {
                     const { surname, firstName } = splitNameForNewEmployee(a.employee_name);
-                    return <>Add employee: <strong>{firstName} {surname}</strong> (code {a.employee_code || 'â€”'}, basic {fmt(a.detail?.basic ?? 0, country)})</>;
+                    return <>Add employee: <strong>{firstName} {surname}</strong> (code {a.employee_code || '—'}, basic {fmt(a.detail?.basic ?? 0, country)})</>;
                   })()}
                   {a.category === 'termination' && <>Mark terminated: <strong>{a.employee_name}</strong></>}
-                  {a.category === 'basic_mismatch' && <>Update basic salary: <strong>{a.employee_name}</strong> â†’ {fmt(a.detail?.listNew ?? 0, country)}</>}
+                  {a.category === 'basic_mismatch' && <>Update basic salary: <strong>{a.employee_name}</strong> → {fmt(a.detail?.listNew ?? 0, country)}</>}
                 </div>
               ))}
             </div>
@@ -2221,14 +2221,14 @@ export default function ReconciliationPage() {
                 disabled={committingApprovals}
                 className="px-4 py-2 rounded text-sm font-medium bg-red-700 text-white hover:bg-red-800 disabled:opacity-50"
               >
-                {committingApprovals ? 'Committingâ€¦' : 'Commit'}
+                {committingApprovals ? 'Committing…' : 'Commit'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* â”€â”€ Tab nav â€” hidden while viewing Consolidation, which isn't hotel-scoped â”€â”€ */}
+      {/* ── Tab nav — hidden while viewing Consolidation, which isn't hotel-scoped ── */}
       {tab !== 'consolidation' && (
         <div className="border-b bg-white px-6">
           <div className="flex gap-1">
@@ -2243,7 +2243,7 @@ export default function ReconciliationPage() {
                 {t === 'deductions' ? 'Deductions Check' : 'Upload'}
               </button>
             ))}
-            {/* Employees applies to CSL and NL â€” CFE has no payroll upload to compare
+            {/* Employees applies to CSL and NL — CFE has no payroll upload to compare
                 month-to-month, so it's excluded */}
             {(hotel?.short_code === 'CSL' || hotel?.short_code === 'NL') && (
               <button
@@ -2264,10 +2264,10 @@ export default function ReconciliationPage() {
         </div>
       )}
 
-      {/* â”€â”€ Content â”€â”€ */}
+      {/* ── Content ── */}
       <div className="flex-1 overflow-auto p-6">
 
-        {/* â•â•â•â•â• UPLOAD TAB â•â•â•â•â• */}
+        {/* ═════ UPLOAD TAB ═════ */}
         {tab === 'upload' && (
           <div className="max-w-3xl space-y-3">
             {/* Period selector */}
@@ -2289,7 +2289,7 @@ export default function ReconciliationPage() {
               >
                 {years.map(y => <option key={y} value={y}>{y}</option>)}
               </select>
-              <span className="text-sm text-muted-foreground">â€” <strong>{hotel?.name}</strong></span>
+              <span className="text-sm text-muted-foreground">— <strong>{hotel?.name}</strong></span>
             </div>
 
             {visibleUploadConfigs.map(cfg => {
@@ -2309,7 +2309,7 @@ export default function ReconciliationPage() {
 
                   {existing ? (
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs text-green-700 font-medium">âœ“ {existing.file_name}</span>
+                      <span className="text-xs text-green-700 font-medium">✓ {existing.file_name}</span>
                       {existing.total_amount != null && (
                         <span className="text-xs text-muted-foreground">
                           {fmt(existing.total_amount, country)}
@@ -2338,7 +2338,7 @@ export default function ReconciliationPage() {
                       disabled={uploading === cfg.type}
                       className="shrink-0 px-3 py-1.5 border rounded text-sm font-medium hover:bg-muted disabled:opacity-50"
                     >
-                      {uploading === cfg.type ? 'Parsingâ€¦' : 'Upload'}
+                      {uploading === cfg.type ? 'Parsing…' : 'Upload'}
                     </button>
                   )}
 
@@ -2364,7 +2364,7 @@ export default function ReconciliationPage() {
                   defaultValue={period.notes ?? ''}
                   onBlur={e => saveNotes(e.target.value)}
                   rows={3}
-                  placeholder="Add any notes for this reconciliation periodâ€¦"
+                  placeholder="Add any notes for this reconciliation period…"
                   className="w-full border rounded px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary"
                 />
               </div>
@@ -2372,7 +2372,7 @@ export default function ReconciliationPage() {
           </div>
         )}
 
-        {/* â•â•â•â•â• DEDUCTIONS TAB â•â•â•â•â• */}
+        {/* ═════ DEDUCTIONS TAB ═════ */}
         {tab === 'deductions' && (
           <div className="space-y-6">
             {!hasAnyPayroll && !isCfem ? (
@@ -2381,8 +2381,8 @@ export default function ReconciliationPage() {
               <p className="text-muted-foreground text-sm">Upload the CFEM Deductions Summary first to enable cross-checks.</p>
             ) : (
               <>
-                {/* Unmatched entries â€” truly absent from payroll (not resolved by code or name).
-                    Only meaningful for CSL/NL, which have real payroll data to match against â€”
+                {/* Unmatched entries — truly absent from payroll (not resolved by code or name).
+                    Only meaningful for CSL/NL, which have real payroll data to match against —
                     CFEM's own report has no unmatchedLines by construction. */}
                 {!isCfem && (() => {
                   const truly = [
@@ -2405,21 +2405,21 @@ export default function ReconciliationPage() {
                       </p>
                       {truly.map(({ label, line }, i) => (
                         <div key={i} className="text-xs text-orange-700">
-                          {label}: {line.name || '(no name)'} â€” {fmt(line.amount, country)}
+                          {label}: {line.name || '(no name)'} — {fmt(line.amount, country)}
                         </div>
                       ))}
                     </div>
                   );
                 })()}
 
-                {/* Statement total vs sum-of-lines mismatch â€” a file's declared total can
+                {/* Statement total vs sum-of-lines mismatch — a file's declared total can
                     tie out to payroll (tick shown below) while its own per-employee rows
                     don't add up to that same total, meaning the Employee Detail table is
                     missing or misattributing a row somewhere in that vendor's file. */}
                 {!isCfem && totalMismatches.length > 0 && (
                   <div className="rounded border border-red-200 bg-red-50 p-4">
                     <p className="text-xs font-semibold text-red-800 mb-2">
-                      Statement total doesn't match its own employee lines â€” check this file for a missed/misparsed row
+                      Statement total doesn't match its own employee lines — check this file for a missed/misparsed row
                     </p>
                     {totalMismatches.map((m, i) => (
                       <div key={i} className="text-xs text-red-700">
@@ -2430,13 +2430,13 @@ export default function ReconciliationPage() {
                   </div>
                 )}
 
-                {/* Summary cards â€” CSL/NL only. For CFEM, "Payroll" is meaningless (CFEM never
-                    uploads salaries here) â€” its comparison lives entirely in the CFE
+                {/* Summary cards — CSL/NL only. For CFEM, "Payroll" is meaningless (CFEM never
+                    uploads salaries here) — its comparison lives entirely in the CFE
                     Cross-Reference section below, against CSL/NL's own statements. */}
                 {!isCfem && summaryRows.length > 0 && (
                   <div>
                     <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
-                      Summary â€” Statement vs Payroll
+                      Summary — Statement vs Payroll
                     </h2>
                     <table className="text-sm border rounded overflow-hidden w-full max-w-2xl">
                       <thead>
@@ -2455,17 +2455,17 @@ export default function ReconciliationPage() {
                           >
                             <td className={`px-4 py-2 font-medium ${row.isCombined ? 'pl-8 text-muted-foreground italic text-xs' : ''} ${row.isMgmt ? 'pl-8 text-teal-700 text-sm font-normal' : ''}`}>
                               {row.isCombined
-                                ? `â†³ ${row.label}`
+                                ? `↳ ${row.label}`
                                 : row.isMgmt
-                                  ? 'â†³ Mgmt (CFE)'
+                                  ? '↳ Mgmt (CFE)'
                                   : row.label}
                             </td>
                             <td className="px-4 py-2 text-right tabular-nums">{fmt(row.stmt, country)}</td>
                             <td className={`px-4 py-2 text-right tabular-nums ${row.isMgmt ? 'text-muted-foreground' : ''}`}>
-                              {row.pay != null ? fmt(row.pay, country) : 'â€”'}
+                              {row.pay != null ? fmt(row.pay, country) : '—'}
                             </td>
                             <td className={`px-4 py-2 text-right tabular-nums ${row.diff != null ? diffClass(row.diff) : 'text-muted-foreground'}`}>
-                              {row.diff != null ? fmtDiff(row.diff, country) : 'â€”'}
+                              {row.diff != null ? fmtDiff(row.diff, country) : '—'}
                             </td>
                           </tr>
                         ))}
@@ -2485,16 +2485,16 @@ export default function ReconciliationPage() {
                   </p>
                 )}
 
-                {/* CFEM's primary cross-reference â€” its own report (the payroll-equivalent
+                {/* CFEM's primary cross-reference — its own report (the payroll-equivalent
                     source of truth for CFEM) vs the CFE-employee lines embedded in CSL's/NL's
                     own shared vendor statements. This replaces the generic Summary/Employee
                     Detail tables above (hidden for CFEM) since CFEM never has real "Payroll"
-                    data in this system â€” this comparison is the real one. */}
+                    data in this system — this comparison is the real one. */}
                 {isCfem && (
                   <div className="space-y-6">
                     <div>
                       <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
-                        Summary â€” CFEM Report vs CSL/NL Statements
+                        Summary — CFEM Report vs CSL/NL Statements
                       </h2>
                       <p className="text-xs text-muted-foreground mb-3">
                         CFEM&apos;s deductions are mixed into CSL&apos;s and NL&apos;s shared vendor statements. This compares
@@ -2502,7 +2502,7 @@ export default function ReconciliationPage() {
                         {' '}{MONTH_NAMES[month - 1]} {year}.
                       </p>
                       {!csnStmtsForCfe.loaded ? (
-                        <p className="text-sm text-muted-foreground">Loadingâ€¦</p>
+                        <p className="text-sm text-muted-foreground">Loading…</p>
                       ) : !cfemParsed ? (
                         <p className="text-sm text-muted-foreground">Upload the CFEM Deductions Summary to see this comparison.</p>
                       ) : cfeCrossCheck.length === 0 ? (
@@ -2536,19 +2536,19 @@ export default function ReconciliationPage() {
                       )}
                     </div>
 
-                    {/* Pension â€” administered directly per hotel (never mixed into CSL/NL's
+                    {/* Pension — administered directly per hotel (never mixed into CSL/NL's
                         shared statements, unlike the vendors above), so it's checked against
                         CFEM's own second, separate upload instead: its payroll system's pension
                         deductions report. A handful of CFE Management employees sit on NL&apos;s
-                        (or CSL&apos;s) own Pension Schedule instead of CFEM&apos;s â€” those are pulled in
+                        (or CSL&apos;s) own Pension Schedule instead of CFEM&apos;s — those are pulled in
                         automatically and flagged with a Found In column. Both statement sides are
-                        genuine documents (not derived from confidential salary data), so â€” unlike
-                        Consolidation&apos;s Net Salary â€” a full per-employee breakdown is shown here,
+                        genuine documents (not derived from confidential salary data), so — unlike
+                        Consolidation&apos;s Net Salary — a full per-employee breakdown is shown here,
                         same as CSL/NL get for every other vendor. */}
                     {(pensionStmt || pensionDeductionsStmt || embeddedScheduleLines.length > 0) && (
                       <div>
                         <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-1">
-                          Pension â€” Schedule vs Payroll Deductions
+                          Pension — Schedule vs Payroll Deductions
                         </h2>
                         <p className="text-xs text-muted-foreground mb-3">
                           Compares the fund administrator&apos;s Pension Schedule (CFEM&apos;s own, plus any CFE Management
@@ -2587,7 +2587,7 @@ export default function ReconciliationPage() {
                               </tbody>
                             </table>
 
-                            <h3 className="text-sm font-semibold mb-2">Pension â€” Employee Detail</h3>
+                            <h3 className="text-sm font-semibold mb-2">Pension — Employee Detail</h3>
                             <table className="text-sm border rounded w-full max-w-2xl">
                               <thead>
                                 <tr className="bg-muted/40">
@@ -2603,18 +2603,18 @@ export default function ReconciliationPage() {
                                   <tr key={row.empCode + i} className="border-t">
                                     <td className="px-3 py-1.5">{row.name}</td>
                                     <td className="px-3 py-1.5 text-right tabular-nums">
-                                      {row.scheduleAmount != null ? fmt(row.scheduleAmount, country) : <span className="text-muted-foreground">â€”</span>}
+                                      {row.scheduleAmount != null ? fmt(row.scheduleAmount, country) : <span className="text-muted-foreground">—</span>}
                                     </td>
                                     <td className="px-3 py-1.5 text-muted-foreground">
                                       {row.scheduleSource === 'CSL' || row.scheduleSource === 'NL' ? (
                                         <span className="text-amber-700 font-medium">{row.scheduleSource}&apos;s schedule</span>
-                                      ) : row.scheduleSource === 'CFEM' ? 'CFEM' : 'â€”'}
+                                      ) : row.scheduleSource === 'CFEM' ? 'CFEM' : '—'}
                                     </td>
                                     <td className="px-3 py-1.5 text-right tabular-nums">
-                                      {row.payrollAmount != null ? fmt(row.payrollAmount, country) : <span className="text-muted-foreground">â€”</span>}
+                                      {row.payrollAmount != null ? fmt(row.payrollAmount, country) : <span className="text-muted-foreground">—</span>}
                                     </td>
                                     <td className={`px-3 py-1.5 text-right tabular-nums ${row.diff != null ? diffClass(row.diff) : 'text-muted-foreground'}`}>
-                                      {row.diff != null ? fmtDiff(row.diff, country) : 'â€”'}
+                                      {row.diff != null ? fmtDiff(row.diff, country) : '—'}
                                     </td>
                                   </tr>
                                 ))}
@@ -2625,11 +2625,11 @@ export default function ReconciliationPage() {
                       </div>
                     )}
 
-                    {/* Per-employee detail, one table per vendor â€” every CFE employee found on
+                    {/* Per-employee detail, one table per vendor — every CFE employee found on
                         either side, not just the mismatches called out above. */}
                     {cfeCrossCheck.filter(r => r.details.length > 0).map(row => (
                       <div key={row.type}>
-                        <h3 className="text-sm font-semibold mb-2">{row.label} â€” Employee Detail</h3>
+                        <h3 className="text-sm font-semibold mb-2">{row.label} — Employee Detail</h3>
                         <table className="text-sm border rounded w-full max-w-xl">
                           <thead>
                             <tr className="bg-muted/40">
@@ -2646,13 +2646,13 @@ export default function ReconciliationPage() {
                                 <tr key={i} className="border-t">
                                   <td className="px-3 py-1.5">{d.name}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">
-                                    {d.cfemAmount != null ? fmt(d.cfemAmount, country) : <span className="text-muted-foreground">â€”</span>}
+                                    {d.cfemAmount != null ? fmt(d.cfemAmount, country) : <span className="text-muted-foreground">—</span>}
                                   </td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">
-                                    {d.embeddedAmount != null ? fmt(d.embeddedAmount, country) : <span className="text-muted-foreground">â€”</span>}
+                                    {d.embeddedAmount != null ? fmt(d.embeddedAmount, country) : <span className="text-muted-foreground">—</span>}
                                   </td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${diff != null ? diffClass(diff) : 'text-muted-foreground'}`}>
-                                    {diff != null ? fmtDiff(diff, country) : 'â€”'}
+                                    {diff != null ? fmtDiff(diff, country) : '—'}
                                   </td>
                                 </tr>
                               );
@@ -2664,7 +2664,7 @@ export default function ReconciliationPage() {
                   </div>
                 )}
 
-                {/* Per-employee table â€” staff only (CSL/NL â€” CFEM has its own detail tables above) */}
+                {/* Per-employee table — staff only (CSL/NL — CFEM has its own detail tables above) */}
                 {!isCfem && staffEmpRows.length > 0 && summaryRows.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between mb-3">
@@ -2702,32 +2702,32 @@ export default function ReconciliationPage() {
                             {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
                               <th className="px-3 py-2 text-right">Furnmart Stmt</th>
                               <th className="px-3 py-2 text-right">Furnmart Pay</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
                               <th className="px-3 py-2 text-right">Afritec Stmt</th>
                               <th className="px-3 py-2 text-right">Afritec Pay</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
                               <th className="px-3 py-2 text-right">Topline Stmt</th>
                               <th className="px-3 py-2 text-right">Topline Pay</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
                               <th className="px-3 py-2 text-right">CB Stores Stmt</th>
                               <th className="px-3 py-2 text-right">CB Stores Pay</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
                               <th className="px-3 py-2 text-right">Bodulo Stmt</th>
                               <th className="px-3 py-2 text-right">Bodulo Pay</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
                               <th className="px-3 py-2 text-right">Pension Stmt</th>
                               <th className="px-3 py-2 text-right">Pension Pay</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                           </tr>
                         </thead>
@@ -2763,7 +2763,7 @@ export default function ReconciliationPage() {
                             return (
                               <tr key={`${row.empCode || 'x'}-${row.name}-${i}`} className={`${i % 2 === 0 ? 'bg-white' : 'bg-muted/20'} ${hasDiscrep ? 'ring-1 ring-inset ring-orange-200' : ''}`}>
                                 <td className="px-3 py-1.5 font-mono text-xs">
-                                  {row.empCode && !row.empCode.includes('|') ? row.empCode : 'â€”'}
+                                  {row.empCode && !row.empCode.includes('|') ? row.empCode : '—'}
                                   {row.empCode && ftcCodes.has(row.empCode) && (
                                     <span className="ml-1.5 font-sans text-xs bg-amber-100 text-amber-700 px-1 py-0.5 rounded">Fixed Term</span>
                                   )}
@@ -2773,42 +2773,42 @@ export default function ReconciliationPage() {
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${furnDiff != null ? diffClass(furnDiff) : ''}`}>
-                                    {furnDiff != null ? fmtDiff(furnDiff, country) : 'â€”'}
+                                    {furnDiff != null ? fmtDiff(furnDiff, country) : '—'}
                                   </td>
                                 </>}
                                 {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.afritec_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.afritec_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${afritecDiff != null ? diffClass(afritecDiff) : 'text-muted-foreground'}`}>
-                                    {afritecDiff != null ? fmtDiff(afritecDiff, country) : 'â€”'}
+                                    {afritecDiff != null ? fmtDiff(afritecDiff, country) : '—'}
                                   </td>
                                 </>}
                                 {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.topline_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.topline_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${toplineDiff != null ? diffClass(toplineDiff) : 'text-muted-foreground'}`}>
-                                    {toplineDiff != null ? fmtDiff(toplineDiff, country) : 'â€”'}
+                                    {toplineDiff != null ? fmtDiff(toplineDiff, country) : '—'}
                                   </td>
                                 </>}
                                 {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.cb_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.cb_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${cbDiff != null ? diffClass(cbDiff) : ''}`}>
-                                    {cbDiff != null ? fmtDiff(cbDiff, country) : 'â€”'}
+                                    {cbDiff != null ? fmtDiff(cbDiff, country) : '—'}
                                   </td>
                                 </>}
                                 {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${bodDiff != null ? diffClass(bodDiff) : ''}`}>
-                                    {bodDiff != null ? fmtDiff(bodDiff, country) : 'â€”'}
+                                    {bodDiff != null ? fmtDiff(bodDiff, country) : '—'}
                                   </td>
                                 </>}
                                 {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.pension_stmt, country)}</td>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.pension_pay, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${pensionDiff != null ? diffClass(pensionDiff) : ''}`}>
-                                    {pensionDiff != null ? fmtDiff(pensionDiff, country) : 'â€”'}
+                                    {pensionDiff != null ? fmtDiff(pensionDiff, country) : '—'}
                                   </td>
                                 </>}
                               </tr>
@@ -2821,7 +2821,7 @@ export default function ReconciliationPage() {
                   </div>
                 )}
 
-                {/* Management section â€” CFE employees from MGMT sections in statements (CSL/NL only) */}
+                {/* Management section — CFE employees from MGMT sections in statements (CSL/NL only) */}
                 {!isCfem && mgtEmpRows.length > 0 && (
                   <div>
                     <div className="flex items-center justify-between mb-3">
@@ -2830,7 +2830,7 @@ export default function ReconciliationPage() {
                           Management (CFE)
                         </h2>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          On CFE Management payroll â€” statement amount vs the same employee&apos;s figure on CFEM&apos;s
+                          On CFE Management payroll — statement amount vs the same employee&apos;s figure on CFEM&apos;s
                           own deductions report for this period.
                           {cfeEmployees.length > 0 && (
                             <span className="ml-2 text-teal-700">
@@ -2849,38 +2849,38 @@ export default function ReconciliationPage() {
                             {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
                               <th className="px-3 py-2 text-right">Furnmart Stmt</th>
                               <th className="px-3 py-2 text-right">CFEM Report</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
                               <th className="px-3 py-2 text-right">Afritec Stmt</th>
                               <th className="px-3 py-2 text-right">CFEM Report</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
                               <th className="px-3 py-2 text-right">Topline Stmt</th>
                               <th className="px-3 py-2 text-right">CFEM Report</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
                               <th className="px-3 py-2 text-right">CB Stores Stmt</th>
                               <th className="px-3 py-2 text-right">CFEM Report</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
                               <th className="px-3 py-2 text-right">Bodulo Stmt</th>
                               <th className="px-3 py-2 text-right">CFEM Report</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                             {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
                               <th className="px-3 py-2 text-right">Pension Stmt</th>
                               <th className="px-3 py-2 text-right">CFEM Report</th>
-                              <th className="px-3 py-2 text-right">Â±</th>
+                              <th className="px-3 py-2 text-right">±</th>
                             </>}
                           </tr>
                         </thead>
                         <tbody>
                           {(dedFilter === 'all' ? mgtEmpRows : mgtEmpRows.filter(row => {
-                            // Check CFEM's own report too, not just NL's own statement figure â€”
+                            // Check CFEM's own report too, not just NL's own statement figure —
                             // a CFE Management employee can be missing from NL's own vendor file
                             // for a given month (e.g. dropped from that month's Bodulo export)
                             // while still genuinely appearing on CFEM's own report; filtering on
@@ -2898,9 +2898,9 @@ export default function ReconciliationPage() {
                           })).map((row, i) => {
                             // Same name-first-then-code fallback as isMgt() above, so a row that
                             // isMgt already classified as Management via the code fallback (e.g.
-                            // NGW001 â€” CFEM's own report says "Ernerst Ngwananaang", CSL's Furnmart
+                            // NGW001 — CFEM's own report says "Ernerst Ngwananaang", CSL's Furnmart
                             // file says "Kagiso Ngwananaang" for the same code) doesn't then show a
-                            // contradictory "â€”" code and "unmatched" badge here.
+                            // contradictory "—" code and "unmatched" badge here.
                             const cfeMatch = matchCfeEmployee(row.name)
                               ?? (row.empCode ? cfeEmployees.find(e => e.employee_code?.toUpperCase() === row.empCode.toUpperCase()) : undefined);
                             const cfemFurnmart = cfemReportAmountFor(cfeMatch, 'furnmart');
@@ -2920,7 +2920,7 @@ export default function ReconciliationPage() {
                                 <td className="px-3 py-1.5 font-mono text-xs">
                                   {cfeMatch?.employee_code
                                     ? <span className="text-emerald-700 font-medium">{cfeMatch.employee_code}</span>
-                                    : <span className="text-muted-foreground">â€”</span>
+                                    : <span className="text-muted-foreground">—</span>
                                   }
                                 </td>
                                 <td className="px-3 py-1.5">
@@ -2931,44 +2931,44 @@ export default function ReconciliationPage() {
                                 </td>
                                 {furnmartStmt && (dedFilter === 'all' || dedFilter === 'furnmart') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.furnmart_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemFurnmart == null ? 'â€”' : fmt(cfemFurnmart, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemFurnmart == null ? '—' : fmt(cfemFurnmart, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${furnDiff2 != null ? diffClass(furnDiff2) : ''}`}>
-                                    {furnDiff2 != null ? fmtDiff(furnDiff2, country) : 'â€”'}
+                                    {furnDiff2 != null ? fmtDiff(furnDiff2, country) : '—'}
                                   </td>
                                 </>}
                                 {afritecStmt && (dedFilter === 'all' || dedFilter === 'afritec') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.afritec_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemAfritec == null ? 'â€”' : fmt(cfemAfritec, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemAfritec == null ? '—' : fmt(cfemAfritec, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${afriDiff2 != null ? diffClass(afriDiff2) : ''}`}>
-                                    {afriDiff2 != null ? fmtDiff(afriDiff2, country) : 'â€”'}
+                                    {afriDiff2 != null ? fmtDiff(afriDiff2, country) : '—'}
                                   </td>
                                 </>}
                                 {toplineStmt && (dedFilter === 'all' || dedFilter === 'topline') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.topline_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemTopline == null ? 'â€”' : fmt(cfemTopline, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemTopline == null ? '—' : fmt(cfemTopline, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${topDiff2 != null ? diffClass(topDiff2) : ''}`}>
-                                    {topDiff2 != null ? fmtDiff(topDiff2, country) : 'â€”'}
+                                    {topDiff2 != null ? fmtDiff(topDiff2, country) : '—'}
                                   </td>
                                 </>}
                                 {cbStmt && (dedFilter === 'all' || dedFilter === 'cbstores') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.cb_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemCb == null ? 'â€”' : fmt(cfemCb, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemCb == null ? '—' : fmt(cfemCb, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${cbDiff2 != null ? diffClass(cbDiff2) : ''}`}>
-                                    {cbDiff2 != null ? fmtDiff(cbDiff2, country) : 'â€”'}
+                                    {cbDiff2 != null ? fmtDiff(cbDiff2, country) : '—'}
                                   </td>
                                 </>}
                                 {boduloStmt && (dedFilter === 'all' || dedFilter === 'bodulo') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.bodulo_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemBodulo == null ? 'â€”' : fmt(cfemBodulo, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemBodulo == null ? '—' : fmt(cfemBodulo, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${bodDiff2 != null ? diffClass(bodDiff2) : ''}`}>
-                                    {bodDiff2 != null ? fmtDiff(bodDiff2, country) : 'â€”'}
+                                    {bodDiff2 != null ? fmtDiff(bodDiff2, country) : '—'}
                                   </td>
                                 </>}
                                 {pensionStmt && (dedFilter === 'all' || dedFilter === 'pension') && <>
                                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.pension_stmt, country)}</td>
-                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemPension == null ? 'â€”' : fmt(cfemPension, country)}</td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums">{cfemPension == null ? '—' : fmt(cfemPension, country)}</td>
                                   <td className={`px-3 py-1.5 text-right tabular-nums ${pensionDiff2 != null ? diffClass(pensionDiff2) : ''}`}>
-                                    {pensionDiff2 != null ? fmtDiff(pensionDiff2, country) : 'â€”'}
+                                    {pensionDiff2 != null ? fmtDiff(pensionDiff2, country) : '—'}
                                   </td>
                                 </>}
                               </tr>
@@ -2979,7 +2979,7 @@ export default function ReconciliationPage() {
                     </div>
                     <p className="mt-2 text-xs text-muted-foreground">
                       {cfemForMgt.loaded && Object.keys(cfemForMgt.statements).length === 0
-                        ? "CFEM hasn't uploaded a deductions report for this period yet â€” CFEM Report column shows â€” for all management employees."
+                        ? "CFEM hasn't uploaded a deductions report for this period yet — CFEM Report column shows — for all management employees."
                         : 'CFEM Report is pulled live from CFEM\'s own Deductions Check upload for this same period.'}
                     </p>
                   </div>
@@ -2989,7 +2989,7 @@ export default function ReconciliationPage() {
           </div>
         )}
 
-        {/* â•â•â•â•â• EMPLOYEES TAB â€” CSL: Increase List vs Payroll; NL: month-to-month payroll â•â•â•â•â• */}
+        {/* ═════ EMPLOYEES TAB — CSL: Increase List vs Payroll; NL: month-to-month payroll ═════ */}
         {tab === 'crossref' && (
           <div className="space-y-6">
             {!isNlEmployeesView && (
@@ -3013,22 +3013,22 @@ export default function ReconciliationPage() {
                       disabled={increaseListUploading}
                       className="text-xs border rounded px-2 py-1 hover:bg-muted disabled:opacity-50 whitespace-nowrap ml-4"
                     >
-                      {increaseListUploading ? 'Uploadingâ€¦' : 'Upload Increase List'}
+                      {increaseListUploading ? 'Uploading…' : 'Upload Increase List'}
                     </button>
                   </div>
                 </div>
 
                 <div>
                   <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                    Increase List â€” Payroll Reconciliation ({activeMergedIncreaseTable.length})
+                    Increase List — Payroll Reconciliation ({activeMergedIncreaseTable.length})
                   </h2>
                   <p className="text-xs text-muted-foreground mb-2">
-                    Only the CSL sheet of the uploaded workbook is used â€” NL&apos;s Increase List reconciliation
+                    Only the CSL sheet of the uploaded workbook is used — NL&apos;s Increase List reconciliation
                     was completed in August 2026 and no longer needs an upload; NL&apos;s Employees tab instead
                     shows a month-to-month payroll comparison (see the NL pill).
-                    Flag Differences: <strong>Applied</strong> â€” payroll&apos;s new Basic already matches the Increase
-                    File&apos;s New Gross Salary; <strong>Pending</strong> â€” payroll still shows the old Current Salary;
-                    <strong> Mismatch</strong> (amber) â€” payroll&apos;s Basic matches neither figure; greyed rows have no
+                    Flag Differences: <strong>Applied</strong> — payroll&apos;s new Basic already matches the Increase
+                    File&apos;s New Gross Salary; <strong>Pending</strong> — payroll still shows the old Current Salary;
+                    <strong> Mismatch</strong> (amber) — payroll&apos;s Basic matches neither figure; greyed rows have no
                     payroll match at all this period.
                   </p>
                   {activeMergedIncreaseTable.length === 0 ? (
@@ -3041,9 +3041,9 @@ export default function ReconciliationPage() {
                           <th className="px-3 py-2 text-left">Code</th>
                           <th className="px-3 py-2 text-left">Surname</th>
                           <th className="px-3 py-2 text-left">Name</th>
-                          <th className="px-3 py-2 text-right">Increase File â€” Current Salary</th>
-                          <th className="px-3 py-2 text-right">Payroll Upload â€” New Basic Salary</th>
-                          <th className="px-3 py-2 text-right">Increase File â€” New Gross Salary</th>
+                          <th className="px-3 py-2 text-right">Increase File — Current Salary</th>
+                          <th className="px-3 py-2 text-right">Payroll Upload — New Basic Salary</th>
+                          <th className="px-3 py-2 text-right">Increase File — New Gross Salary</th>
                           <th className="px-3 py-2 text-left">Flag Differences</th>
                         </tr>
                       </thead>
@@ -3070,7 +3070,7 @@ export default function ReconciliationPage() {
                                   onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
                                 />
                               </td>
-                              <td className="px-3 py-1.5">{r.empCode || 'â€”'}</td>
+                              <td className="px-3 py-1.5">{r.empCode || '—'}</td>
                               <td className="px-3 py-1.5">{r.surname}</td>
                               <td className="px-3 py-1.5">
                                 {r.firstName}
@@ -3079,14 +3079,14 @@ export default function ReconciliationPage() {
                                 )}
                               </td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.listCurrent, country)}</td>
-                              <td className="px-3 py-1.5 text-right tabular-nums">{r.payrollNewBasic == null ? 'â€”' : fmt(r.payrollNewBasic, country)}</td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">{r.payrollNewBasic == null ? '—' : fmt(r.payrollNewBasic, country)}</td>
                               <td className="px-3 py-1.5 text-right tabular-nums">{fmt(r.listNew, country)}</td>
                               <td className="px-3 py-1.5 text-xs">
                                 {r.flag === 'applied' && <span className="text-green-700">Applied</span>}
                                 {r.flag === 'pending' && <span className="text-amber-600">Pending</span>}
-                                {r.flag === 'mismatch' && <span className="text-amber-700">Mismatch âš </span>}
+                                {r.flag === 'mismatch' && <span className="text-amber-700">Mismatch ⚠</span>}
                                 {r.flag === 'unmatched' && <span>Not found in payroll</span>}
-                                {r.flag === 'ambiguous' && <span>Multiple payroll matches â€” resolve manually</span>}
+                                {r.flag === 'ambiguous' && <span>Multiple payroll matches — resolve manually</span>}
                               </td>
                             </tr>
                             </Fragment>
@@ -3118,22 +3118,22 @@ export default function ReconciliationPage() {
               <>
                 <p className="text-sm text-muted-foreground max-w-3xl">
                   Lists every NL employee on either this period&apos;s uploaded Payroll Spreadsheet or the <strong>previous
-                  period&apos;s</strong> â€” never against the HR List (employees table). A tick means Current and New Basic
+                  period&apos;s</strong> — never against the HR List (employees table). A tick means Current and New Basic
                   Salary agree; <strong>Mismatch</strong> covers a genuine amount change, a new appointment (no prior-period
                   line), or someone missing this period (a termination). Approve + Submit stages a row; the admin-only
                   Commit button (top of page) writes it to the employees table.
                 </p>
 
                 {!activeTermPayrollForEmployees.loaded ? (
-                  <p className="text-sm text-muted-foreground">Loadingâ€¦</p>
+                  <p className="text-sm text-muted-foreground">Loading…</p>
                 ) : activeTermPayrollForEmployees.previous.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
-                    No payroll uploaded for NL&apos;s previous period â€” nothing to compare against yet.
+                    No payroll uploaded for NL&apos;s previous period — nothing to compare against yet.
                   </p>
                 ) : (
                   <div>
                     <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                      Employees â€” Prior Month vs Payroll Upload ({activeNlEmployeesTable.length})
+                      Employees — Prior Month vs Payroll Upload ({activeNlEmployeesTable.length})
                     </h2>
                     {activeNlEmployeesTable.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No employees found on either period&apos;s payroll.</p>
@@ -3146,7 +3146,7 @@ export default function ReconciliationPage() {
                             <th className="px-3 py-2 text-left">Surname</th>
                             <th className="px-3 py-2 text-left">Name</th>
                             <th className="px-3 py-2 text-right">Current Basic Salary (Prior Month)</th>
-                            <th className="px-3 py-2 text-right">New Payroll Upload â€” Basic Salary</th>
+                            <th className="px-3 py-2 text-right">New Payroll Upload — Basic Salary</th>
                             <th className="px-3 py-2 text-left">Status</th>
                           </tr>
                         </thead>
@@ -3171,7 +3171,7 @@ export default function ReconciliationPage() {
                                     onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
                                   />
                                 </td>
-                                <td className="px-3 py-1.5">{r.empCode || 'â€”'}</td>
+                                <td className="px-3 py-1.5">{r.empCode || '—'}</td>
                                 <td className="px-3 py-1.5">{r.surname}</td>
                                 <td className="px-3 py-1.5">
                                   {r.firstName}
@@ -3179,18 +3179,18 @@ export default function ReconciliationPage() {
                                     <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
                                   )}
                                 </td>
-                                <td className="px-3 py-1.5 text-right tabular-nums">{r.prevBasic == null ? 'â€”' : fmt(r.prevBasic, country)}</td>
-                                <td className="px-3 py-1.5 text-right tabular-nums">{r.currBasic == null ? 'â€”' : fmt(r.currBasic, country)}</td>
+                                <td className="px-3 py-1.5 text-right tabular-nums">{r.prevBasic == null ? '—' : fmt(r.prevBasic, country)}</td>
+                                <td className="px-3 py-1.5 text-right tabular-nums">{r.currBasic == null ? '—' : fmt(r.currBasic, country)}</td>
                                 <td className="px-3 py-1.5 text-xs">
                                   {r.balances ? (
-                                    <span className="text-green-700">âœ“ Balances</span>
+                                    <span className="text-green-700">✓ Balances</span>
                                   ) : (
                                     <span className="text-amber-700" title={
-                                      r.reason === 'new' ? 'New appointment â€” no prior-period line' :
-                                      r.reason === 'missing' ? 'Missing this period â€” possible termination' :
+                                      r.reason === 'new' ? 'New appointment — no prior-period line' :
+                                      r.reason === 'missing' ? 'Missing this period — possible termination' :
                                       'Basic Salary changed from prior month'
                                     }>
-                                      Mismatch âš  {r.reason === 'new' ? '(New)' : r.reason === 'missing' ? '(Missing)' : '(Amount changed)'}
+                                      Mismatch ⚠ {r.reason === 'new' ? '(New)' : r.reason === 'missing' ? '(Missing)' : '(Amount changed)'}
                                     </span>
                                   )}
                                 </td>
@@ -3218,7 +3218,7 @@ export default function ReconciliationPage() {
               </>
             )}
 
-            {/* Consolidated submit â€” persists the current tick state. Purely a staging
+            {/* Consolidated submit — persists the current tick state. Purely a staging
                 record; the admin-only Commit button (top of page, next to the hotel
                 pills) is what actually writes to employees/salary_records. */}
             {employeesTabBadgeCount > 0 && (
@@ -3228,7 +3228,7 @@ export default function ReconciliationPage() {
                   disabled={submittingApprovals}
                   className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm font-medium hover:opacity-90 disabled:opacity-50"
                 >
-                  {submittingApprovals ? 'Submittingâ€¦' : isSubmittedInSync ? 'Submitted' : `Submit (${tickedApprovalCount} of ${employeesTabBadgeCount} ticked)`}
+                  {submittingApprovals ? 'Submitting…' : isSubmittedInSync ? 'Submitted' : `Submit (${tickedApprovalCount} of ${employeesTabBadgeCount} ticked)`}
                 </button>
                 {employeeApprovals.some(a => a.submitted_at) && (
                   <span className="text-xs text-muted-foreground">
@@ -3251,7 +3251,7 @@ export default function ReconciliationPage() {
           </div>
         )}
 
-        {/* â•â•â•â•â• CONSOLIDATION TAB â€” director bank-release sign-off â•â•â•â•â• */}
+        {/* ═════ CONSOLIDATION TAB — director bank-release sign-off ═════ */}
         {tab === 'consolidation' && (
           <div className="space-y-4 min-w-0">
             <div className="flex items-center gap-3 rounded-lg border bg-white px-4 py-3">
@@ -3285,7 +3285,7 @@ export default function ReconciliationPage() {
             </p>
 
             {!consolidationSystem.loaded ? (
-              <p className="text-sm text-muted-foreground">Loadingâ€¦</p>
+              <p className="text-sm text-muted-foreground">Loading…</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="text-xs border rounded w-full whitespace-nowrap">
@@ -3294,7 +3294,7 @@ export default function ReconciliationPage() {
                       <th className="px-2 py-2 text-left">Hotel</th>
                       <th className="px-2 py-2 text-left border-l border-white/20"></th>
                       {/* Headers may wrap (e.g. "Bodulo / Afri Insurance") so they don't
-                          set the column width â€” the figures below do. */}
+                          set the column width — the figures below do. */}
                       {LINE_ITEMS.map(li => (
                         <th key={li} className="px-2 py-2 text-right border-l border-white/20 whitespace-normal">{LINE_ITEM_LABELS[li]}</th>
                       ))}
@@ -3304,9 +3304,9 @@ export default function ReconciliationPage() {
                   <tbody>
                     {(() => {
                       // CSL and CFEM render first (adjacent), then a Subtotal row showing
-                      // their combined figures â€” the one bank account they actually share
+                      // their combined figures — the one bank account they actually share
                       // (see the pension bank-account note on the Consolidation loader
-                      // above) â€” then NL's own separate account, matching real-world bank
+                      // above) — then NL's own separate account, matching real-world bank
                       // structure rather than an arbitrary hotel order.
                       function hotelRows(h: ConsolidationHotel, rowBg: string) {
                         let hotelTotalSys = 0, hotelTotalBank = 0;
@@ -3314,7 +3314,7 @@ export default function ReconciliationPage() {
                         const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
                         sysByLi.forEach(v => { hotelTotalSys += v; });
                         bankByLi.forEach(v => { hotelTotalBank += v; });
-                        // CFEM: reference-only System row â€” its figures are already inside
+                        // CFEM: reference-only System row — its figures are already inside
                         // CSL's/NL's statements, so no Bank Upload / Balance Differential
                         // and it's not summed into the Total.
                         const referenceOnly = h === 'CFEM';
@@ -3324,7 +3324,7 @@ export default function ReconciliationPage() {
                               <td rowSpan={referenceOnly ? 1 : 3} className="px-2 py-1.5 font-semibold border-t align-top">
                                 {h}
                                 {referenceOnly && (
-                                  <div className="text-[11px] font-normal text-muted-foreground whitespace-normal w-24 leading-tight">Reference only â€” included in CSL/NL</div>
+                                  <div className="text-[11px] font-normal text-muted-foreground whitespace-normal w-24 leading-tight">Reference only — included in CSL/NL</div>
                                 )}
                               </td>
                               <td className="px-2 py-1.5 text-muted-foreground border-t">System</td>
@@ -3355,7 +3355,7 @@ export default function ReconciliationPage() {
                               {LINE_ITEMS.map((li, i) => (
                                 <td key={li} className="px-2 py-1.5 text-right border-t border-l">
                                   {isCfemNetSalary(h, li) ? (
-                                    <span className="tabular-nums text-muted-foreground">â€”</span>
+                                    <span className="tabular-nums text-muted-foreground">—</span>
                                   ) : (
                                     <input
                                       type="number"
