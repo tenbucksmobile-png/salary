@@ -1438,6 +1438,9 @@ export interface IncreaseRow {
   currentGross: number;
   newGross: number;
   comment: string;
+  // True when the file only carried the new figure (Surname / First Name / Amount
+  // layout) — the uploader fills currentGross from the list already on file.
+  currentUnknown?: boolean;
 }
 
 function parseIncreaseSheet(rows: any[][]): IncreaseRow[] {
@@ -1446,11 +1449,16 @@ function parseIncreaseSheet(rows: any[][]): IncreaseRow[] {
   const surnameCol = header.findIndex(h => h === 'surname');
   const firstNameCol = header.findIndex(h => /first\s*name/.test(h));
   const currentCol = header.findIndex(h => /current.*gross/.test(h));
+  // Simpler updated-list layout (confirmed live, Book2.xlsx Sept 2026): just Surname /
+  // First Name / Amount, where Amount is the New Gross (222 of 224 names matched the
+  // previously loaded list's New Gross exactly).
   const newCol = header.findIndex(h => /new.*gross/.test(h));
+  const amountCol = newCol < 0 && currentCol < 0 ? header.findIndex(h => /^amount$|new.*(salary|basic)/.test(h)) : -1;
   // The remarks column carries no header label of its own in the confirmed file — it's
   // simply the column right after New Gross.
   const commentCol = newCol >= 0 ? newCol + 1 : -1;
-  if (surnameCol < 0 || currentCol < 0 || newCol < 0) return [];
+  if (surnameCol < 0) return [];
+  if ((currentCol < 0 || newCol < 0) && amountCol < 0) return [];
 
   const out: IncreaseRow[] = [];
   for (let i = 1; i < rows.length; i++) {
@@ -1459,9 +1467,14 @@ function parseIncreaseSheet(rows: any[][]): IncreaseRow[] {
     // Skips the sheet's own trailing "Total  employees" summary row (confirmed on a
     // real CSL sheet) — not a real employee.
     if (!surname || /^total/i.test(surname)) continue;
+    const firstName = firstNameCol >= 0 ? String(row[firstNameCol] ?? '').trim() : '';
+    if (amountCol >= 0) {
+      out.push({ surname, firstName, currentGross: 0, newGross: Number(row[amountCol]) || 0, comment: '', currentUnknown: true });
+      continue;
+    }
     out.push({
       surname,
-      firstName: firstNameCol >= 0 ? String(row[firstNameCol] ?? '').trim() : '',
+      firstName,
       currentGross: Number(row[currentCol]) || 0,
       newGross: Number(row[newCol]) || 0,
       comment: commentCol >= 0 ? String(row[commentCol] ?? '').trim() : '',

@@ -478,10 +478,33 @@ export default function ReconciliationPage() {
     setIncreaseListUploading(true);
     try {
       const buf = await file.arrayBuffer();
-      const parsedByHotel = await parseIncreaseList(buf);
+      let parsedByHotel: Awaited<ReturnType<typeof parseIncreaseList>>;
+      try {
+        parsedByHotel = await parseIncreaseList(buf);
+      } catch (e: any) {
+        if (/password/i.test(e?.message ?? '')) {
+          throw new Error('this workbook is password-protected. Remove the password in Excel (File → Info → Protect Workbook → Encrypt with Password → clear it), save, and upload again.');
+        }
+        throw e;
+      }
+      if (INCREASE_LIST_HOTELS.every(code => parsedByHotel[code].length === 0)) {
+        throw new Error('no employee rows found. The sheet needs a "Surname" column plus either "Current Gross" + "New Gross" columns, or a single "Amount" column (the new gross).');
+      }
       for (const code of INCREASE_LIST_HOTELS) {
-        const rows = parsedByHotel[code];
+        let rows = parsedByHotel[code];
         if (!rows.length) continue;
+        // Amount-only layout: the file carries just the new figure. Current Salary is
+        // carried over from the list already loaded for this period (matched by name);
+        // anyone new to the list gets 0 there.
+        if (rows.some(r => r.currentUnknown)) {
+          const prior = new Map(increaseListByHotel[code].map(r => [nameKey(`${r.surname} ${r.firstName}`), r]));
+          rows = rows.map(r => {
+            if (!r.currentUnknown) return r;
+            const p = prior.get(nameKey(`${r.surname} ${r.firstName}`));
+            return { surname: r.surname, firstName: r.firstName, newGross: r.newGross,
+              currentGross: p?.currentGross ?? 0, comment: p?.comment ?? '' };
+          });
+        }
         const h = hotels.find(x => x.short_code === code);
         if (!h) continue;
         const pid = await ensurePeriodForHotel(h.id);
