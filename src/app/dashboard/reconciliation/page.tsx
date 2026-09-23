@@ -275,10 +275,13 @@ export default function ReconciliationPage() {
   // Consolidation tab: director-facing monthly bank release sign-off, spanning all
   // three hotels for the selected month regardless of the main hotel selector.
   type ConsolidationHotel = 'CSL' | 'NL' | 'CFEM';
-  // Order matches the real-world bank accounts: CSL and CFEM share one bank account (a
-  // Subtotal row is inserted between them and NL on-screen/in the export to show that
-  // combined figure), NL is a separate account — see the pension bank-account note above.
+  // CFEM's deductions (pension included) are already inside CSL's/NL's shared vendor
+  // statements, and CSL's figures are the one bank upload carrying CFEM's. So CFEM's row
+  // is shown for reference only — System totals, no Bank Upload / Balance Differential —
+  // and only CONSOLIDATION_BANK_HOTELS are summed into the Total (summing CFEM as well
+  // double-counted it against the bank).
   const CONSOLIDATION_HOTELS: ConsolidationHotel[] = ['CSL', 'CFEM', 'NL'];
+  const CONSOLIDATION_BANK_HOTELS: ConsolidationHotel[] = ['CSL', 'NL'];
   type LineItem = 'basic_salary' | 'furnmart' | 'afritec' | 'topline' | 'cbstores' | 'bodulo' | 'pension';
   const LINE_ITEMS: LineItem[] = ['basic_salary', 'furnmart', 'afritec', 'topline', 'cbstores', 'bodulo', 'pension'];
   // Internal key stays "basic_salary" (matches the recon_consolidation DB rows already
@@ -655,25 +658,14 @@ export default function ReconciliationPage() {
         // EE-only pensionEe column). Falls back to `total` for a statement with no
         // EE/ER split at all.
         //
-        // CSL's and NL's own schedules also physically carry a handful of CFE
-        // Management employees (embedded — see isEmbeddedCfePensionLine), and CFEM
-        // separately uploads its own full pension schedule for those same people —
-        // so left unadjusted, that money was being counted twice in the CSL+CFEM
-        // subtotal (once inside CSL's own bankTotal, once inside CFEM's). Fixed by
-        // subtracting each embedded line's bankAmount from CSL's/NL's own total —
-        // CFEM's own schedule is the one place that money should be counted.
-        // Confirmed live 2026-09-22: CSL's own total was 198,734.53 (incl. embedded
-        // CFE employees) and CFEM's own was 63,220.66, summing to a double-counted
-        // 261,955.19 on the Subtotal row.
-        const getPensionBank = (byType: Map<string, any>, excludeEmbeddedCfe: boolean) => {
+        // CSL's and NL's own schedules are taken in full, CFE Management employees
+        // included — CSL's figures already carry CFEM's, and are the bank upload.
+        // CFEM's own row is reference-only and never summed (see
+        // CONSOLIDATION_BANK_HOTELS), so nothing is double-counted.
+        const getPensionBank = (byType: Map<string, any>) => {
           const stmt = byType.get('pension') as ParsedStatement | undefined;
           if (!stmt) return 0;
-          const bank = stmt.bankTotal ?? stmt.total ?? 0;
-          if (!excludeEmbeddedCfe) return bank;
-          const embedded = (stmt.lines ?? [])
-            .filter(l => isEmbeddedCfePensionLine(l))
-            .reduce((s, l) => s + (l.bankAmount ?? l.amount), 0);
-          return bank - embedded;
+          return stmt.bankTotal ?? stmt.total ?? 0;
         };
 
         function buildTotals(shortCode: ConsolidationHotel, byType: Map<string, any>): SystemTotals {
@@ -689,9 +681,8 @@ export default function ReconciliationPage() {
               if (t) totals[t] = sec.total;
             });
             // Pension isn't part of the combined CFEM Deductions Summary — it's its own
-            // upload, and it's the one place embedded CFE employees' pension money is
-            // kept (not excluded here, unlike CSL's/NL's own schedules above).
-            totals.pension = getPensionBank(byType, false);
+            // upload. Shown for reference only, like the rest of CFEM's row.
+            totals.pension = getPensionBank(byType);
             return totals;
           }
 
@@ -703,7 +694,7 @@ export default function ReconciliationPage() {
             basic_salary: netSalary,
             furnmart: get('furnmart'), afritec: get('afritec'), topline: get('topline'),
             cbstores: get('cbstores'), bodulo: get('bodulo'),
-            pension: getPensionBank(byType, true),
+            pension: getPensionBank(byType),
           };
         }
 
@@ -1664,9 +1655,17 @@ export default function ReconciliationPage() {
   // New Appointments / Terminations) entirely — per explicit instruction, this is now
   // the one table for the Employees tab: Name, Increase File - Current Salary, Payroll
   // Upload - New Basic Salary, Increase File - New Gross Salary, Flag Differences.
+  // FTC payroll lines have no real employee code — parseFtcPayrollXls stores
+  // nameKey(name) in empCode purely for matching. Those rows are listed in their own
+  // Fixed Term section below permanent staff, with Code shown as "—".
+  function isFtcPayrollLine(l: PayrollLine): boolean {
+    return !l.empCode || l.empCode === nameKey(l.name);
+  }
+
   interface MergedIncreaseRow {
     name: string;        // "Surname FirstName" — identity used for approvalKey/commit matching
-    displayName: string; // "Surname, FirstName" — display only
+    surname: string; firstName: string;
+    isFtc: boolean;
     empCode: string;
     listCurrent: number; payrollNewBasic: number | null; listNew: number;
     matched: boolean; ambiguous: boolean;
@@ -1707,7 +1706,7 @@ export default function ReconciliationPage() {
   // anomaly. "mismatch" is the one that needs attention: payroll's Basic matches
   // neither the list's Current nor New figure at all.
   function buildMergedIncreaseTable(rows: IncreaseRow[], payrollLines: PayrollLine[]): MergedIncreaseRow[] {
-    return [...rows]
+    return permanentThenFtc([...rows]
       .sort((a, b) => a.surname.toLowerCase().localeCompare(b.surname.toLowerCase()))
       .map(r => {
         const { line: p, ambiguous } = matchPayrollLineForIncrease(r, payrollLines);
@@ -1718,14 +1717,16 @@ export default function ReconciliationPage() {
         else if (Math.abs(payrollNewBasic! - r.newGross) <= 0.5) flag = 'applied';
         else if (Math.abs(payrollNewBasic! - r.currentGross) <= 0.5) flag = 'pending';
         else flag = 'mismatch';
+        const isFtc = !!p && isFtcPayrollLine(p);
         return {
           name: `${r.surname} ${r.firstName}`.trim(),
-          displayName: `${r.surname}, ${r.firstName}`,
-          empCode: p?.empCode ?? '',
+          surname: r.surname, firstName: r.firstName,
+          isFtc,
+          empCode: p && !isFtc ? p.empCode : '',
           listCurrent: r.currentGross, payrollNewBasic, listNew: r.newGross,
           matched: !!p, ambiguous, flag,
         };
-      });
+      }));
   }
   const mergedIncreaseTableByHotel = Object.fromEntries(
     INCREASE_LIST_HOTELS.map(h => [h, buildMergedIncreaseTable(increaseListByHotel[h], termPayrollByHotel[h].current)])
@@ -1768,6 +1769,7 @@ export default function ReconciliationPage() {
   // else (new / missing / a genuine amount change) is a Mismatch, per instruction.
   interface NlEmployeeRow {
     name: string; surname: string; firstName: string; empCode: string;
+    isFtc: boolean;
     prevBasic: number | null; currBasic: number | null;
     category: ReconApprovalCategory;
     balances: boolean;
@@ -1794,13 +1796,20 @@ export default function ReconciliationPage() {
       // payroll file's one combined name field into { surname, firstName } — same
       // convention used for the new-appointment confirmation popup.
       const { surname, firstName } = splitNameForNewEmployee(base.name);
+      const isFtc = isFtcPayrollLine(base);
       rows.push({
-        name: base.name, surname, firstName, empCode: base.empCode,
+        name: base.name, surname, firstName, empCode: isFtc ? '' : base.empCode, isFtc,
         prevBasic: prev?.basic ?? null, currBasic: curr?.basic ?? null,
         category, balances, reason,
       });
     });
-    return bySurname(rows);
+    return permanentThenFtc(bySurname(rows));
+  }
+
+  // Permanent staff (real employee code) first, Fixed Term below — each group keeps
+  // its existing surname order.
+  function permanentThenFtc<T extends { isFtc: boolean }>(rows: T[]): T[] {
+    return [...rows.filter(r => !r.isFtc), ...rows.filter(r => r.isFtc)];
   }
 
   const nlEmployeesTableByHotel = Object.fromEntries(
@@ -2013,27 +2022,22 @@ export default function ReconciliationPage() {
 
   async function handleExportConsolidation() {
     const rows: Array<Array<string | number | null>> = [];
-    // CSL, CFEM, then a Subtotal (their one shared bank account), then NL's own separate
-    // account — matches the on-screen layout order (CONSOLIDATION_HOTELS is already
-    // ordered CSL/CFEM/NL for this reason).
+    // Same order as on screen: CSL, CFEM (reference only — System row, not summed), NL.
     for (const h of CONSOLIDATION_HOTELS) {
       const sysByLi = LINE_ITEMS.map(li => consolidationSystemValue(h, li));
-      const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
       const totalSys = sysByLi.reduce((a, b) => a + b, 0);
+      if (h === 'CFEM') {
+        rows.push(['CFEM (reference only — included in CSL/NL)', 'System', ...sysByLi, totalSys]);
+        continue;
+      }
+      const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
       const totalBank = bankByLi.reduce((a, b) => a + b, 0);
       rows.push([h, 'System', ...sysByLi, totalSys]);
       rows.push(['', 'Bank Upload', ...bankByLi, totalBank]);
       rows.push(['', 'Balance Differential', ...sysByLi.map((sys, i) => sys - bankByLi[i]), totalSys - totalBank]);
-
-      if (h === 'CFEM') {
-        const subSysByLi = LINE_ITEMS.map(li => consolidationSystemValue('CSL', li) + consolidationSystemValue('CFEM', li));
-        const subBankByLi = LINE_ITEMS.map(li => consolidationBankValue('CSL', li) + consolidationBankValue('CFEM', li));
-        rows.push(['Subtotal (CSL + CFEM)', 'System', ...subSysByLi, subSysByLi.reduce((a, b) => a + b, 0)]);
-        rows.push(['', 'Bank Upload', ...subBankByLi, subBankByLi.reduce((a, b) => a + b, 0)]);
-      }
     }
-    const grandSysByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationSystemValue(h, li), 0));
-    const grandBankByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationBankValue(h, li), 0));
+    const grandSysByLi = LINE_ITEMS.map(li => CONSOLIDATION_BANK_HOTELS.reduce((s, h) => s + consolidationSystemValue(h, li), 0));
+    const grandBankByLi = LINE_ITEMS.map(li => CONSOLIDATION_BANK_HOTELS.reduce((s, h) => s + consolidationBankValue(h, li), 0));
     const grandSys = grandSysByLi.reduce((a, b) => a + b, 0);
     const grandBank = grandBankByLi.reduce((a, b) => a + b, 0);
     rows.push(['Total', 'System', ...grandSysByLi, grandSys]);
@@ -3003,6 +3007,8 @@ export default function ReconciliationPage() {
                       <thead>
                         <tr className="bg-muted/40">
                           <th className="px-3 py-2 text-center">Approve</th>
+                          <th className="px-3 py-2 text-left">Code</th>
+                          <th className="px-3 py-2 text-left">Surname</th>
                           <th className="px-3 py-2 text-left">Name</th>
                           <th className="px-3 py-2 text-right">Increase File — Current Salary</th>
                           <th className="px-3 py-2 text-right">Payroll Upload — New Basic Salary</th>
@@ -3011,11 +3017,19 @@ export default function ReconciliationPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {activeMergedIncreaseTable.map((r, i) => {
+                        {activeMergedIncreaseTable.map((r, i, arr) => {
                           const key = approvalKey('basic_mismatch', r.name);
+                          const startsFtc = r.isFtc && (i === 0 || !arr[i - 1].isFtc);
                           return (
+                            <Fragment key={i}>
+                            {startsFtc && (
+                              <tr className="border-t bg-muted/40">
+                                <td colSpan={8} className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                  Fixed Term Contract ({arr.filter(x => x.isFtc).length})
+                                </td>
+                              </tr>
+                            )}
                             <tr
-                              key={i}
                               className={`border-t ${!r.matched ? 'bg-muted/20 text-muted-foreground' : r.flag === 'mismatch' ? 'bg-amber-50' : ''}`}
                             >
                               <td className="px-3 py-1.5 text-center">
@@ -3025,8 +3039,10 @@ export default function ReconciliationPage() {
                                   onChange={e => setApprovalTicks(prev => ({ ...prev, [key]: e.target.checked }))}
                                 />
                               </td>
+                              <td className="px-3 py-1.5">{r.empCode || '—'}</td>
+                              <td className="px-3 py-1.5">{r.surname}</td>
                               <td className="px-3 py-1.5">
-                                {r.displayName}
+                                {r.firstName}
                                 {approvalByKey.get(key)?.approved && approvalByKey.get(key)?.submitted_at && (
                                   <span className="ml-2 bg-green-100 text-green-700 rounded-full px-1.5 text-xs align-middle">Confirmed</span>
                                 )}
@@ -3042,12 +3058,13 @@ export default function ReconciliationPage() {
                                 {r.flag === 'ambiguous' && <span>Multiple payroll matches — resolve manually</span>}
                               </td>
                             </tr>
+                            </Fragment>
                           );
                         })}
                       </tbody>
                       <tfoot>
                         <tr className="border-t bg-muted/40 font-semibold">
-                          <td className="px-3 py-1.5" colSpan={2}>Total</td>
+                          <td className="px-3 py-1.5" colSpan={4}>Total</td>
                           <td className="px-3 py-1.5 text-right tabular-nums">
                             {fmt(activeMergedIncreaseTable.reduce((s, r) => s + r.listCurrent, 0), country)}
                           </td>
@@ -3103,10 +3120,19 @@ export default function ReconciliationPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {activeNlEmployeesTable.map((r, i) => {
+                          {activeNlEmployeesTable.map((r, i, arr) => {
                             const key = approvalKey(r.category, r.name);
+                            const startsFtc = r.isFtc && (i === 0 || !arr[i - 1].isFtc);
                             return (
-                              <tr key={i} className={`border-t ${!r.balances ? 'bg-amber-50' : ''}`}>
+                              <Fragment key={i}>
+                              {startsFtc && (
+                                <tr className="border-t bg-muted/40">
+                                  <td colSpan={7} className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                    Fixed Term Contract ({arr.filter(x => x.isFtc).length})
+                                  </td>
+                                </tr>
+                              )}
+                              <tr className={`border-t ${!r.balances ? 'bg-amber-50' : ''}`}>
                                 <td className="px-3 py-1.5 text-center">
                                   <input
                                     type="checkbox"
@@ -3138,6 +3164,7 @@ export default function ReconciliationPage() {
                                   )}
                                 </td>
                               </tr>
+                              </Fragment>
                             );
                           })}
                         </tbody>
@@ -3254,10 +3281,19 @@ export default function ReconciliationPage() {
                         const bankByLi = LINE_ITEMS.map(li => consolidationBankValue(h, li));
                         sysByLi.forEach(v => { hotelTotalSys += v; });
                         bankByLi.forEach(v => { hotelTotalBank += v; });
+                        // CFEM: reference-only System row — its figures are already inside
+                        // CSL's/NL's statements, so no Bank Upload / Balance Differential
+                        // and it's not summed into the Total.
+                        const referenceOnly = h === 'CFEM';
                         return (
                           <Fragment key={h}>
                             <tr className={rowBg}>
-                              <td rowSpan={3} className="px-3 py-1.5 font-semibold border-t align-top">{h}</td>
+                              <td rowSpan={referenceOnly ? 1 : 3} className="px-3 py-1.5 font-semibold border-t align-top">
+                                {h}
+                                {referenceOnly && (
+                                  <div className="text-xs font-normal text-muted-foreground">Reference only — included in CSL/NL</div>
+                                )}
+                              </td>
                               <td className="px-3 py-1.5 text-muted-foreground border-t">System</td>
                               {LINE_ITEMS.map((li, i) => {
                                 const sys = sysByLi[i];
@@ -3280,6 +3316,7 @@ export default function ReconciliationPage() {
                               })}
                               <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(hotelTotalSys, country)}</td>
                             </tr>
+                            {!referenceOnly && (<>
                             <tr className={rowBg}>
                               <td className="px-3 py-1.5 text-muted-foreground border-t">Bank Upload</td>
                               {LINE_ITEMS.map((li, i) => (
@@ -3313,42 +3350,15 @@ export default function ReconciliationPage() {
                                 {fmtDiffCents(hotelTotalSys - hotelTotalBank, country)}
                               </td>
                             </tr>
+                            </>)}
                           </Fragment>
                         );
                       }
 
-                      const subSysByLi = LINE_ITEMS.map(li => consolidationSystemValue('CSL', li) + consolidationSystemValue('CFEM', li));
-                      const subBankByLi = LINE_ITEMS.map(li => consolidationBankValue('CSL', li) + consolidationBankValue('CFEM', li));
-                      const subTotalSys = subSysByLi.reduce((a, b) => a + b, 0);
-                      const subTotalBank = subBankByLi.reduce((a, b) => a + b, 0);
-
                       return (
                         <>
                           {hotelRows('CSL', 'bg-white')}
-                          {hotelRows('CFEM', 'bg-muted/10')}
-                          {/* Subtotal: CSL + CFEM's one shared bank statement. System +
-                              Bank Upload only (no Balance Differential row), per explicit
-                              request. */}
-                          <Fragment key="subtotal-csl-cfem">
-                            <tr className="bg-amber-50">
-                              <td rowSpan={2} className="px-3 py-1.5 border-t align-top">
-                                <div className="font-semibold">Subtotal</div>
-                                <div className="text-xs font-normal text-muted-foreground">CSL + CFEM</div>
-                              </td>
-                              <td className="px-3 py-1.5 text-muted-foreground border-t">System</td>
-                              {subSysByLi.map((sys, i) => (
-                                <td key={LINE_ITEMS[i]} className="px-2 py-1.5 text-right border-t border-l tabular-nums">{fmtCents(sys, country)}</td>
-                              ))}
-                              <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(subTotalSys, country)}</td>
-                            </tr>
-                            <tr className="bg-amber-50">
-                              <td className="px-3 py-1.5 text-muted-foreground border-t">Bank Upload</td>
-                              {subBankByLi.map((bank, i) => (
-                                <td key={LINE_ITEMS[i]} className="px-2 py-1.5 text-right border-t border-l tabular-nums">{fmtCents(bank, country)}</td>
-                              ))}
-                              <td className="px-2 py-1.5 text-right border-t border-l tabular-nums font-medium">{fmtCents(subTotalBank, country)}</td>
-                            </tr>
-                          </Fragment>
+                          {hotelRows('CFEM', 'bg-muted/10 text-muted-foreground')}
                           <tr aria-hidden="true">
                             <td colSpan={2 + LINE_ITEMS.length + 1} className="h-3 p-0 border-0" />
                           </tr>
@@ -3362,8 +3372,8 @@ export default function ReconciliationPage() {
                   </tbody>
                   <tfoot>
                     {(() => {
-                      const sysByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationSystemValue(h, li), 0));
-                      const bankByLi = LINE_ITEMS.map(li => CONSOLIDATION_HOTELS.reduce((s, h) => s + consolidationBankValue(h, li), 0));
+                      const sysByLi = LINE_ITEMS.map(li => CONSOLIDATION_BANK_HOTELS.reduce((s, h) => s + consolidationSystemValue(h, li), 0));
+                      const bankByLi = LINE_ITEMS.map(li => CONSOLIDATION_BANK_HOTELS.reduce((s, h) => s + consolidationBankValue(h, li), 0));
                       const grandSys = sysByLi.reduce((a, b) => a + b, 0);
                       const grandBank = bankByLi.reduce((a, b) => a + b, 0);
                       return (
