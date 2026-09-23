@@ -264,17 +264,23 @@ export async function parseAfritecXls(
     const row = rows[i];
     const rawCode = String(row[eCol] || '').trim();
     const amount = Number(row[aCol]) || 0;
+    const name = colFullName >= 0
+      ? String(row[colFullName] || '').trim()
+      : `${String(row[fCol] || '')} ${String(row[sCol] || '')}`.trim();
 
-    // Totals row: no employee code but has amount
     if (!rawCode && amount > 0) {
-      stmtTotal = amount;
+      // Totals row: no code AND no name (or a "Total" label). A row that carries a
+      // real name but no code is an employee the vendor didn't code — confirmed live
+      // on CSL's Sep 2026 Afritec file (last row "MOKWETO ELEPANG 628.41", blank
+      // code), which was being read as the statement total (628.41 instead of ~150k)
+      // and dropped from the employee list. Kept as a name-only unmatched line for
+      // the name-based second pass, same shape as Furnmart/Bodulo's no-code rows.
+      if (!name || /total/i.test(name)) stmtTotal = amount;
+      else unmatchedLines.push({ empCode: '', name, amount });
       continue;
     }
     if (!rawCode || amount <= 0) continue;
 
-    const name = colFullName >= 0
-      ? String(row[colFullName] || '').trim()
-      : `${String(row[fCol] || '')} ${String(row[sCol] || '')}`.trim();
     const line: ReconLine = { empCode: normalizeCode(rawCode), name, amount };
 
     // Unmatched = code doesn't look like a hotel employee code (no letters, or just digits)
