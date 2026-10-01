@@ -828,9 +828,12 @@ export default function BursPage() {
                   <tr key={`${employee?.id ?? line.empCode}-${i}`} className={!employee ? 'bg-amber-50/50' : undefined}>
                     <td className="px-5 py-2.5 text-muted-foreground">{hotel?.short_code ?? '—'}</td>
                     <td className="px-5 py-2.5 font-medium">
-                      {employee?.surname ?? <span title="No matching employee record">{line.name || '—'}</span>}
+                      {/* Unmatched rows: use the payroll file's own split name when the
+                          parser captured one (Pom Pom's Last Name/First Name columns);
+                          only sources with a single combined name fall back to it here. */}
+                      {employee?.surname ?? <span title="No matching employee record">{line.surname || line.name || '—'}</span>}
                     </td>
-                    <td className="px-5 py-2.5">{employee?.first_name ?? ''}</td>
+                    <td className="px-5 py-2.5">{employee?.first_name ?? (line.surname ? line.firstName ?? '' : '')}</td>
                     <td className={`px-5 py-2.5 font-mono text-xs ${idNumber ? 'text-muted-foreground' : 'text-red-600 font-medium'}`}>
                       {idNumber || 'missing'}
                     </td>

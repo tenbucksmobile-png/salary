@@ -857,7 +857,9 @@ function parsePomPomPayrollXlsx(rows: any[][], fileName: string): ParsedPayroll 
   const colLeavePay    = col('leave pay');
   const colOvertime    = col(/^overtime$/);
   const colTip         = col(/tip pom pom/);
-  const colOtherPayments = col('other payments');
+  // "Other Payments" (Aug 2026 HR export) or "Other Income" (Sep 2026 HR
+  // export — same column, relabelled; before this match it silently read 0).
+  const colOtherPayments = col(/other\s*(payments?|income)/);
 
   // Amounts in the HR export are formatted strings ("2,940.00", padded with
   // spaces) rather than raw numbers, and a blank PAYE cell comes through as
