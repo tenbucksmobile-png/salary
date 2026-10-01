@@ -153,11 +153,16 @@ function matchTaxpayers(
 // Basic derivation for OtherPayments, and 0 for the other two. Shared by
 // the ITW8 export and the on-screen Taxpayers table so the two never
 // disagree on what "Commission"/"Other Income" mean for a given row.
-function itw8DerivedFields(line: PayrollLine): { bonusCommission: number; otherPayments: number; severanceNonTaxable: number } {
+function itw8DerivedFields(line: PayrollLine): { bonusCommission: number; otherPayments: number; severancePayGratuity: number; exemptionAmount: number } {
   const bonusCommission = line.bonusCommission ?? 0;
   const otherPayments = line.otherPayments ?? Math.max(0, (line.incomeTotal || 0) - (line.basic || 0) - bonusCommission);
-  const severanceNonTaxable = line.severanceNonTaxable ?? 0;
-  return { bonusCommission, otherPayments, severanceNonTaxable };
+  // Gratuity (CFEM): per explicit instruction, SeverancePayGratuity carries
+  // ONLY the taxed portion ("Gratuity Taxed"); the "Gratuity No Tax" portion
+  // goes to ExemptionAmount. Non-taxable severance (CSL/NL 5771) still feeds
+  // SeverancePayGratuity as before — that rule predates this one.
+  const severancePayGratuity = (line.severanceNonTaxable ?? 0) + (line.gratuityTaxed ?? 0);
+  const exemptionAmount = line.gratuityNoTax ?? 0;
+  return { bonusCommission, otherPayments, severancePayGratuity, exemptionAmount };
 }
 
 function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: number, tin: string, employerName: string): string {
@@ -168,11 +173,11 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
   lines.push(csvRow([String(taxYear), String(taxMonth), tin, employerName]));
   lines.push(csvRow(ITW8_COLUMNS));
   for (const { line, employee } of rows) {
-    const { bonusCommission, otherPayments, severanceNonTaxable } = itw8DerivedFields(line);
+    const { bonusCommission, otherPayments, severancePayGratuity, exemptionAmount } = itw8DerivedFields(line);
     // A severance payment requires a payment date on the ITW8 — confirmed
     // convention: the 25th of the selected export period's month, not each
     // employee's own pay date (no per-employee severance date exists upstream).
-    const severanceDate = severanceNonTaxable > 0
+    const severanceDate = severancePayGratuity > 0
       ? `25/${String(calendarMonth).padStart(2, '0')}/${calendarYear}`
       : '';
     // A PAYE deduction is owed to BURS regardless of whether our own
@@ -190,14 +195,14 @@ function buildItw8Csv(rows: TaxpayerRow[], calendarYear: number, calendarMonth: 
       money(bonusCommission),
       money(line.housingBenefit ?? 0), // BenefitsHousing — CFEM's "Housing Allowance" section; 0 for every other source (no equivalent column upstream)
       '0', '0', '0',
-      money(severanceNonTaxable),
+      money(severancePayGratuity),
       severanceDate,
       '', // RetrenchmentPaymentDate
       '0', '0', '0',
       '', // PensionPaymentDate
       money(otherPayments),
       money(line.pensionEe),
-      '0',
+      money(exemptionAmount), // ExemptionAmount — CFEM's "Gratuity No Tax" portion
       'ANNUALIZATION',
       money(line.paye),
       from,
@@ -809,6 +814,8 @@ export default function BursPage() {
                 {taxpayerTab === 'combined' && (
                   <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Housing Benefit</th>
                 )}
+                <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Severance/Gratuity</th>
+                <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Exemption</th>
                 <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Other Income</th>
                 <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Tax Deducted</th>
               </tr>
@@ -816,7 +823,7 @@ export default function BursPage() {
             <tbody className="divide-y">
               {activeTaxpayerRows.map(({ line, employee, hotel }, i) => {
                 const idNumber = employee?.id_number || line.idNumber || '';
-                const { bonusCommission, otherPayments } = itw8DerivedFields(line);
+                const { bonusCommission, otherPayments, severancePayGratuity, exemptionAmount } = itw8DerivedFields(line);
                 return (
                   <tr key={`${employee?.id ?? line.empCode}-${i}`} className={!employee ? 'bg-amber-50/50' : undefined}>
                     <td className="px-5 py-2.5 text-muted-foreground">{hotel?.short_code ?? '—'}</td>
@@ -833,7 +840,9 @@ export default function BursPage() {
                     {taxpayerTab === 'combined' && (
                       <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{line.housingBenefit ? line.housingBenefit.toLocaleString('en-ZA') : '—'}</td>
                     )}
-                    <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{otherPayments ? otherPayments.toLocaleString('en-ZA') : '—'}</td>
+                    <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{severancePayGratuity ? severancePayGratuity.toLocaleString('en-ZA') : '—'}</td>
+                    <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{exemptionAmount ? exemptionAmount.toLocaleString('en-ZA') : '—'}</td>
+                    <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{otherPayments ?otherPayments.toLocaleString('en-ZA') : '—'}</td>
                     <td className="px-5 py-2.5 text-right font-mono">{line.paye.toLocaleString('en-ZA')}</td>
                   </tr>
                 );

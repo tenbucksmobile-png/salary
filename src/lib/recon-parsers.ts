@@ -57,6 +57,8 @@ export interface PayrollLine {
   otherPayments?: number;       // 1000 - Overtime PPHoliday, 1003 - General Staff Tip, 1004 - Notice pay, 5321/5323 - Overtime — NOT 1001 (Maternity Leave-NegativeIncome, confirmed a different item despite the similar numbering)
   bonusCommission?: number;     // 5300 - Commission
   severanceNonTaxable?: number; // 5771 - Severance Pay - Non Taxable Portion
+  gratuityTaxed?: number;       // CFEM's "Gratuity Taxed" section — ITW8 SeverancePayGratuity
+  gratuityNoTax?: number;       // CFEM's "Gratuity No Tax" section — ITW8 ExemptionAmount
   housingBenefit?: number;      // CFEM's "LIST OF: Housing Allowance" section — maps to ITW8 BenefitsHousing
 }
 
@@ -1102,6 +1104,14 @@ export function parseIlgPayrollList(text: string, fileName: string): ParsedPayro
   const providentLines = findIlgListSection(sections, ['provident', 'pension']);
   const commissionLines = findIlgListSection(sections, ['commission']);
   const severanceNonTaxLines = findIlgListSection(sections, ['severance n/tax', 'severance non']);
+  // CFEM's export carries gratuity as two sections — "Gratuity No Tax" and
+  // "Gratuity Taxed" (confirmed Sep 2026: FRE001/FRE002 70,557.00 in each,
+  // i.e. 141,114.00 gratuity per person, with the taxed half visibly driving
+  // that month's PAYE). Per explicit instruction the ITW8 SeverancePayGratuity
+  // field carries ONLY the taxed portion; the No Tax portion goes to
+  // ExemptionAmount.
+  const gratuityNoTaxLines = findIlgListSection(sections, ['gratuity no', 'gratuity n/tax']);
+  const gratuityTaxedLines = findIlgListSection(sections, ['gratuity tax']);
   // CFEM's revised export adds a housing-benefit section — narrow 2-column
   // shape (EMP.CODE / NAME / EMP.AMOUNT, no CO.CONTRIB/TOTAL), same shape as
   // the Salary section above, so its single value is index 0, not index 1.
@@ -1124,16 +1134,25 @@ export function parseIlgPayrollList(text: string, fileName: string): ParsedPayro
   const commissionByCode = byCode(commissionLines);
   const severanceByCode = byCode(severanceNonTaxLines);
   const housingByCode = byCode(housingLines);
+  const gratuityNoTaxByCode = byCode(gratuityNoTaxLines);
+  const gratuityTaxedByCode = byCode(gratuityTaxedLines);
+
+  // Sections come in two shapes: 3-value [CO.CONTRIB, EMP.AMOUNT, TOTAL]
+  // (EMP.AMOUNT at index 1) or the narrow single EMP.AMOUNT column (index 0).
+  // CFEM's Severance/Gratuity/Commission sections are the narrow shape — a
+  // hardcoded values[1] read those as 0.
+  const empAmount = (l: IlgListLine | undefined): number =>
+    !l ? 0 : l.values.length >= 3 ? (l.values[1] ?? 0) : (l.values[l.values.length - 1] ?? 0);
 
   const lines: PayrollLine[] = salaryLines.map(s => {
     const basic = s.values[0] ?? 0;
-    // [CO.CONTRIB, EMP.AMOUNT, TOTAL] — EMP.AMOUNT (index 1) is the
-    // employee-side figure for every 3-column section (PAYE has no employer
-    // side, so CO.CONTRIB is always 0 there anyway).
-    const paye = payeByCode.get(s.empCode)?.values[1] ?? 0;
-    const pensionEe = providentByCode.get(s.empCode)?.values[1] ?? 0;
-    const bonusCommission = commissionByCode.get(s.empCode)?.values[1] ?? 0;
-    const severanceNonTaxable = severanceByCode.get(s.empCode)?.values[1] ?? 0;
+    // PAYE has no employer side, so CO.CONTRIB is always 0 there anyway.
+    const paye = empAmount(payeByCode.get(s.empCode));
+    const pensionEe = empAmount(providentByCode.get(s.empCode));
+    const bonusCommission = empAmount(commissionByCode.get(s.empCode));
+    const severanceNonTaxable = empAmount(severanceByCode.get(s.empCode));
+    const gratuityNoTax = empAmount(gratuityNoTaxByCode.get(s.empCode));
+    const gratuityTaxed = empAmount(gratuityTaxedByCode.get(s.empCode));
     const housingBenefit = housingByCode.get(s.empCode)?.values[0] ?? 0;
     return {
       empCode: s.empCode,
@@ -1150,6 +1169,8 @@ export function parseIlgPayrollList(text: string, fileName: string): ParsedPayro
       nettPay: basic - paye - pensionEe,
       bonusCommission,
       severanceNonTaxable,
+      gratuityTaxed,
+      gratuityNoTax,
       housingBenefit,
     };
   });
