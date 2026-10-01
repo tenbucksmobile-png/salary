@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { parseVIPReport, isTabularEmployeeFile, parseTSVEmployeeFile, isMedicalAidFile, parseMedicalAidFile, isLeaveBalanceFile, parseLeaveBalanceFile, isEmpCodeUpdateFile, parseEmpCodeUpdateFile, isOmangUpdateFile, parseOmangUpdateFile, isVipPersonalInfoFile, parseVipPersonalInfoFile, parseCslPayrollSchedule, type PayrollSchedulePeriod } from '@/lib/vip-parser';
 import { isEmployeeCsvExport, parseEmployeeCsvExport, type RoundtripRow } from '@/lib/employee-csv';
 import { nameKey } from '@/lib/recon-parsers';
@@ -46,6 +46,18 @@ interface ImportRow {
   ctc: number;
   employmentDate?: string | null;
   gradeLabel?: string | null;
+  // HR List only: differences between the file and the existing record
+  // (matched rows are never overwritten — these are shown for review).
+  changes?: { field: string; current: string; incoming: string }[];
+  // HR List only: a 'add' row whose name (order-agnostic) matches an
+  // existing employee under a different code — likely a duplicate.
+  possibleMatch?: string;
+}
+
+// Case/punctuation-insensitive name comparison for the HR List diff, so
+// "KENOSI" vs "Kenosi" isn't flagged but a real spelling change is.
+function normName(s: string | null | undefined): string {
+  return (s ?? '').toUpperCase().replace(/[^A-Z ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 interface MedicalRow {
@@ -135,6 +147,7 @@ export default function ImportPage() {
   const [selectedPeriodIdx, setSelectedPeriodIdx] = useState(0);
   const [importMode, setImportMode] = useState<'update' | 'new'>('new');
   const [existingEmpData, setExistingEmpData] = useState<Map<string, Record<string, any>>>(new Map());
+  const [hrShowAll, setHrShowAll] = useState(false);
   const [loading,   setLoading]   = useState(false);
   const [importing, setImporting] = useState(false);
   const [result, setResult]       = useState({ added: 0, updated: 0 });
@@ -457,19 +470,38 @@ export default function ImportPage() {
       const { employees: emps, errors: parseErrors } = parseTSVEmployeeFile(text);
 
       // Match by employee code first, fall back to surname+first_name
-      const { data: existing } = await sb.from('employees').select('id, surname, first_name, employee_code').eq('hotel_id', hotelId);
+      const { data: existing } = await sb.from('employees').select('id, surname, first_name, employee_code, id_number, status').eq('hotel_id', hotelId);
+      const existingById = new Map((existing ?? []).map((e: any) => [e.id as string, e]));
       const existingNameMap = new Map(
         (existing ?? []).map((e: any) => [`${e.surname.toLowerCase()}|${e.first_name.toLowerCase()}`, e.id as string])
       );
+      // Order-agnostic name index, only used to warn that a "new" row may
+      // already exist under another code (e.g. first/surname swapped).
+      const existingLooseNameMap = new Map(
+        (existing ?? []).map((e: any) => [nameKey(`${e.surname} ${e.first_name}`), e])
+      );
+      // Latest basic salary per existing employee, for the change highlight.
+      const latestBasic = new Map<string, number>();
+      const existingIds = (existing ?? []).map((e: any) => e.id as string);
+      if (existingIds.length > 0) {
+        const sal = await fetchAllRows(() => sb.from('salary_records')
+          .select('employee_id, basic_salary, period_year, period_month')
+          .in('employee_id', existingIds)
+          .order('period_year', { ascending: false })
+          .order('period_month', { ascending: false }));
+        for (const s of sal as any[]) {
+          if (!latestBasic.has(s.employee_id)) latestBasic.set(s.employee_id, Number(s.basic_salary ?? 0));
+        }
+      }
       const existingCodeMap = new Map(
         (existing ?? []).filter((e: any) => e.employee_code).map((e: any) => [String(e.employee_code).toUpperCase(), e.id as string])
       );
       const existingCodes = new Set((existing ?? []).filter((e: any) => e.employee_code).map((e: any) => e.employee_code as string));
 
       const importRows: ImportRow[] = emps.map(emp => {
-        const nameKey = `${emp.surname.toLowerCase()}|${emp.firstName.toLowerCase()}`;
+        const exactNameKey = `${emp.surname.toLowerCase()}|${emp.firstName.toLowerCase()}`;
         const codeKey = emp.employeeCode ? emp.employeeCode.toUpperCase() : '';
-        const existingId = (codeKey ? existingCodeMap.get(codeKey) : undefined) ?? existingNameMap.get(nameKey);
+        const existingId = (codeKey ? existingCodeMap.get(codeKey) : undefined) ?? existingNameMap.get(exactNameKey);
         // A file carrying separate Structure + Basic Salary columns alongside
         // Gross (Basic Salary = Total Earnings − Structure, same relationship
         // the employee detail page enforces) splits basic_salary out of the
@@ -479,8 +511,35 @@ export default function ImportPage() {
         // Files with no dedicated Basic Salary column keep the old
         // behaviour (basic = gross) via the basicSalaryFile ?? fallback.
         const basicSalary = emp.basicSalaryFile ?? emp.grossSalary;
+
+        // Matched employees are kept exactly as they are on record — the file
+        // never overwrites them. Differences are collected for highlighting.
+        const changes: { field: string; current: string; incoming: string }[] = [];
+        let possibleMatch: string | undefined;
+        const cur = existingId ? existingById.get(existingId) : undefined;
+        if (cur) {
+          if (emp.surname && normName(emp.surname) !== normName(cur.surname))
+            changes.push({ field: 'Surname', current: cur.surname ?? '', incoming: emp.surname });
+          if (emp.firstName && normName(emp.firstName) !== normName(cur.first_name))
+            changes.push({ field: 'First Name', current: cur.first_name ?? '', incoming: emp.firstName });
+          const fileId = emp.idNumber.replace(/\s/g, '');
+          const dbId = String(cur.id_number ?? '').replace(/\s/g, '');
+          if (fileId && fileId !== dbId)
+            changes.push({ field: 'Omang', current: dbId || '—', incoming: fileId });
+          const curBasic = latestBasic.get(existingId!);
+          if (basicSalary > 0 && (curBasic === undefined || Math.abs(curBasic - basicSalary) > 0.5))
+            changes.push({ field: 'Basic Salary', current: curBasic === undefined ? '—' : String(curBasic), incoming: String(basicSalary) });
+          if (cur.status !== 'active')
+            changes.push({ field: 'Status', current: cur.status, incoming: 'active (reactivated)' });
+        } else {
+          const loose = existingLooseNameMap.get(nameKey(`${emp.surname} ${emp.firstName}`));
+          if (loose) possibleMatch = `${loose.employee_code ?? 'no code'} — ${loose.first_name} ${loose.surname}`;
+        }
+
         return {
           importType: 'employee' as const,
+          changes,
+          possibleMatch,
           action: existingId ? 'update' as const : 'add' as const,
           existing_employee_id: existingId,
           employeeCode: emp.employeeCode || (existingId ? '' : makeSyntheticCode(emp.surname, emp.firstName, existingCodes)),
@@ -489,7 +548,8 @@ export default function ImportPage() {
           aka: '',
           department: emp.department,
           jobTitle: emp.jobTitle,
-          idNumber: emp.idNumber, paypoint: '', category: 0, jobGrade: 0,
+          // Omang stored digits-only ("531 619 413" → "531619413"), matching the rest of the DB
+          idNumber: emp.idNumber.replace(/\s/g, ''), paypoint: '', category: 0, jobGrade: 0,
           allowances: (emp.structureAllowance ? { structure: emp.structureAllowance } : {}) as Record<string, number>,
           basicSalary,
           totalEarnings: emp.grossSalary,
@@ -997,11 +1057,24 @@ export default function ImportPage() {
           }).select().single();
           employeeId = (newEmp as any)?.id;
           added++;
-        } else {
+        } else if (row.importType === 'employee') {
+          // HR List: a matched employee keeps their current record untouched —
+          // names, Omang, codes and salary are NOT overwritten (differences
+          // were highlighted in the preview for manual review). Only the
+          // roster bookkeeping is updated: last_seen_at (drives the "not in
+          // last import" flag) and reactivation, since presence on a
+          // full-roster upload means they're currently employed (see the
+          // ILG ANO incident in CLAUDE.md).
           await sb2.from('employees').update({
-            // For HR List imports, the file is the authoritative source — update names too
-            ...(row.importType === 'employee' && row.surname   ? { surname:    row.surname    } : {}),
-            ...(row.importType === 'employee' && row.firstName ? { first_name: row.firstName  } : {}),
+            status: 'active',
+            last_seen_at: seenAt,
+            updated_at: new Date().toISOString(),
+          }).eq('id', employeeId!);
+          updated++;
+          continue;
+        } else {
+          // VIP 710 update path (HR List matches are handled above and never reach here)
+          await sb2.from('employees').update({
             ...(row.jobTitle ? { job_title: row.jobTitle } : {}),
             ...(row.department ? { department_code: row.department } : {}),
             ...(row.employeeCode ? { employee_code: row.employeeCode } : {}),
@@ -1011,15 +1084,6 @@ export default function ImportPage() {
             ...(row.jobGrade ? { job_grade: row.jobGrade } : {}),
             ...(importAsFtc ? { grade_label: 'Fixed Term' } : row.gradeLabel ? { grade_label: row.gradeLabel } : {}),
             ...(row.employmentDate ? { employment_date: row.employmentDate } : {}),
-            // HR List is a full-roster upload — an employee's presence in it
-            // means they're currently employed, so a match reactivates a
-            // previously terminated/on_leave record. Confirmed live: a
-            // vacant "ANO" position at ILG stayed stuck on status=terminated
-            // across multiple re-imports (last_seen_at kept refreshing, but
-            // nothing else in this update ever wrote status), silently
-            // dropping it from every active-only query app-wide, including
-            // the Dashboard headcount.
-            ...(row.importType === 'employee' ? { status: 'active', last_seen_at: seenAt } : {}),
             updated_at: new Date().toISOString(),
           }).eq('id', employeeId!);
           updated++;
@@ -1123,12 +1187,19 @@ export default function ImportPage() {
     setSelectedPeriodIdx(0);
     setErrors([]);
     setImportMode('new');
+    setHrShowAll(false);
     setExistingEmpData(new Map());
     if (fileRef.current) fileRef.current.value = '';
   }
 
   const addCount       = rows.filter(r => r.action === 'add').length;
   const updateCount    = rows.filter(r => r.action === 'update').length;
+  const changedCount   = rows.filter(r => r.action === 'update' && (r.changes?.length ?? 0) > 0).length;
+  // HR List preview defaults to only the rows that need attention (new
+  // employees + matched rows whose file values differ from the record).
+  const previewRows = importType === 'employee' && !hrShowAll
+    ? rows.filter(r => r.action === 'add' || (r.changes?.length ?? 0) > 0)
+    : rows;
   const selectedHotelImport = hotels.find(h => h.id === hotelId);
   const selectedCountry = selectedHotelImport?.country ?? '';
   const isFtcHotel  = selectedHotelImport?.short_code === 'CSL' || selectedHotelImport?.short_code === 'NL';
@@ -1706,9 +1777,24 @@ export default function ImportPage() {
             <span className="rounded-lg bg-green-50 border border-green-200 px-3 py-1.5 text-sm text-green-700">
               <strong>{addCount}</strong> new
             </span>
-            <span className="rounded-lg bg-blue-50 border border-blue-200 px-3 py-1.5 text-sm text-blue-700">
-              <strong>{updateCount}</strong> update
-            </span>
+            {importType === 'employee' ? (
+              <>
+                <span className="rounded-lg bg-muted border px-3 py-1.5 text-sm text-muted-foreground">
+                  <strong>{updateCount - changedCount}</strong> matched, no changes
+                </span>
+                <span className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-1.5 text-sm text-amber-700">
+                  <strong>{changedCount}</strong> matched with differences
+                </span>
+                <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <input type="checkbox" checked={hrShowAll} onChange={e => setHrShowAll(e.target.checked)} />
+                  Show all {rows.length} rows
+                </label>
+              </>
+            ) : (
+              <span className="rounded-lg bg-blue-50 border border-blue-200 px-3 py-1.5 text-sm text-blue-700">
+                <strong>{updateCount}</strong> update
+              </span>
+            )}
             {errors.length > 0 && (
               <span className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-1.5 text-sm text-amber-700">
                 {errors.length} warnings
@@ -1716,12 +1802,19 @@ export default function ImportPage() {
             )}
           </div>
 
+          {importType === 'employee' && (
+            <p className="text-xs text-muted-foreground">
+              Only <strong>new</strong> employees are inserted. Matched employees keep their current record — names, Omang and salary are <strong>not</strong> changed.
+              Differences are highlighted in amber for review; correct them on the employee&apos;s page if the file is right.
+            </p>
+          )}
+
           <div className="bg-white rounded-xl border overflow-x-auto">
             <table className="w-full text-sm whitespace-nowrap">
               <thead>
                 <tr className="border-b bg-muted/40">
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Action</th>
-                  {importType === 'vip' && <th className="text-left px-4 py-3 font-medium text-muted-foreground">Code</th>}
+                  {(importType === 'vip' || importType === 'employee') && <th className="text-left px-4 py-3 font-medium text-muted-foreground">Code</th>}
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Name</th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Department</th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Title</th>
@@ -1730,17 +1823,27 @@ export default function ImportPage() {
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Gross</th>
                   {importType === 'vip' && <th className="text-right px-4 py-3 font-medium text-muted-foreground">CTC</th>}
                   {importType === 'vip' && <th className="text-right px-4 py-3 font-medium text-muted-foreground">Net</th>}
+                  {importType === 'employee' && <th className="text-left px-4 py-3 font-medium text-muted-foreground">Differences (record → file)</th>}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i} className="border-b last:border-0 hover:bg-muted/10">
+                {previewRows.length === 0 && (
+                  <tr><td colSpan={10} className="px-4 py-6 text-center text-sm text-muted-foreground">Nothing new and no differences — every row matches the current records.</td></tr>
+                )}
+                {previewRows.map((r, i) => {
+                  const hasChanges = (r.changes?.length ?? 0) > 0;
+                  const isHr = importType === 'employee';
+                  return (
+                  <tr key={i} className={`border-b last:border-0 hover:bg-muted/10 ${isHr && hasChanges ? 'bg-amber-50/40' : ''}`}>
                     <td className="px-4 py-2.5">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${r.action === 'add' ? 'bg-green-50 text-green-700' : 'bg-blue-50 text-blue-700'}`}>
-                        {r.action === 'add' ? 'New' : 'Update'}
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                        r.action === 'add' ? 'bg-green-50 text-green-700'
+                        : !isHr ? 'bg-blue-50 text-blue-700'
+                        : hasChanges ? 'bg-amber-100 text-amber-800' : 'bg-muted text-muted-foreground'}`}>
+                        {r.action === 'add' ? 'New' : !isHr ? 'Update' : hasChanges ? 'Differs — kept' : 'Match — kept'}
                       </span>
                     </td>
-                    {importType === 'vip' && <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{r.employeeCode}</td>}
+                    {(importType === 'vip' || isHr) && <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{r.employeeCode || '—'}</td>}
                     <td className="px-4 py-2.5 font-medium">{r.surname}, {r.firstName}</td>
                     <td className="px-4 py-2.5 text-muted-foreground">{r.department || '—'}</td>
                     <td className="px-4 py-2.5">{r.jobTitle || '—'}</td>
@@ -1755,8 +1858,26 @@ export default function ImportPage() {
                     <td className="px-4 py-2.5 text-right font-mono">{fmt(r.basicSalary)}</td>
                     {importType === 'vip' && <td className="px-4 py-2.5 text-right font-mono">{fmt(r.ctc)}</td>}
                     {importType === 'vip' && <td className="px-4 py-2.5 text-right font-mono">{fmt(r.netSalary)}</td>}
+                    {isHr && (
+                      <td className="px-4 py-2.5 text-xs">
+                        {r.possibleMatch && (
+                          <span className="inline-block rounded bg-red-50 border border-red-200 text-red-700 px-1.5 py-0.5">
+                            Possible duplicate of {r.possibleMatch}
+                          </span>
+                        )}
+                        <div className="flex flex-wrap gap-1">
+                          {r.changes?.map((c, j) => (
+                            <span key={j} className="inline-block rounded bg-amber-100 text-amber-900 px-1.5 py-0.5">
+                              <strong>{c.field}:</strong> {c.current} → {c.incoming}
+                            </span>
+                          ))}
+                        </div>
+                        {!r.possibleMatch && !hasChanges && <span className="text-muted-foreground">—</span>}
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1772,7 +1893,7 @@ export default function ImportPage() {
 
           {importType === 'employee' && (
             <p className="text-xs text-muted-foreground">
-              Salary records are written with gross salary only. Run <strong>Calculate Burden</strong> or <strong>Methods → Save &amp; Update</strong> afterwards to populate contributions and provisions.
+              Salary records are written for <strong>new</strong> employees only, with gross salary only. Run <strong>Calculate Burden</strong> or <strong>Methods → Save &amp; Update</strong> afterwards to populate contributions and provisions.
             </p>
           )}
 
@@ -1783,7 +1904,9 @@ export default function ImportPage() {
               className="flex items-center gap-2 rounded-md bg-primary text-primary-foreground px-5 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
             >
               <FileText className="h-4 w-4" />
-              {importing ? 'Importing…' : `Confirm Import (${rows.length} employees)`}
+              {importing ? 'Importing…' : importType === 'employee'
+                ? `Confirm — add ${addCount} new, keep ${updateCount} existing`
+                : `Confirm Import (${rows.length} employees)`}
             </button>
             <button onClick={reset} className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
               Cancel
@@ -1798,7 +1921,9 @@ export default function ImportPage() {
           <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-4" />
           <h2 className="text-lg font-semibold mb-2">Import Complete</h2>
           <p className="text-muted-foreground text-sm mb-6">
-            {result.added} employees added · {result.updated} updated for {MONTH_NAMES[periodMonth - 1]} {periodYear}
+            {importType === 'employee'
+              ? `${result.added} new employees added · ${result.updated} existing employees kept unchanged`
+              : `${result.added} employees added · ${result.updated} updated for ${MONTH_NAMES[periodMonth - 1]} ${periodYear}`}
           </p>
           <div className="flex gap-3 justify-center">
             <a href="/dashboard/employees" className="rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors">
