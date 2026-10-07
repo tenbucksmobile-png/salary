@@ -547,6 +547,32 @@ export default function BursPage() {
   const activeTaxpayerRows = taxpayerTab === 'ilg' ? ilgTaxpayerRows : combinedTaxpayerRows;
   const activeUnmatched = taxpayerTab === 'ilg' ? ilgTaxpayers.unmatched : combinedUnmatched;
 
+  // Per-entity subtotals (one per hotel on the Combined tab) plus a grand
+  // total, using the same figures as the rows and the ITW8 export.
+  const taxpayerTotals = useMemo(() => {
+    const sum = (rows: TaxpayerRow[]) => rows.reduce(
+      (acc, { line }) => {
+        const d = itw8DerivedFields(line);
+        acc.basic += line.basic;
+        acc.pension += line.pensionEe;
+        acc.commission += d.bonusCommission;
+        acc.housing += line.housingBenefit ?? 0;
+        acc.severance += d.severancePayGratuity;
+        acc.other += d.otherPayments;
+        acc.paye += line.paye;
+        return acc;
+      },
+      { count: rows.length, basic: 0, pension: 0, commission: 0, housing: 0, severance: 0, other: 0, paye: 0 },
+    );
+    const groups = taxpayerTab === 'combined'
+      ? COMBINED_CODES
+          .map(code => ({ label: code, rows: activeTaxpayerRows.filter(r => r.hotel?.short_code === code) }))
+          .filter(g => g.rows.length > 0)
+          .map(g => ({ label: g.label, ...sum(g.rows) }))
+      : [];
+    return { groups, grand: sum(activeTaxpayerRows) };
+  }, [activeTaxpayerRows, taxpayerTab]);
+
   const missingOmangAmongTaxpayers = activeTaxpayerRows.filter(r => !(r.employee?.id_number || r.line.idNumber || '').trim());
 
   function updateEmployerInfo(group: 'ilg' | 'combined', field: 'tin' | 'name', value: string) {
@@ -813,7 +839,8 @@ export default function BursPage() {
                 {taxpayerTab === 'combined' && (
                   <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Housing Benefit</th>
                 )}
-                <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Severance/Gratuity</th>                <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Other Income</th>
+                <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Severance/Gratuity</th>
+                <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Other Income</th>
                 <th className="text-right px-5 py-2.5 font-medium text-muted-foreground">Tax Deducted</th>
               </tr>
             </thead>
@@ -840,12 +867,35 @@ export default function BursPage() {
                     {taxpayerTab === 'combined' && (
                       <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{line.housingBenefit ? line.housingBenefit.toLocaleString('en-ZA') : '—'}</td>
                     )}
-                    <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{severancePayGratuity ? severancePayGratuity.toLocaleString('en-ZA') : '—'}</td>                    <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{otherPayments ?otherPayments.toLocaleString('en-ZA') : '—'}</td>
+                    <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{severancePayGratuity ? severancePayGratuity.toLocaleString('en-ZA') : '—'}</td>
+                    <td className="px-5 py-2.5 text-right font-mono text-muted-foreground">{otherPayments ? otherPayments.toLocaleString('en-ZA') : '—'}</td>
                     <td className="px-5 py-2.5 text-right font-mono">{line.paye.toLocaleString('en-ZA')}</td>
                   </tr>
                 );
               })}
             </tbody>
+            <tfoot>
+              {[
+                ...taxpayerTotals.groups.map(g => ({ ...g, label: `${g.label} total (${g.count})`, grand: false })),
+                { ...taxpayerTotals.grand, label: `${taxpayerTab === 'ilg' ? 'ILG' : 'Grand'} total (${taxpayerTotals.grand.count})`, grand: true },
+              ].map(t => {
+                const money = (n: number) => n.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                return (
+                  <tr key={t.label} className={t.grand ? 'border-t-2 bg-muted/40 font-semibold' : 'border-t bg-muted/20 font-medium'}>
+                    <td colSpan={4} className="px-5 py-2.5">{t.label}</td>
+                    <td className="px-5 py-2.5 text-right font-mono">{money(t.basic)}</td>
+                    <td className="px-5 py-2.5 text-right font-mono">{money(t.pension)}</td>
+                    <td className="px-5 py-2.5 text-right font-mono">{money(t.commission)}</td>
+                    {taxpayerTab === 'combined' && (
+                      <td className="px-5 py-2.5 text-right font-mono">{money(t.housing)}</td>
+                    )}
+                    <td className="px-5 py-2.5 text-right font-mono">{money(t.severance)}</td>
+                    <td className="px-5 py-2.5 text-right font-mono">{money(t.other)}</td>
+                    <td className="px-5 py-2.5 text-right font-mono">{money(t.paye)}</td>
+                  </tr>
+                );
+              })}
+            </tfoot>
           </table>
         )}
         {missingOmangAmongTaxpayers.length > 0 && (
