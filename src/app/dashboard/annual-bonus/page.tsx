@@ -11,10 +11,8 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { fmtCurrency, sortHotels } from '@/lib/utils';
-import { Pencil, X, Check, Download, Save, Trash2, ChevronDown } from 'lucide-react';
+import { Pencil, X, Check, Download, Save, Trash2 } from 'lucide-react';
 import { exportReport, ReportSheet } from '@/lib/reports-export';
-
-const GRADE_OPTIONS = ['ANO', 'Fixed Term', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
 
 // Eligibility: under 6 months' service at 31 Dec of the bonus year = no bonus;
 // 6–11 months = pro rata (months / 12); 12+ months = full. Same rule and anchor
@@ -43,7 +41,6 @@ interface Override {
 interface HotelSettings {
   pct: string;
   flat: string;
-  excludedGrades: Set<string>;
   overrides: Map<string, Override>;
   excluded: Set<string>;
 }
@@ -54,6 +51,7 @@ interface BonusRow {
   currentGross: number;
   monthsService: number | null;   // at 31 Dec of the bonus year; null = no start date
   factor: number;                 // 0 (ineligible), months/12 (pro rata) or 1
+  incentiveMultiplier: number | null; // set for incentive-scheme employees: bonus = gross × multiplier × factor
   effectivePct: number;
   effectiveFlat: number;
   bonusAmount: number;
@@ -72,21 +70,30 @@ function computeRows(
   const gPct  = (parseFloat(settings.pct) || 0) / 100;
   const gFlat = parseFloat(settings.flat) || 0;
 
-  if (gPct === 0 && gFlat === 0 && settings.overrides.size === 0 && settings.excluded.size === 0) return [];
+  const hotelEmployees = employees.filter(e => e.hotel_id === hotelId);
+  const hasIncentive   = hotelEmployees.some(e => e.incentive_applicable);
+  if (gPct === 0 && gFlat === 0 && !hasIncentive && settings.overrides.size === 0 && settings.excluded.size === 0) return [];
 
-  return employees
-    .filter(e => e.hotel_id === hotelId)
+  return hotelEmployees
     .map(e => {
       const sal   = latestSalary.get(e.id);
       const hotel = hotelMap.get(e.hotel_id);
       if (!sal || !hotel) return null;
 
       const currentGross = sal.total_earnings;
-      const isExcluded   = settings.excluded.has(e.id) || settings.excludedGrades.has(e.grade_label ?? '');
+      const isExcluded   = settings.excluded.has(e.id);
       const ov           = settings.overrides.get(e.id);
+      const hasOv        = !!ov && (ov.pct !== '' || ov.flat !== '');
 
-      const effectivePct  = isExcluded ? 0 : (ov && ov.pct  !== '' ? (parseFloat(ov.pct)  || 0) / 100 : gPct);
-      const effectiveFlat = isExcluded ? 0 : (ov && ov.flat !== '' ? (parseFloat(ov.flat) || 0)        : gFlat);
+      // Incentive-scheme employees (employees.incentive_applicable, e.g. APA's
+      // executives) get gross × incentive_multiplier instead of the hotel's
+      // % + flat. A per-employee override still takes precedence.
+      const incentiveMultiplier = e.incentive_applicable && !hasOv ? (e.incentive_multiplier ?? 0) : null;
+      const basePct  = incentiveMultiplier != null ? incentiveMultiplier : gPct;
+      const baseFlat = incentiveMultiplier != null ? 0 : gFlat;
+
+      const effectivePct  = isExcluded ? 0 : (ov && ov.pct  !== '' ? (parseFloat(ov.pct)  || 0) / 100 : basePct);
+      const effectiveFlat = isExcluded ? 0 : (ov && ov.flat !== '' ? (parseFloat(ov.flat) || 0)        : baseFlat);
 
       // Bonus = (gross × factor) × % + flat × factor, rounded to cents.
       // The factor pro-rates the flat too, and zeroes everything when ineligible.
@@ -96,7 +103,7 @@ function computeRows(
         : Math.round((currentGross * factor * effectivePct + effectiveFlat * factor) * 100) / 100;
 
       return {
-        employee: e, hotel, currentGross, monthsService, factor, effectivePct, effectiveFlat, bonusAmount,
+        employee: e, hotel, currentGross, monthsService, factor, incentiveMultiplier, effectivePct, effectiveFlat, bonusAmount,
         hasOverride: !!ov && !isExcluded, isExcluded,
       };
     })
@@ -110,7 +117,6 @@ function settingsFromJson(s2: Record<string, unknown>): HotelSettings {
   return {
     pct:  (s2.pct  as string) ?? '',
     flat: (s2.flat as string) ?? '',
-    excludedGrades: new Set<string>((s2.excludedGrades as string[]) ?? []),
     overrides: new Map(Object.entries((s2.overrides as Record<string, Override>) ?? {})),
     excluded:  new Set<string>((s2.excluded as string[]) ?? []),
   };
@@ -128,9 +134,6 @@ export default function AnnualBonusPage() {
 
   const [pct,  setPct]  = useState('');
   const [flat, setFlat] = useState('');
-  const [excludedGrades, setExcludedGrades] = useState<Set<string>>(new Set());
-  const [gradeDropdownOpen, setGradeDropdownOpen] = useState(false);
-  const gradeDropdownRef = useRef<HTMLDivElement>(null);
   const [overrides, setOverrides] = useState<Map<string, Override>>(new Map());
   const [excluded,  setExcluded]  = useState<Set<string>>(new Set());
 
@@ -205,28 +208,17 @@ export default function AnnualBonusPage() {
     const saved = hotelSettingsRef.current.get(hotelFilter);
     setPct(saved?.pct ?? '');
     setFlat(saved?.flat ?? '');
-    setExcludedGrades(new Set(saved?.excludedGrades ?? []));
     setOverrides(new Map(saved?.overrides ?? []));
     setExcluded(new Set(saved?.excluded ?? []));
     setEditingId(null);
   }, [hotelFilter, draftsLoadedFor]);
 
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (gradeDropdownRef.current && !gradeDropdownRef.current.contains(e.target as Node)) {
-        setGradeDropdownOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, []);
-
   const hotelMap = useMemo(() => new Map(hotels.map(h => [h.id, h])), [hotels]);
 
   const bonusRows = useMemo((): BonusRow[] => {
     if (!hotelFilter) return [];
-    return computeRows(hotelFilter, { pct, flat, excludedGrades, overrides, excluded }, employees, hotelMap, latestSalary, bonusYear);
-  }, [hotelFilter, pct, flat, excludedGrades, overrides, excluded, employees, hotelMap, latestSalary, bonusYear]);
+    return computeRows(hotelFilter, { pct, flat, overrides, excluded }, employees, hotelMap, latestSalary, bonusYear);
+  }, [hotelFilter, pct, flat, overrides, excluded, employees, hotelMap, latestSalary, bonusYear]);
 
   const totals = useMemo(() => ({
     currentGross:  bonusRows.reduce((s, r) => s + r.currentGross, 0),
@@ -237,6 +229,7 @@ export default function AnnualBonusPage() {
     excludedCount: bonusRows.filter(r => r.isExcluded).length,
     ineligibleCount: bonusRows.filter(r => !r.isExcluded && r.factor === 0).length,
     proRataCount:  bonusRows.filter(r => !r.isExcluded && r.factor > 0 && r.factor < 1).length,
+    incentiveCount: bonusRows.filter(r => !r.isExcluded && r.incentiveMultiplier != null).length,
   }), [bonusRows]);
 
   const savedSummary = useMemo(() =>
@@ -249,7 +242,7 @@ export default function AnnualBonusPage() {
           hotel: h,
           pct:   s.pct,
           flat:  s.flat,
-          excludedGrades: s.excludedGrades,
+          incentiveCount: rows.filter(r => !r.isExcluded && r.incentiveMultiplier != null).length,
           count: rows.filter(r => !r.isExcluded && r.bonusAmount > 0).length,
           bonus: rows.reduce((a, r) => a + r.bonusAmount, 0),
         };
@@ -285,10 +278,10 @@ export default function AnnualBonusPage() {
     setSaving(true);
     try {
       const entry: HotelSettings = {
-        pct, flat, excludedGrades: new Set(excludedGrades), overrides: new Map(overrides), excluded: new Set(excluded),
+        pct, flat, overrides: new Map(overrides), excluded: new Set(excluded),
       };
       const settingsJson = {
-        pct, flat, excludedGrades: [...excludedGrades],
+        pct, flat,
         overrides: Object.fromEntries([...overrides.entries()]),
         excluded:  [...excluded],
       };
@@ -337,7 +330,7 @@ export default function AnnualBonusPage() {
     hotelDraftIdsRef.current = nextIds;
 
     if (hotelFilter === hotelId) {
-      setPct(''); setFlat(''); setExcludedGrades(new Set());
+      setPct(''); setFlat('');
       setOverrides(new Map()); setExcluded(new Set());
     }
   }
@@ -353,13 +346,13 @@ export default function AnnualBonusPage() {
     try {
       const overview: ReportSheet = {
         name: 'Overview',
-        headers: ['Hotel', 'Currency', '% of Gross', 'Flat', 'Grades Excluded', 'Employees Paid', 'Total Bonus'],
+        headers: ['Hotel', 'Currency', '% of Gross', 'Flat', 'Incentive Employees', 'Employees Paid', 'Total Bonus'],
         rows: savedSummary.map(s => [
           s.hotel.name,
           s.hotel.country.toLowerCase().includes('botswana') ? 'BWP' : 'ZAR',
           s.pct ? `${s.pct}%` : '',
           s.flat ? parseFloat(s.flat) : null,
-          s.excludedGrades.size ? [...s.excludedGrades].join(', ') : '',
+          s.incentiveCount,
           s.count,
           s.bonus,
         ]),
@@ -373,7 +366,7 @@ export default function AnnualBonusPage() {
           r.employee.surname,
           r.employee.first_name,
           r.employee.job_title ?? '',
-          r.employee.grade_label ?? '',
+          r.incentiveMultiplier != null ? `Incentive ×${r.incentiveMultiplier}` : (r.hasOverride ? 'Override' : 'Standard'),
           r.employee.employment_date ?? '',
           r.monthsService,
           r.factor,
@@ -384,7 +377,7 @@ export default function AnnualBonusPage() {
         ]);
         return {
           name: s.hotel.short_code ?? s.hotel.name,
-          headers: ['Emp Code', 'Surname', 'First Name', 'Job Title', 'Grade', 'Start Date', 'Mths Service (Dec)', 'Factor', 'Current Gross', '% of Gross', 'Flat', 'Bonus Amount'],
+          headers: ['Emp Code', 'Surname', 'First Name', 'Job Title', 'Basis', 'Start Date', 'Mths Service (Dec)', 'Factor', 'Current Gross', '% of Gross', 'Flat', 'Bonus Amount'],
           rows: [
             ...body,
             ['Total', '', '', '', '', '', null, null, rows.reduce((a, r) => a + r.currentGross, 0), '', null, s.bonus],
@@ -402,7 +395,7 @@ export default function AnnualBonusPage() {
 
   const currentHotel  = hotelMap.get(hotelFilter);
   const country       = currentHotel?.country ?? '';
-  const hasAnyInput   = (parseFloat(pct) > 0) || (parseFloat(flat) > 0) || overrides.size > 0;
+  const hasAnyInput   = (parseFloat(pct) > 0) || (parseFloat(flat) > 0) || overrides.size > 0 || totals.incentiveCount > 0;
   const overrideCount = bonusRows.filter(r => r.hasOverride).length;
   const currencySym   = country.toLowerCase().includes('botswana') ? 'P' : 'R';
 
@@ -412,7 +405,7 @@ export default function AnnualBonusPage() {
         <div>
           <h1 className="text-2xl font-bold">Annual Bonus</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Bonus payment schedule — set the bonus per hotel as a % of gross and/or a flat amount, then save.
+            Bonus payment schedule — set the bonus per hotel as a % of gross and/or a flat amount, then save. Incentive-scheme employees are paid gross × their incentive multiplier.
             This is separate from the Bonus Provision and does not change anyone&apos;s salary.
           </p>
         </div>
@@ -439,7 +432,7 @@ export default function AnnualBonusPage() {
                 <th className="text-left py-2 font-medium text-muted-foreground">Hotel</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">% of Gross</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Flat</th>
-                <th className="text-right py-2 font-medium text-muted-foreground">Grade</th>
+                <th className="text-right py-2 font-medium text-muted-foreground">Incentive</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Employees</th>
                 <th className="text-right py-2 font-medium text-muted-foreground">Total Bonus</th>
                 <th className="py-2 w-24" />
@@ -455,7 +448,7 @@ export default function AnnualBonusPage() {
                   <td className="py-2 text-right font-mono text-green-700">{s.pct ? `${s.pct}%` : '—'}</td>
                   <td className="py-2 text-right font-mono">{s.flat ? fmtCurrency(parseFloat(s.flat), s.hotel.country) : '—'}</td>
                   <td className="py-2 text-right text-muted-foreground text-xs">
-                    {s.excludedGrades.size === 0 ? 'All' : `Excl. ${[...s.excludedGrades].join(', ')}`}
+                    {s.incentiveCount > 0 ? `${s.incentiveCount} on gross × multiplier` : '—'}
                   </td>
                   <td className="py-2 text-right tabular-nums">{s.count}</td>
                   <td className="py-2 text-right font-mono text-amber-700">
@@ -511,45 +504,6 @@ export default function AnnualBonusPage() {
             />
           </div>
 
-          <div className="relative" ref={gradeDropdownRef}>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Exclude Grades</label>
-            <button
-              type="button"
-              onClick={() => setGradeDropdownOpen(v => !v)}
-              className="rounded-md border border-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring bg-white flex items-center gap-2 min-w-[160px] justify-between"
-            >
-              <span>{excludedGrades.size === 0 ? 'None excluded' : `${excludedGrades.size} grade${excludedGrades.size > 1 ? 's' : ''} excluded`}</span>
-              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-            </button>
-            {gradeDropdownOpen && (
-              <div className="absolute z-20 mt-1 bg-white border rounded-lg shadow-lg py-1.5 min-w-[180px]">
-                {GRADE_OPTIONS.map(g => (
-                  <label key={g} className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-muted/30 cursor-pointer text-sm">
-                    <input
-                      type="checkbox"
-                      checked={excludedGrades.has(g)}
-                      onChange={() => setExcludedGrades(prev => {
-                        const next = new Set(prev);
-                        next.has(g) ? next.delete(g) : next.add(g);
-                        return next;
-                      })}
-                      className="rounded accent-primary"
-                    />
-                    {g}
-                  </label>
-                ))}
-                {excludedGrades.size > 0 && (
-                  <button
-                    onClick={() => setExcludedGrades(new Set())}
-                    className="w-full text-left px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground border-t mt-1 pt-2"
-                  >
-                    Clear exclusions
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
           <div className="h-px w-px mx-1 self-stretch" aria-hidden />
 
           <div>
@@ -590,13 +544,14 @@ export default function AnnualBonusPage() {
           </button>
         </div>
 
-        {(pct || flat) && (
+        {(pct || flat || totals.incentiveCount > 0) && (
           <p className="mt-3 text-xs text-muted-foreground">
             Formula per employee:
             <span className="font-mono ml-1 text-foreground">
               factor = months service at 31 Dec {bonusYear} ÷ 12 (max 1; under 6 months = 0)
               {' · '}
               bonus = gross × factor{pct ? ` × ${pct}%` : ''}{flat ? ` + ${flat} flat × factor` : ''}
+              {totals.incentiveCount > 0 && ' · incentive employees: bonus = gross × factor × incentive multiplier (from the employee record)'}
             </span>
           </p>
         )}
@@ -631,15 +586,15 @@ export default function AnnualBonusPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/40">
-                  <th className="px-4 py-3 w-10" title="Exclude from bonus" />
+                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">Emp Code</th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Employee</th>
-                  <th className="text-left px-4 py-3 font-medium text-muted-foreground">Grade</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Mths Service (Dec)</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Factor</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current Gross</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">% of Gross</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Flat</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Bonus Amount</th>
+                  <th className="px-4 py-3 w-12 text-center font-medium text-muted-foreground text-xs" title="Exclude from bonus">Excl.</th>
                   <th className="px-4 py-3 w-10" />
                 </tr>
               </thead>
@@ -647,25 +602,18 @@ export default function AnnualBonusPage() {
                 {bonusRows.map((r, i) => (
                   <React.Fragment key={r.employee.id}>
                     <tr className={`border-b ${r.isExcluded ? 'opacity-45' : editingId === r.employee.id ? 'bg-amber-50' : i % 2 === 1 ? 'bg-muted/10' : ''}`}>
-                      <td className="px-4 py-2.5 text-center">
-                        <input
-                          type="checkbox"
-                          checked={r.isExcluded}
-                          onChange={() => setExcluded(prev => {
-                            const n = new Set(prev);
-                            n.has(r.employee.id) ? n.delete(r.employee.id) : n.add(r.employee.id);
-                            return n;
-                          })}
-                          title="Exclude from bonus"
-                          className="rounded cursor-pointer"
-                        />
-                      </td>
+                      <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{r.employee.employee_code ?? '—'}</td>
                       <td className="px-4 py-2.5 font-medium">
                         <div className="flex items-center gap-2">
                           {r.employee.surname}, {r.employee.first_name}
                           {r.isExcluded && (
                             <span className="inline-flex items-center rounded-full bg-muted text-muted-foreground px-2 py-0.5 text-xs font-medium">
                               excluded
+                            </span>
+                          )}
+                          {r.incentiveMultiplier != null && !r.isExcluded && (
+                            <span className="inline-flex items-center rounded-full bg-violet-100 text-violet-700 px-2 py-0.5 text-xs font-medium">
+                              incentive ×{r.incentiveMultiplier}
                             </span>
                           )}
                           {r.hasOverride && (
@@ -676,7 +624,6 @@ export default function AnnualBonusPage() {
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 text-muted-foreground">{r.employee.grade_label ?? '—'}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">
                         {r.monthsService ?? <span className="text-red-600 text-xs font-sans">no start date</span>}
                       </td>
@@ -696,6 +643,19 @@ export default function AnnualBonusPage() {
                       </td>
                       <td className="px-4 py-2.5 text-right font-mono font-semibold">
                         {r.bonusAmount > 0 ? fmtCurrency(r.bonusAmount, r.hotel.country) : '—'}
+                      </td>
+                      <td className="px-4 py-2.5 text-center">
+                        <input
+                          type="checkbox"
+                          checked={r.isExcluded}
+                          onChange={() => setExcluded(prev => {
+                            const n = new Set(prev);
+                            n.has(r.employee.id) ? n.delete(r.employee.id) : n.add(r.employee.id);
+                            return n;
+                          })}
+                          title="Exclude from bonus"
+                          className="rounded cursor-pointer"
+                        />
                       </td>
                       <td className="px-4 py-2.5 text-center">
                         <button
@@ -784,7 +744,7 @@ export default function AnnualBonusPage() {
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3 text-right font-mono">{totals.totalFlat > 0 ? fmtCurrency(totals.totalFlat, country) : '—'}</td>
                   <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.bonus, country)}</td>
-                  <td className="px-4 py-3" />
+                  <td className="px-4 py-3" colSpan={2} />
                 </tr>
               </tfoot>
             </table>
