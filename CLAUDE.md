@@ -340,6 +340,7 @@ src/
         login/route.ts    — POST: queries users table, verifies HMAC hash, issues signed cookie
         logout/route.ts   — POST: clears cookie
         me/route.ts       — GET: returns current UserContext from cookie
+      keepalive/route.ts  — GET: daily Vercel Cron ping (CRON_SECRET-gated) that keeps free-tier Supabase from pausing
       access/route.ts     — POST/PATCH/DELETE: admin-only user CRUD
     page.tsx              — Root page; immediately redirects to /dashboard
     login/page.tsx        — Login form (username + password)
@@ -360,6 +361,7 @@ src/
       methods/page.tsx    — Configurable payroll rates + CTC flags per hotel; Save & Update All; read-only Severance Accrual row under Provident Fund; InflationHistoryCard rendered at bottom
       settings/page.tsx   — Redirects to /dashboard/methods
       salary-review/page.tsx — Per-hotel increase builder; drafts persist to DB; commit to salary_records
+      annual-bonus/page.tsx — Annual Bonus payment schedule (Budget group, admin-only); per-hotel % + flat, service factor, incentive multipliers; drafts in annual_bonus_scenarios; never writes salary_records
       reports/page.tsx    — Flexible report builder; Excel + PDF export
       reconciliation/page.tsx — Monthly payroll reconciliation for CSL/NL/CFE (admin-only)
       burs/page.tsx        — Botswana PAYE (ITW8) submission, admin-only; upload/match/export functional against itw8_paye_template.csv, several export columns still placeholder pending TIN/benefits/etc. data sources
@@ -370,6 +372,7 @@ src/
     employee-csv.ts       — Round-trip CSV export builder (buildEmployeeCsv) + import parser
     excel-export.ts       — Salary review Excel export (xlsx-js-style)
     reports-export.ts     — Reports Excel + PDF export (exportReport, exportPdf)
+    annual-bonus-export.ts — Annual Bonus Excel export (live formulas, AutoFilter, Comments column, ANO excluded)
     recon-parsers.ts      — Reconciliation file parsers: parseAfritecXls, parseFurnmart, parseBodulo, parsePensionSchedule, parsePayrollXlsx
     supabase/
       client.ts           — Browser Supabase client (used by all dashboard pages)
@@ -377,7 +380,7 @@ src/
     utils.ts              — fmtZAR(), fmtCurrency(), fmtNumber(), MONTH_NAMES, sortHotels(), hotelSortIndex(), cn()
   components/
     nav-sidebar.tsx       — Role-aware navigation, grouped into coloured sections (e.g. "CFE Payroll" for Reconciliation/BURS); admin sees all tabs, sub sees whichever tabs their `allowedTabs` grants
-  middleware.ts           — HMAC cookie auth gate; always blocks sub-users from Salary Review/Access; gates Dashboard/Employees/Import/Reconciliation/Reports/Methods per-user via allowedTabs
+  middleware.ts           — HMAC cookie auth gate (exempts /login, /api/auth, /api/keepalive); always blocks sub-users from Salary Review/Annual Bonus/Access/BURS; gates Dashboard/Employees/Import/Reconciliation/Reports/Methods per-user via allowedTabs
   types/
     database.ts           — Hotel, Employee, SalaryRecord, PayrollImport, IncreaseScenario, ScenarioLine, AppUser, ReconciliationPeriod, ReconUpload, ReconQuery
 ```
