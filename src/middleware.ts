@@ -35,8 +35,9 @@ function matchTab(pathname: string): TabKey | undefined {
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Always allow login and auth API routes
-  if (pathname.startsWith('/login') || pathname.startsWith('/api/auth')) {
+  // Always allow login and auth API routes, and the Supabase keep-alive cron
+  // (it has no login cookie; the route checks CRON_SECRET itself)
+  if (pathname.startsWith('/login') || pathname.startsWith('/api/auth') || pathname === '/api/keepalive') {
     return NextResponse.next();
   }
 

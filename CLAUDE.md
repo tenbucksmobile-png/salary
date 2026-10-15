@@ -90,7 +90,10 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>
 SITE_PASSWORD="<password>"        # wrap in quotes if it contains special chars
 COOKIE_SECRET=<32+ char random>   # used for HMAC cookie signing
 NODE_TLS_REJECT_UNAUTHORIZED=0    # required — corporate SSL proxy on dev machine
+CRON_SECRET=<random string>       # Vercel only (Production) — authorises the keep-alive cron
 ```
+
+**Supabase keep-alive**: the project is on Supabase's free tier, which pauses after about a week of inactivity, and this app is mostly used at month end. `vercel.json` schedules a daily Vercel Cron (06:00 UTC) to `GET /api/keepalive` (`src/app/api/keepalive/route.ts`). The route runs `select id from hotels limit 1` and returns `{ ok: true }`. It rejects anything without `Authorization: Bearer $CRON_SECRET` (Vercel sends this automatically when `CRON_SECRET` is set in the project's env vars), and `middleware.ts` exempts this one path from the login-cookie check. Check runs under Vercel → project → Settings → Cron Jobs.
 
 ---
 
