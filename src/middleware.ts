@@ -4,6 +4,7 @@ import { verifyToken, COOKIE_NAME, CONFIGURABLE_TABS, DEFAULT_SUB_TABS, type Tab
 // Permanently admin-only, regardless of any sub user's allowedTabs.
 const SUB_BLOCKED = [
   '/dashboard/salary-review',
+  '/dashboard/annual-bonus',
   '/dashboard/access',
   '/dashboard/burs',
 ];

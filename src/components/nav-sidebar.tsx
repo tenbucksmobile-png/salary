@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, Users, Upload, TrendingUp, Settings, Shield, BarChart2,
-  ClipboardCheck, CalendarClock, ShieldCheck, Gift, HandCoins, Receipt, LayoutList,
+  ClipboardCheck, CalendarClock, ShieldCheck, Gift, HandCoins, Receipt, LayoutList, Banknote,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { DEFAULT_SUB_TABS, type TabKey } from '@/lib/auth';
@@ -13,7 +13,7 @@ interface NavItem {
   label: string;
   href: string;
   icon: typeof Users;
-  key: TabKey | 'salaryReview' | 'access' | 'wca' | 'bonus' | 'severance' | 'burs' | 'provisionsOverview';
+  key: TabKey | 'salaryReview' | 'annualBonus' | 'access' | 'wca' | 'bonus' | 'severance' | 'burs' | 'provisionsOverview';
   adminOnly?: boolean;
 }
 
@@ -43,6 +43,7 @@ const NAV_GROUPS: NavGroup[] = [
     heading: 'BUDGET',
     items: [
       { label: 'Salary Review', href: '/dashboard/salary-review', icon: TrendingUp, key: 'salaryReview', adminOnly: true },
+      { label: 'Annual Bonus',  href: '/dashboard/annual-bonus',  icon: Banknote,   key: 'annualBonus',  adminOnly: true },
     ],
   },
   {

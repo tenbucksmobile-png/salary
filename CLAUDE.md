@@ -169,6 +169,7 @@ Applied to production via Supabase Dashboard → SQL Editor only. Files in `supa
 | `031_wca_provision_calc.sql` | New `wca_provision_calc` table — the live WCA Provision card (see WCA Reconciliation section) |
 | `032_burs_per_hotel_uploads.sql` | Widens `burs_uploads.upload_group` CHECK constraint to allow per-hotel combined-group uploads (`'csl'`, `'nl'`, `'cfem'`, `'pompom'`) alongside the legacy `'ilg'`/`'combined'` values |
 | `033_recon_basic_salary_overrides.sql` | New `recon_basic_salary_overrides` table — built for a prior-period Basic Salary correction UI on the Employees tab that has since been superseded by the Increase List merged table (see Reconciliation section); table exists in the DB but nothing in the app reads or writes it any more |
+| `034_annual_bonus_scenarios.sql` | New `annual_bonus_scenarios` table — per-hotel, per-year drafts for the Annual Bonus page (see Annual Bonus section) |
 
 ### `hotels` configurable method columns (from migration 009)
 
@@ -477,7 +478,12 @@ Grand Total row uses `SUM(G{first}:G{last})` etc. so it aggregates live hotel va
 
 ---
 
-## Reconciliation
+## Annual Bonus
+
+`/dashboard/annual-bonus` — nav item "Annual Bonus" in the **BUDGET** group, under Salary Review. Permanently admin-only (`SUB_BLOCKED` in `middleware.ts`, `adminOnly` in nav). This is the **actual bonus payment schedule**, distinct from the Bonus Provision page (an accrual).
+
+A copy of Salary Review's pattern with the **Threshold Basic tier removed**: per hotel, `bonus = gross (total_earnings) × % + flat`, rounded to cents, with grade exclusions, per-employee exclusions and per-employee % or flat overrides. A Bonus Year selector scopes the drafts. **It never writes `salary_records`** and has no Commit step, because a bonus is a one-off payment, not a salary change. Drafts are saved to `annual_bonus_scenarios` (migration 034, `UNIQUE(hotel_id, period_year)`, `settings_json` = form state). They are **not** saved to `increase_scenarios`/`scenario_lines`, because the Dashboard and `fetchScenarioLineMap()` read those, and bonus drafts there would show up as salary increases. Export to Excel uses the generic `exportReport()`: an Overview sheet plus one sheet per saved hotel.
+
 
 `/dashboard/reconciliation` — admin-only monthly payroll cross-check for **CSL, NL, and CFE Management** only (hotel tabs are filtered to these three short codes: `RECON_CODES = ['CFEM', 'CSL', 'NL']`).
 
