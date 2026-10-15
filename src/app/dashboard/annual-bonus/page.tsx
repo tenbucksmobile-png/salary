@@ -16,10 +16,23 @@ import { exportReport, ReportSheet } from '@/lib/reports-export';
 
 const GRADE_OPTIONS = ['ANO', 'Fixed Term', 'DNQ', 'Frontline', 'Supervisory', 'Management', 'Executive', 'Flexible'];
 
-function yearsOfService(date: string | null): number | null {
-  if (!date) return null;
-  const ms = Date.now() - new Date(date).getTime();
-  return Math.floor(ms / (1000 * 60 * 60 * 24 * 365.25) * 10) / 10;
+// Eligibility: under 6 months' service at 31 Dec of the bonus year = no bonus;
+// 6–11 months = pro rata (months / 12); 12+ months = full. Same rule and anchor
+// date as the Bonus Provision page's 13th-cheque calc.
+const MIN_ELIGIBLE_MONTHS = 6;
+
+function monthsOfServiceAtDec(employmentDate: string | null, year: number): number | null {
+  if (!employmentDate) return null;
+  const start = new Date(employmentDate);
+  const ref = new Date(year, 11, 31);
+  let months = (ref.getFullYear() - start.getFullYear()) * 12 + (ref.getMonth() - start.getMonth());
+  if (ref.getDate() < start.getDate()) months -= 1;
+  return Math.max(0, months);
+}
+
+function payoutFactor(months: number | null): number {
+  if (months == null || months < MIN_ELIGIBLE_MONTHS) return 0;
+  return Math.min(months, 12) / 12;
 }
 
 interface Override {
@@ -39,6 +52,8 @@ interface BonusRow {
   employee: Employee;
   hotel: Hotel;
   currentGross: number;
+  monthsService: number | null;   // at 31 Dec of the bonus year; null = no start date
+  factor: number;                 // 0 (ineligible), months/12 (pro rata) or 1
   effectivePct: number;
   effectiveFlat: number;
   bonusAmount: number;
@@ -52,6 +67,7 @@ function computeRows(
   employees: Employee[],
   hotelMap: Map<string, Hotel>,
   latestSalary: Map<string, SalaryRecord>,
+  bonusYear: number,
 ): BonusRow[] {
   const gPct  = (parseFloat(settings.pct) || 0) / 100;
   const gFlat = parseFloat(settings.flat) || 0;
@@ -72,11 +88,15 @@ function computeRows(
       const effectivePct  = isExcluded ? 0 : (ov && ov.pct  !== '' ? (parseFloat(ov.pct)  || 0) / 100 : gPct);
       const effectiveFlat = isExcluded ? 0 : (ov && ov.flat !== '' ? (parseFloat(ov.flat) || 0)        : gFlat);
 
-      // Bonus = gross × % + flat, rounded to cents (a payment, not a salary figure)
-      const bonusAmount = isExcluded ? 0 : Math.round((currentGross * effectivePct + effectiveFlat) * 100) / 100;
+      // Bonus = (gross × factor) × % + flat × factor, rounded to cents.
+      // The factor pro-rates the flat too, and zeroes everything when ineligible.
+      const monthsService = monthsOfServiceAtDec(e.employment_date, bonusYear);
+      const factor        = payoutFactor(monthsService);
+      const bonusAmount   = isExcluded ? 0
+        : Math.round((currentGross * factor * effectivePct + effectiveFlat * factor) * 100) / 100;
 
       return {
-        employee: e, hotel, currentGross, effectivePct, effectiveFlat, bonusAmount,
+        employee: e, hotel, currentGross, monthsService, factor, effectivePct, effectiveFlat, bonusAmount,
         hasOverride: !!ov && !isExcluded, isExcluded,
       };
     })
@@ -205,8 +225,8 @@ export default function AnnualBonusPage() {
 
   const bonusRows = useMemo((): BonusRow[] => {
     if (!hotelFilter) return [];
-    return computeRows(hotelFilter, { pct, flat, excludedGrades, overrides, excluded }, employees, hotelMap, latestSalary);
-  }, [hotelFilter, pct, flat, excludedGrades, overrides, excluded, employees, hotelMap, latestSalary]);
+    return computeRows(hotelFilter, { pct, flat, excludedGrades, overrides, excluded }, employees, hotelMap, latestSalary, bonusYear);
+  }, [hotelFilter, pct, flat, excludedGrades, overrides, excluded, employees, hotelMap, latestSalary, bonusYear]);
 
   const totals = useMemo(() => ({
     currentGross:  bonusRows.reduce((s, r) => s + r.currentGross, 0),
@@ -215,6 +235,8 @@ export default function AnnualBonusPage() {
     count:         bonusRows.length,
     paidCount:     bonusRows.filter(r => !r.isExcluded && r.bonusAmount > 0).length,
     excludedCount: bonusRows.filter(r => r.isExcluded).length,
+    ineligibleCount: bonusRows.filter(r => !r.isExcluded && r.factor === 0).length,
+    proRataCount:  bonusRows.filter(r => !r.isExcluded && r.factor > 0 && r.factor < 1).length,
   }), [bonusRows]);
 
   const savedSummary = useMemo(() =>
@@ -222,7 +244,7 @@ export default function AnnualBonusPage() {
       .filter(h => hotelSettings.has(h.id))
       .map(h => {
         const s    = hotelSettings.get(h.id)!;
-        const rows = computeRows(h.id, s, employees, hotelMap, latestSalary);
+        const rows = computeRows(h.id, s, employees, hotelMap, latestSalary, bonusYear);
         return {
           hotel: h,
           pct:   s.pct,
@@ -232,7 +254,7 @@ export default function AnnualBonusPage() {
           bonus: rows.reduce((a, r) => a + r.bonusAmount, 0),
         };
       }),
-    [hotels, hotelSettings, employees, hotelMap, latestSalary],
+    [hotels, hotelSettings, employees, hotelMap, latestSalary, bonusYear],
   );
 
   // ── Override editing ───────────────────────────────────────────────────────
@@ -345,14 +367,16 @@ export default function AnnualBonusPage() {
       };
 
       const hotelSheets: ReportSheet[] = savedSummary.map(s => {
-        const rows = computeRows(s.hotel.id, hotelSettings.get(s.hotel.id)!, employees, hotelMap, latestSalary);
+        const rows = computeRows(s.hotel.id, hotelSettings.get(s.hotel.id)!, employees, hotelMap, latestSalary, bonusYear);
         const body = rows.map(r => [
           r.employee.employee_code ?? '',
           r.employee.surname,
           r.employee.first_name,
           r.employee.job_title ?? '',
           r.employee.grade_label ?? '',
-          yearsOfService(r.employee.employment_date),
+          r.employee.employment_date ?? '',
+          r.monthsService,
+          r.factor,
           r.currentGross,
           r.isExcluded ? 'Excluded' : `${(r.effectivePct * 100).toFixed(1)}%`,
           r.isExcluded ? null : r.effectiveFlat,
@@ -360,10 +384,10 @@ export default function AnnualBonusPage() {
         ]);
         return {
           name: s.hotel.short_code ?? s.hotel.name,
-          headers: ['Emp Code', 'Surname', 'First Name', 'Job Title', 'Grade', 'Yrs Service', 'Current Gross', '% of Gross', 'Flat', 'Bonus Amount'],
+          headers: ['Emp Code', 'Surname', 'First Name', 'Job Title', 'Grade', 'Start Date', 'Mths Service (Dec)', 'Factor', 'Current Gross', '% of Gross', 'Flat', 'Bonus Amount'],
           rows: [
             ...body,
-            ['Total', '', '', '', '', null, rows.reduce((a, r) => a + r.currentGross, 0), '', null, s.bonus],
+            ['Total', '', '', '', '', '', null, null, rows.reduce((a, r) => a + r.currentGross, 0), '', null, s.bonus],
           ],
           isTotalsRow: [...body.map(() => false), true],
           numberFormat: '#,##0.00',
@@ -570,7 +594,9 @@ export default function AnnualBonusPage() {
           <p className="mt-3 text-xs text-muted-foreground">
             Formula per employee:
             <span className="font-mono ml-1 text-foreground">
-              bonus = gross{pct ? ` × ${pct}%` : ''}{flat ? ` + ${flat} flat` : ''}
+              factor = months service at 31 Dec {bonusYear} ÷ 12 (max 1; under 6 months = 0)
+              {' · '}
+              bonus = gross × factor{pct ? ` × ${pct}%` : ''}{flat ? ` + ${flat} flat × factor` : ''}
             </span>
           </p>
         )}
@@ -607,8 +633,9 @@ export default function AnnualBonusPage() {
                 <tr className="border-b bg-muted/40">
                   <th className="px-4 py-3 w-10" title="Exclude from bonus" />
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Employee</th>
-                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Yrs Service</th>
                   <th className="text-left px-4 py-3 font-medium text-muted-foreground">Grade</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Mths Service (Dec)</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">Factor</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Current Gross</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">% of Gross</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground">Flat</th>
@@ -649,10 +676,17 @@ export default function AnnualBonusPage() {
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">
-                        {yearsOfService(r.employee.employment_date) ?? '—'}
-                      </td>
                       <td className="px-4 py-2.5 text-muted-foreground">{r.employee.grade_label ?? '—'}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">
+                        {r.monthsService ?? <span className="text-red-600 text-xs font-sans">no start date</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-right font-mono">
+                        {r.factor === 0
+                          ? <span className="text-xs font-sans text-red-600">not eligible</span>
+                          : r.factor < 1
+                            ? <span className="text-blue-700">{r.factor.toFixed(4)}</span>
+                            : '1.0000'}
+                      </td>
                       <td className="px-4 py-2.5 text-right font-mono">{fmtCurrency(r.currentGross, r.hotel.country)}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-green-700">
                         {r.isExcluded ? <span className="text-muted-foreground">—</span> : `${(r.effectivePct * 100).toFixed(1)}%`}
@@ -677,7 +711,7 @@ export default function AnnualBonusPage() {
 
                     {editingId === r.employee.id && (
                       <tr className="border-b bg-amber-50">
-                        <td colSpan={9} className="px-4 py-3">
+                        <td colSpan={10} className="px-4 py-3">
                           <div className="flex items-end gap-4 flex-wrap">
                             <span className="text-xs font-semibold text-amber-800 uppercase tracking-wide self-center">
                               Override — {r.employee.first_name} {r.employee.surname}
@@ -741,8 +775,11 @@ export default function AnnualBonusPage() {
               <tfoot>
                 <tr className="border-t bg-muted/20 font-semibold">
                   <td className="px-4 py-3" colSpan={4}>
-                    Totals ({totals.count} employees{totals.excludedCount > 0 ? `, ${totals.excludedCount} excluded` : ''})
+                    Totals ({totals.count} employees{totals.excludedCount > 0 ? `, ${totals.excludedCount} excluded` : ''}
+                    {totals.ineligibleCount > 0 ? `, ${totals.ineligibleCount} not eligible` : ''}
+                    {totals.proRataCount > 0 ? `, ${totals.proRataCount} pro rata` : ''})
                   </td>
+                  <td className="px-4 py-3" />
                   <td className="px-4 py-3 text-right font-mono">{fmtCurrency(totals.currentGross, country)}</td>
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3 text-right font-mono">{totals.totalFlat > 0 ? fmtCurrency(totals.totalFlat, country) : '—'}</td>
