@@ -12,7 +12,7 @@ import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { Hotel, Employee, SalaryRecord } from '@/types/database';
 import { fmtCurrency, sortHotels, MONTH_NAMES } from '@/lib/utils';
 import { Pencil, X, Check, Download, Save, Trash2 } from 'lucide-react';
-import { exportReport, ReportSheet } from '@/lib/reports-export';
+import { exportAnnualBonus, AnnualBonusExportHotel } from '@/lib/annual-bonus-export';
 
 // Eligibility: under 6 months' service at 31 Dec of the bonus year = no bonus;
 // 6–11 months = pro rata (months / 12); 12+ months = full. Same rule and anchor
@@ -32,6 +32,10 @@ function monthsOfServiceAtDec(employmentDate: string | null, year: number): numb
 // bonus year (latest salary record on or before July), i.e. before that year's
 // increase. Falls back to the current gross when no record is that early.
 const INCENTIVE_BASE_MONTH = 7;
+
+// Incentive employees whose bonus is paid on their CURRENT gross instead of the
+// July (old) gross — explicit exceptions confirmed by the user, Oct 2026.
+const INCENTIVE_CURRENT_GROSS_CODES = new Set(['GEY001', 'NKO003', 'PEF001', 'JAM001']);
 
 function payoutFactor(months: number | null): number {
   if (months == null || months < MIN_ELIGIBLE_MONTHS) return 0;
@@ -56,6 +60,7 @@ interface BonusRow {
   currentGross: number;
   baseGross: number;              // gross the bonus is calculated on (July record for incentive employees)
   basePeriod: string | null;      // e.g. "Jun 2026" when baseGross comes from an earlier record
+  baseIsException: boolean;       // incentive employee on the current-gross exception list
   monthsService: number | null;   // at 31 Dec of the bonus year; null = no start date
   factor: number;                 // 0 (ineligible), months/12 (pro rata) or 1
   incentiveMultiplier: number | null; // set for incentive-scheme employees: bonus = gross × multiplier × factor
@@ -105,7 +110,8 @@ function computeRows(
 
       // Bonus = (gross × factor) × % + flat × factor, rounded to cents.
       // The factor pro-rates the flat too, and zeroes everything when ineligible.
-      const julySal    = incentiveMultiplier != null ? julySalary.get(e.id) : undefined;
+      const baseIsException = incentiveMultiplier != null && INCENTIVE_CURRENT_GROSS_CODES.has(e.employee_code ?? '');
+      const julySal    = incentiveMultiplier != null && !baseIsException ? julySalary.get(e.id) : undefined;
       const baseGross  = julySal ? julySal.total_earnings : currentGross;
       const basePeriod = julySal ? `${MONTH_NAMES[julySal.period_month - 1]} ${julySal.period_year}` : null;
 
@@ -115,7 +121,7 @@ function computeRows(
         : Math.round((baseGross * factor * effectivePct + effectiveFlat * factor) * 100) / 100;
 
       return {
-        employee: e, hotel, currentGross, baseGross, basePeriod, monthsService, factor, incentiveMultiplier, effectivePct, effectiveFlat, bonusAmount,
+        employee: e, hotel, currentGross, baseGross, basePeriod, baseIsException, monthsService, factor, incentiveMultiplier, effectivePct, effectiveFlat, bonusAmount,
         hasOverride: !!ov && !isExcluded, isExcluded,
       };
     })
@@ -366,56 +372,40 @@ export default function AnnualBonusPage() {
 
   async function handleExport() {
     if (savedSummary.length === 0) {
-      alert('Save at least one hotel\'s bonus before exporting.');
+      alert("Save at least one hotel's bonus before exporting.");
       return;
     }
     setExporting(true);
     try {
-      const overview: ReportSheet = {
-        name: 'Overview',
-        headers: ['Hotel', 'Currency', '% of Gross', 'Flat', 'Incentive Employees', 'Employees Paid', 'Total Bonus'],
-        rows: savedSummary.map(s => [
-          s.hotel.name,
-          s.hotel.country.toLowerCase().includes('botswana') ? 'BWP' : 'ZAR',
-          s.pct ? `${s.pct}%` : '',
-          s.flat ? parseFloat(s.flat) : null,
-          s.incentiveCount,
-          s.count,
-          s.bonus,
-        ]),
-        numberFormat: '#,##0.00',
-      };
-
-      const hotelSheets: ReportSheet[] = savedSummary.map(s => {
+      const exportHotels: AnnualBonusExportHotel[] = savedSummary.map(s => {
         const rows = computeRows(s.hotel.id, hotelSettings.get(s.hotel.id)!, employees, hotelMap, latestSalary, julySalary, bonusYear);
-        const body = rows.map(r => [
-          r.employee.employee_code ?? '',
-          r.employee.surname,
-          r.employee.first_name,
-          r.employee.job_title ?? '',
-          r.incentiveMultiplier != null ? `Incentive ×${r.incentiveMultiplier}` : (r.hasOverride ? 'Override' : 'Standard'),
-          r.employee.employment_date ?? '',
-          r.monthsService,
-          r.factor,
-          r.currentGross,
-          r.baseGross,
-          r.isExcluded ? 'Excluded' : `${(r.effectivePct * 100).toFixed(1)}%`,
-          r.isExcluded ? null : r.effectiveFlat,
-          r.bonusAmount,
-        ]);
         return {
-          name: s.hotel.short_code ?? s.hotel.name,
-          headers: ['Emp Code', 'Surname', 'First Name', 'Job Title', 'Basis', 'Start Date', 'Mths Service (Dec)', 'Factor', 'Current Gross', 'Bonus Base Gross', '% of Gross', 'Flat', 'Bonus Amount'],
-          rows: [
-            ...body,
-            ['Total', '', '', '', '', '', null, null, rows.reduce((a, r) => a + r.currentGross, 0), rows.reduce((a, r) => a + r.baseGross, 0), '', null, s.bonus],
-          ],
-          isTotalsRow: [...body.map(() => false), true],
-          numberFormat: '#,##0.00',
+          name:      s.hotel.name,
+          shortCode: s.hotel.short_code ?? s.hotel.name,
+          currency:  s.hotel.country.toLowerCase().includes('botswana') ? 'BWP' : 'ZAR',
+          pct:       s.pct,
+          flat:      s.flat,
+          rows: rows.map(r => ({
+            employeeCode: r.employee.employee_code ?? '',
+            surname:      r.employee.surname,
+            firstName:    r.employee.first_name,
+            jobTitle:     r.employee.job_title ?? '',
+            gradeLabel:   r.employee.grade_label,
+            basis:        r.isExcluded ? 'Excluded'
+              : r.hasOverride ? 'Override'
+              : r.incentiveMultiplier != null ? `Incentive ×${r.incentiveMultiplier}` : 'Standard',
+            startDate:    r.employee.employment_date,
+            currentGross: r.currentGross,
+            baseGross:    r.baseGross,
+            basePeriod:   r.basePeriod ?? (r.baseIsException ? 'Current (exception)' : null),
+            rate:         r.effectivePct,
+            isIncentive:  r.incentiveMultiplier != null,
+            flat:         r.effectiveFlat,
+            isExcluded:   r.isExcluded,
+          })),
         };
       });
-
-      await exportReport(`Annual Bonus ${bonusYear}`, `Annual_Bonus_${bonusYear}.xlsx`, [overview, ...hotelSheets]);
+      await exportAnnualBonus(exportHotels, bonusYear);
     } finally {
       setExporting(false);
     }
@@ -669,6 +659,11 @@ export default function AnnualBonusPage() {
                           <div className="leading-tight">
                             <div className="text-violet-700">{fmtCurrency(r.baseGross, r.hotel.country)}</div>
                             <div className="text-[10px] text-muted-foreground font-sans">@ {r.basePeriod}</div>
+                          </div>
+                        ) : r.baseIsException ? (
+                          <div className="leading-tight">
+                            <div>{fmtCurrency(r.baseGross, r.hotel.country)}</div>
+                            <div className="text-[10px] text-muted-foreground font-sans">current gross (exception)</div>
                           </div>
                         ) : fmtCurrency(r.baseGross, r.hotel.country)}
                       </td>
