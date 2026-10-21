@@ -215,6 +215,10 @@ export default function ReconciliationPage() {
   // increase_list recon_uploads history untouched (nothing deleted), it's simply no
   // longer loaded/rebuilt/shown.
   const INCREASE_LIST_HOTELS: PayrollReconHotel[] = ['CSL'];
+  // CSL's Increase List only applied to the August 2026 period. Every other period
+  // (Oct 2026 onwards, and anything before) uses the default month-to-month payroll
+  // comparison, same as NL.
+  const INCREASE_LIST_PERIOD = { year: 2026, month: 8 };
 
   // Current + previous period's payroll lines per hotel — the sole basis for the
   // Employees tab's three sections. Never compared against the DB employee list.
@@ -1853,7 +1857,10 @@ export default function ReconciliationPage() {
   // cross-reference; NL shows the month-to-month payroll comparison above.
   const employeesActiveHotel: PayrollReconHotel =
     hotel?.short_code === 'NL' ? 'NL' : 'CSL';
-  const isNlEmployeesView = employeesActiveHotel === 'NL';
+  const isIncreaseListPeriod = year === INCREASE_LIST_PERIOD.year && month === INCREASE_LIST_PERIOD.month;
+  // "NL view" = the default month-to-month payroll comparison; CSL uses it too outside
+  // the Increase List period.
+  const isNlEmployeesView = employeesActiveHotel === 'NL' || !isIncreaseListPeriod;
   const activeMergedIncreaseTable = mergedIncreaseTableByHotel[employeesActiveHotel] ?? [];
   const activeNlEmployeesTable = nlEmployeesTableByHotel[employeesActiveHotel];
   const activeTermPayrollForEmployees = termPayrollByHotel[employeesActiveHotel];
@@ -3117,7 +3124,7 @@ export default function ReconciliationPage() {
             {isNlEmployeesView && (
               <>
                 <p className="text-sm text-muted-foreground max-w-3xl">
-                  Lists every NL employee on either this period&apos;s uploaded Payroll Spreadsheet or the <strong>previous
+                  Lists every {employeesActiveHotel} employee on either this period&apos;s uploaded Payroll Spreadsheet or the <strong>previous
                   period&apos;s</strong> — never against the HR List (employees table). A tick means Current and New Basic
                   Salary agree; <strong>Mismatch</strong> covers a genuine amount change, a new appointment (no prior-period
                   line), or someone missing this period (a termination). Approve + Submit stages a row; the admin-only
@@ -3128,7 +3135,7 @@ export default function ReconciliationPage() {
                   <p className="text-sm text-muted-foreground">Loading…</p>
                 ) : activeTermPayrollForEmployees.previous.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
-                    No payroll uploaded for NL&apos;s previous period — nothing to compare against yet.
+                    No payroll uploaded for {employeesActiveHotel}&apos;s previous period — nothing to compare against yet.
                   </p>
                 ) : (
                   <div>
