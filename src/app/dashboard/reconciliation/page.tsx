@@ -214,10 +214,10 @@ export default function ReconciliationPage() {
   // vs the previous period's — see buildEmployeesComparison below). NL keeps its own
   // increase_list recon_uploads history untouched (nothing deleted), it's simply no
   // longer loaded/rebuilt/shown.
-  const INCREASE_LIST_HOTELS: PayrollReconHotel[] = ['CSL'];
-  // CSL's Increase List only applied to the August 2026 period. Every other period
-  // (Oct 2026 onwards, and anything before) uses the default month-to-month payroll
-  // comparison, same as NL.
+  // Superseded 2026-10-21: both CSL and NL use the Increase List, but only for the
+  // August 2026 period. Every other period uses the default month-to-month payroll
+  // comparison for both hotels.
+  const INCREASE_LIST_HOTELS: PayrollReconHotel[] = ['CSL', 'NL'];
   const INCREASE_LIST_PERIOD = { year: 2026, month: 8 };
 
   // Current + previous period's payroll lines per hotel — the sole basis for the
@@ -442,9 +442,6 @@ export default function ReconciliationPage() {
       return ((up?.parsed_data as any)?.rows ?? []) as IncreaseRow[];
     }
     const results = await Promise.all(INCREASE_LIST_HOTELS.map(loadFor));
-    // Merge rather than replace — increaseListByHotel's state type covers both CSL/NL
-    // keys even though only CSL is ever loaded now, so NL's initial empty array stays
-    // in place rather than being dropped from the object.
     setIncreaseListByHotel(prev => ({ ...prev, ...Object.fromEntries(INCREASE_LIST_HOTELS.map((h, i) => [h, results[i]])) }));
   }
 
@@ -1858,9 +1855,9 @@ export default function ReconciliationPage() {
   const employeesActiveHotel: PayrollReconHotel =
     hotel?.short_code === 'NL' ? 'NL' : 'CSL';
   const isIncreaseListPeriod = year === INCREASE_LIST_PERIOD.year && month === INCREASE_LIST_PERIOD.month;
-  // "NL view" = the default month-to-month payroll comparison; CSL uses it too outside
-  // the Increase List period.
-  const isNlEmployeesView = employeesActiveHotel === 'NL' || !isIncreaseListPeriod;
+  // "NL view" = the default month-to-month payroll comparison, used by both hotels
+  // outside the Increase List period.
+  const isNlEmployeesView = !isIncreaseListPeriod;
   const activeMergedIncreaseTable = mergedIncreaseTableByHotel[employeesActiveHotel] ?? [];
   const activeNlEmployeesTable = nlEmployeesTableByHotel[employeesActiveHotel];
   const activeTermPayrollForEmployees = termPayrollByHotel[employeesActiveHotel];
@@ -3003,7 +3000,7 @@ export default function ReconciliationPage() {
               <>
                 <div className="flex items-center justify-between">
                   <p className="text-sm text-muted-foreground max-w-3xl">
-                    Reconciles the imported Increase List against this period&apos;s Payroll Spreadsheet upload for CSL.
+                    Reconciles the imported Increase List against this period&apos;s Payroll Spreadsheet upload for {employeesActiveHotel}.
                     Approve + Submit stages a row; the admin-only Commit button (top of page) writes the approved New
                     Gross Salary into that employee&apos;s Basic Salary for this period.
                   </p>
@@ -3030,16 +3027,14 @@ export default function ReconciliationPage() {
                     Increase List — Payroll Reconciliation ({activeMergedIncreaseTable.length})
                   </h2>
                   <p className="text-xs text-muted-foreground mb-2">
-                    Only the CSL sheet of the uploaded workbook is used — NL&apos;s Increase List reconciliation
-                    was completed in August 2026 and no longer needs an upload; NL&apos;s Employees tab instead
-                    shows a month-to-month payroll comparison (see the NL pill).
-                    Flag Differences: <strong>Applied</strong> — payroll&apos;s new Basic already matches the Increase
+                    The Increase List applies to August 2026 only; other periods show the month-to-month
+                    payroll comparison. Flag Differences: <strong>Applied</strong> — payroll&apos;s new Basic already matches the Increase
                     File&apos;s New Gross Salary; <strong>Pending</strong> — payroll still shows the old Current Salary;
                     <strong> Mismatch</strong> (amber) — payroll&apos;s Basic matches neither figure; greyed rows have no
                     payroll match at all this period.
                   </p>
                   {activeMergedIncreaseTable.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No increase list uploaded for CSL this period.</p>
+                    <p className="text-sm text-muted-foreground">No increase list uploaded for {employeesActiveHotel} this period.</p>
                   ) : (
                     <table className="text-sm border rounded w-full max-w-4xl">
                       <thead>
