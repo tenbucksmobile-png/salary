@@ -2055,6 +2055,43 @@ export default function ReconciliationPage() {
     return Math.round((getConsolidationEntry(hotelCode, lineItem)?.bank_amount ?? 0) * 100) / 100;
   }
 
+  // Month-over-month discrepancies only (new / missing / amount changed) — balancing
+  // rows are left out. Permanent first, then Fixed Term, same order as on screen.
+  async function handleExportEmployeeDiscrepancies() {
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevYear  = month === 1 ? year - 1 : year;
+    const prevLabel = `${MONTH_NAMES[prevMonth - 1]} ${prevYear}`;
+    const currLabel = `${MONTH_NAMES[month - 1]} ${year}`;
+    const reasonLabel: Record<NonNullable<NlEmployeeRow['reason']>, string> = {
+      new: 'New appointment', missing: 'Missing this period', amount_changed: 'Amount changed',
+    };
+    const discrepancies = activeNlEmployeesTable.filter(r => !r.balances);
+    const rows: Array<Array<string | number | null>> = discrepancies.map(r => [
+      r.empCode || '—', r.surname, r.firstName, r.isFtc ? 'Fixed Term' : 'Permanent',
+      r.prevBasic, r.currBasic,
+      (r.currBasic ?? 0) - (r.prevBasic ?? 0),
+      r.reason ? reasonLabel[r.reason] : '',
+    ]);
+    const totPrev = discrepancies.reduce((s, r) => s + (r.prevBasic ?? 0), 0);
+    const totCurr = discrepancies.reduce((s, r) => s + (r.currBasic ?? 0), 0);
+    rows.push(['Total', '', '', '', totPrev, totCurr, totCurr - totPrev, `${discrepancies.length} discrepancies`]);
+    const sheet: ReportSheet = {
+      name: `${employeesActiveHotel} Discrepancies`,
+      headers: [
+        'Code', 'Surname', 'First Name', 'Type',
+        `Basic Salary — ${prevLabel}`, `Basic Salary — ${currLabel}`, 'Difference', 'Reason',
+      ],
+      rows,
+      isTotalsRow: rows.map((_, i) => i === rows.length - 1),
+      numberFormat: '#,##0.00',
+    };
+    await exportReport(
+      `${employeesActiveHotel} Employee Discrepancies`,
+      `${employeesActiveHotel}_Employee_Discrepancies_${MONTH_NAMES[month - 1]}_${year}.xlsx`,
+      [sheet],
+    );
+  }
+
   async function handleExportConsolidation() {
     const rows: Array<Array<string | number | null>> = [];
     // Same order as on screen: CSL, CFEM (reference only — System row, not summed), NL.
@@ -3134,9 +3171,18 @@ export default function ReconciliationPage() {
                   </p>
                 ) : (
                   <div>
-                    <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-                      Employees — Prior Month vs Payroll Upload ({activeNlEmployeesTable.length})
-                    </h2>
+                    <div className="flex items-center gap-3 mb-2 max-w-4xl">
+                      <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                        Employees — Prior Month vs Payroll Upload ({activeNlEmployeesTable.length})
+                      </h2>
+                      <button
+                        onClick={handleExportEmployeeDiscrepancies}
+                        disabled={!activeNlEmployeesTable.some(r => !r.balances)}
+                        className="ml-auto px-3 py-1.5 bg-primary text-primary-foreground rounded text-sm font-medium hover:opacity-90 disabled:opacity-50"
+                      >
+                        Export Discrepancies ({activeNlEmployeesTable.filter(r => !r.balances).length})
+                      </button>
+                    </div>
                     {activeNlEmployeesTable.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No employees found on either period&apos;s payroll.</p>
                     ) : (
