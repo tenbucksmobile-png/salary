@@ -316,7 +316,10 @@ export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-  const empColPattern = /emp\.?\s*no\.?|^\s*code\s*$/i;
+  // "EMPLOYEE NUMBER" too (CSL's Oct 2026 export). Missing it dropped to the legacy
+  // fallback below, which read the first-name column as the code and skipped the
+  // first 7 employees — splitting BAA001/NKW001 into duplicate Management rows.
+  const empColPattern = /emp(?:loyee)?\.?\s*(?:no\.?|number|#)|^\s*code\s*$/i;
   const headerIdx = rows.findIndex(r =>
     r.some((c: any) => empColPattern.test(String(c || '').trim())),
   );
@@ -548,6 +551,15 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
 // 2135.70 + AVC 496.67 prints a "Total Contributions" of 3322.20, silently
 // dropping the AVC).
 
+// Standing AVCs some schedules leave out. CSL's own schedule lists SHA001 (Dorcus
+// Shamukuni, CFE Management) at EE 1186.50 / total 3322.20 with no AVC column,
+// while CFEM's schedule and payroll report both carry her 496.67 AVC. Added only
+// when the row shows no AVC of its own; matched on code AND surname, since CSL/NL
+// codes can collide with unrelated CFEM codes.
+const STANDING_AVC: Array<{ code: string; surname: RegExp; amount: number }> = [
+  { code: 'SHA001', surname: /shamukuni/i, amount: 496.67 },
+];
+
 export async function parsePensionSchedule(
   buf: ArrayBuffer,
   fileName: string,
@@ -627,7 +639,12 @@ export async function parsePensionSchedule(
 
     const ee = colMember >= 0 ? parseAmount(row[colMember]) : 0;
     const er = colEmployer >= 0 ? parseAmount(row[colEmployer]) : 0;
-    const avc = colAvc >= 0 ? parseAmount(row[colAvc]) : 0;
+    let avc = colAvc >= 0 ? parseAmount(row[colAvc]) : 0;
+    if (avc <= 0) {
+      const code = normalizeCode(rawCode);
+      const standing = STANDING_AVC.find(s => s.code === code && s.surname.test(`${first} ${sur}`));
+      if (standing) avc = standing.amount;
+    }
     // Member AVC is a voluntary contribution BY the employee, so it belongs on
     // the EE side alongside the mandatory member contribution, not left out.
     const eeTotal = ee + avc;
