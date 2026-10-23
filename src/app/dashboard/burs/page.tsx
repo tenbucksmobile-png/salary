@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Employee, Hotel, BursUpload } from '@/types/database';
 import { sortHotels, MONTH_NAMES } from '@/lib/utils';
-import { parsePayrollXlsx, isIlgAnalysisReportFile, parseIlgAnalysisReport, isIlgPayrollListFile, parseIlgPayrollList, isRprt739File, parseRprt739, nameKey, type ParsedPayroll, type PayrollLine } from '@/lib/recon-parsers';
+import { parsePayrollXlsx, parseFtcPayrollXls, isIlgAnalysisReportFile, parseIlgAnalysisReport, isIlgPayrollListFile, parseIlgPayrollList, isRprt739File, parseRprt739, nameKey, type ParsedPayroll, type PayrollLine } from '@/lib/recon-parsers';
 import { Receipt, Upload, Download, AlertTriangle, Trash2 } from 'lucide-react';
 
 // BURS = Botswana Unified Revenue Service. Monthly PAYE submission covering
@@ -26,6 +26,19 @@ const COMBINED_CODES = ['CFEM', 'CSL', 'NL', 'PomPom'];
 // alongside the legacy 'combined' single-file group).
 function uploadGroupFor(shortCode: string): string {
   return shortCode.toLowerCase();
+}
+
+// CSL and NL also pay Fixed Term Contract staff on a separate FTC payroll
+// workbook (one sheet per month — "FIXED SERVICE PAY …" for CSL, "NL FTC …"
+// for NL). Each gets a second upload slot keyed `${code}_FTC` (upload_group
+// 'csl_ftc' / 'nl_ftc', migration 035); its PAYE lines are merged into that
+// hotel's taxpayers. FTC staff have no employee codes, so they match by name.
+const FTC_CODES = ['CSL', 'NL'];
+const ftcSlot = (code: string) => `${code}_FTC`;
+
+// parseFtcPayrollXls stores nameKey(name) in empCode (FTC staff have no code).
+function isFtcLine(line: PayrollLine): boolean {
+  return !line.empCode || line.empCode === nameKey(line.name);
 }
 
 const EMPLOYER_INFO_KEY = 'ihg-salary-burs-employer-info';
@@ -89,18 +102,19 @@ interface TaxpayerRow {
   line: PayrollLine;
   employee: Employee | null;
   hotel?: Hotel;
+  ftc?: boolean; // came from the hotel's FTC payroll upload
 }
 
-// Lines in a parsed payroll that resolve to NO existing employee at all
-// (neither by code nor by name) — candidates to create as new employee
-// records. Matching (and so this month's ITW8 inclusion) needs a real
-// employee row to attach to; a hotel with no roster yet (e.g. Pom Pom) would
-// otherwise show every taxpayer as permanently "unmatched".
+// Taxpayer lines (paye > 0) in a parsed payroll that resolve to NO existing
+// employee at all (neither by code nor by name) — candidates to create as new
+// employee records. Only taxpayers are considered: they're the only lines
+// that reach the ITW8, so non-taxed staff are never offered for creation.
 function findMissingLines(parsed: ParsedPayroll | null, roster: Employee[]): PayrollLine[] {
   if (!parsed) return [];
   const codeSet = new Set(roster.filter(e => e.employee_code).map(e => e.employee_code!.toUpperCase()));
   const nameSet = new Set(roster.map(e => nameKey(`${e.surname} ${e.first_name}`)));
   return parsed.lines.filter(line => {
+    if (!(line.paye > 0)) return false;
     const code = line.empCode?.trim().toUpperCase();
     if (code && codeSet.has(code)) return false;
     if (nameSet.has(nameKey(line.name))) return false;
@@ -294,8 +308,8 @@ export default function BursPage() {
       const rows = (data ?? []) as BursUpload[];
       setIlgUploadRow(rows.find(r => r.upload_group === 'ilg') ?? null);
       const byHotel: Record<string, BursUpload | null> = {};
-      for (const code of COMBINED_CODES) {
-        byHotel[code] = rows.find(r => r.upload_group === uploadGroupFor(code)) ?? null;
+      for (const slot of [...COMBINED_CODES, ...FTC_CODES.map(ftcSlot)]) {
+        byHotel[slot] = rows.find(r => r.upload_group === uploadGroupFor(slot)) ?? null;
       }
       setCombinedUploadRows(byHotel);
     })();
@@ -376,7 +390,9 @@ export default function BursPage() {
       // table. All detected by content, not extension. Everything else is a
       // real tabular spreadsheet via parsePayrollXlsx.
       const text = await file.text();
-      const parsed = isRprt739File(text)
+      const parsed = uploadGroup.endsWith('_ftc')
+        ? await parseFtcPayrollXls(await file.arrayBuffer(), file.name, month, year, true)
+        : isRprt739File(text)
         ? await enrichRprt739WithBasicSalary(parseRprt739(text), hotelId ?? '', file.name)
         : isIlgAnalysisReportFile(text)
         ? parseIlgAnalysisReport(text, file.name)
@@ -404,14 +420,15 @@ export default function BursPage() {
     handleUpload('ilg', file, setUploadingIlg, 'ILG', row => setIlgUploadRow(row), ilgHotel?.id);
   }
 
-  function handleCombinedUpload(hotelCode: string, file: File) {
+  // `slot` is the hotel code for its main payroll, or ftcSlot(code) for CSL/NL's FTC payroll.
+  function handleCombinedUpload(hotelCode: string, file: File, slot = hotelCode) {
     const hotel = combinedHotels.find(h => h.short_code === hotelCode);
     handleUpload(
-      uploadGroupFor(hotelCode),
+      uploadGroupFor(slot),
       file,
-      v => setUploadingCombined(prev => ({ ...prev, [hotelCode]: v })),
-      hotelCode,
-      row => setCombinedUploadRows(prev => ({ ...prev, [hotelCode]: row })),
+      v => setUploadingCombined(prev => ({ ...prev, [slot]: v })),
+      slot === hotelCode ? hotelCode : `${hotelCode} FTC`,
+      row => setCombinedUploadRows(prev => ({ ...prev, [slot]: row })),
       hotel?.id,
     );
   }
@@ -437,8 +454,8 @@ export default function BursPage() {
     handleRemoveUpload('ilg', 'ILG', () => setIlgUploadRow(null));
   }
 
-  function handleRemoveCombinedUpload(hotelCode: string) {
-    handleRemoveUpload(uploadGroupFor(hotelCode), hotelCode, () => setCombinedUploadRows(prev => ({ ...prev, [hotelCode]: null })));
+  function handleRemoveCombinedUpload(slot: string) {
+    handleRemoveUpload(uploadGroupFor(slot), slot.replace('_FTC', ' FTC'), () => setCombinedUploadRows(prev => ({ ...prev, [slot]: null })));
   }
 
   const ilgParsed = (ilgUploadRow?.parsed_data as ParsedPayroll | undefined) ?? null;
@@ -448,57 +465,86 @@ export default function BursPage() {
     [ilgParsed, ilgEmployees, ilgHotel],
   );
 
-  // One matchTaxpayers() pass per hotel, each against that hotel's own
-  // roster only, then combined for the export and the summary table below.
-  const combinedTaxpayersByHotel = useMemo(() => {
+  // One matchTaxpayers() pass per upload slot, each against that hotel's own
+  // roster only. Keyed by slot (hotel code, or ftcSlot(code) for CSL/NL's FTC
+  // payroll); combinedByHotel below folds each FTC slot into its hotel.
+  const combinedTaxpayersBySlot = useMemo(() => {
     const result: Record<string, { matched: TaxpayerRow[]; unmatched: TaxpayerRow[] }> = {};
     for (const code of COMBINED_CODES) {
-      const parsed = (combinedUploadRows[code]?.parsed_data as ParsedPayroll | undefined) ?? null;
       const hotel = combinedHotels.find(h => h.short_code === code);
-      result[code] = matchTaxpayers(parsed, combinedEmployeesByHotel[code] ?? [], () => hotel);
+      const slots = FTC_CODES.includes(code) ? [code, ftcSlot(code)] : [code];
+      for (const slot of slots) {
+        const parsed = (combinedUploadRows[slot]?.parsed_data as ParsedPayroll | undefined) ?? null;
+        const res = matchTaxpayers(parsed, combinedEmployeesByHotel[code] ?? [], () => hotel);
+        if (slot !== code) res.matched.forEach(r => { r.ftc = true; });
+        result[slot] = res;
+      }
     }
     return result;
   }, [combinedUploadRows, combinedEmployeesByHotel, combinedHotels]);
 
-  // Lines with no employee at all yet (e.g. Pom Pom, which starts with zero
-  // employees) — offered as a one-click bulk-create so this month's taxpayers
-  // can actually be matched, without needing the Import HR List page (which
-  // deliberately hides BURS-only hotels like Pom Pom from its own picker).
-  const combinedMissingByHotel = useMemo(() => {
+  const combinedTaxpayersByHotel = useMemo(() => {
+    const result: Record<string, { matched: TaxpayerRow[]; unmatched: TaxpayerRow[] }> = {};
+    for (const code of COMBINED_CODES) {
+      const main = combinedTaxpayersBySlot[code] ?? { matched: [], unmatched: [] };
+      const ftc = combinedTaxpayersBySlot[ftcSlot(code)] ?? { matched: [], unmatched: [] };
+      result[code] = { matched: [...main.matched, ...ftc.matched], unmatched: [...main.unmatched, ...ftc.unmatched] };
+    }
+    return result;
+  }, [combinedTaxpayersBySlot]);
+
+  // Taxpayer lines with no employee at all yet (e.g. Pom Pom, which starts
+  // with zero employees) — offered as a one-click bulk-create so this month's
+  // taxpayers can actually be matched, without needing the Import HR List
+  // page (which deliberately hides BURS-only hotels like Pom Pom from its own
+  // picker). Keyed by upload slot, like combinedTaxpayersBySlot.
+  const combinedMissingBySlot = useMemo(() => {
     const result: Record<string, PayrollLine[]> = {};
     for (const code of COMBINED_CODES) {
-      const parsed = (combinedUploadRows[code]?.parsed_data as ParsedPayroll | undefined) ?? null;
-      result[code] = findMissingLines(parsed, combinedEmployeesByHotel[code] ?? []);
+      const slots = FTC_CODES.includes(code) ? [code, ftcSlot(code)] : [code];
+      for (const slot of slots) {
+        const parsed = (combinedUploadRows[slot]?.parsed_data as ParsedPayroll | undefined) ?? null;
+        result[slot] = findMissingLines(parsed, combinedEmployeesByHotel[code] ?? []);
+      }
     }
     return result;
   }, [combinedUploadRows, combinedEmployeesByHotel]);
 
   const [creatingEmployees, setCreatingEmployees] = useState<Record<string, boolean>>({});
 
-  async function createMissingEmployees(hotelCode: string) {
+  async function createMissingEmployees(hotelCode: string, slot = hotelCode) {
     const hotel = combinedHotels.find(h => h.short_code === hotelCode);
-    const missing = combinedMissingByHotel[hotelCode] ?? [];
+    const missing = combinedMissingBySlot[slot] ?? [];
     if (!hotel || missing.length === 0) return;
-    setCreatingEmployees(prev => ({ ...prev, [hotelCode]: true }));
+    setCreatingEmployees(prev => ({ ...prev, [slot]: true }));
     setUploadError(null);
     try {
       const rows = missing.map(line => {
+        // FTC lines carry nameKey(name) in empCode, not a real code.
+        const ftc = slot !== hotelCode || isFtcLine(line);
         let firstName = line.firstName;
         let surname = line.surname;
         if (firstName === undefined && surname === undefined) {
           // No separately-tracked name columns in the source — best-effort
-          // split (first token = first name, rest = surname).
+          // split. FTC sheets write "First [Middle/Initial] Surname", so the
+          // last token is the surname; other sources: first token = first name.
           const tokens = line.name.trim().split(/\s+/);
-          firstName = tokens[0] ?? '';
-          surname = tokens.slice(1).join(' ') || tokens[0] || '';
+          if (ftc && tokens.length > 1) {
+            surname = tokens[tokens.length - 1];
+            firstName = tokens.slice(0, -1).join(' ');
+          } else {
+            firstName = tokens[0] ?? '';
+            surname = tokens.slice(1).join(' ') || tokens[0] || '';
+          }
         }
         return {
           hotel_id: hotel.id,
-          employee_code: line.empCode || null,
+          employee_code: ftc ? null : line.empCode || null,
           surname: surname || line.name || '(unknown)',
           first_name: firstName || '',
           id_number: line.idNumber || null,
           status: 'active' as const,
+          ...(slot !== hotelCode ? { grade_label: 'Fixed Term' } : {}),
         };
       });
       const { error } = await sb.from('employees').insert(rows);
@@ -512,7 +558,7 @@ export default function BursPage() {
     } catch (err) {
       setUploadError(`Creating employees for ${hotelCode} failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      setCreatingEmployees(prev => ({ ...prev, [hotelCode]: false }));
+      setCreatingEmployees(prev => ({ ...prev, [slot]: false }));
     }
   }
 
@@ -699,32 +745,39 @@ export default function BursPage() {
             matched against its own roster. Rows are combined into the export in this order: {COMBINED_CODES.join(', ')}.
           </p>
           <div className="space-y-2.5">
-            {COMBINED_CODES.map(code => {
-              const uploadRow = combinedUploadRows[code];
-              const taxpayers = combinedTaxpayersByHotel[code];
-              const isUploading = !!uploadingCombined[code];
-              const missing = combinedMissingByHotel[code] ?? [];
-              const isCreating = !!creatingEmployees[code];
+            {COMBINED_CODES.flatMap(code => FTC_CODES.includes(code) ? [code, ftcSlot(code)] : [code]).map(slot => {
+              const isFtcSlot = slot.endsWith('_FTC');
+              const code = isFtcSlot ? slot.replace('_FTC', '') : slot;
+              const label = isFtcSlot ? `${code} FTC` : code;
+              const uploadRow = combinedUploadRows[slot];
+              const taxpayers = combinedTaxpayersBySlot[slot];
+              const isUploading = !!uploadingCombined[slot];
+              const missing = combinedMissingBySlot[slot] ?? [];
+              const isCreating = !!creatingEmployees[slot];
               return (
-                <div key={code}>
+                <div key={slot} className={isFtcSlot ? 'pl-4' : undefined}>
                   <input
-                    ref={el => { combinedFileRefs.current[code] = el; }}
-                    type="file" accept=".xlsx,.xls,.csv" className="hidden"
-                    onChange={e => { const f = e.target.files?.[0]; if (f) handleCombinedUpload(code, f); e.target.value = ''; }}
+                    ref={el => { combinedFileRefs.current[slot] = el; }}
+                    type="file" accept={isFtcSlot ? '.xlsx,.xls' : '.xlsx,.xls,.csv'} className="hidden"
+                    onChange={e => { const f = e.target.files?.[0]; if (f) handleCombinedUpload(code, f, slot); e.target.value = ''; }}
                   />
                   <div className="flex gap-2">
                     <button
-                      onClick={() => combinedFileRefs.current[code]?.click()}
+                      onClick={() => combinedFileRefs.current[slot]?.click()}
                       disabled={isUploading}
                       className="flex-1 flex items-center justify-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors"
                     >
                       <Upload className="h-3.5 w-3.5" />
-                      {isUploading ? `Uploading ${code}…` : uploadRow ? `${code}: Replace (${uploadRow.file_name})` : `Upload ${code} Payroll Spreadsheet`}
+                      {isUploading
+                        ? `Uploading ${label}…`
+                        : uploadRow
+                        ? `${label}: Replace (${uploadRow.file_name})`
+                        : isFtcSlot ? `Upload ${code} FTC Payroll (PAYE only)` : `Upload ${code} Payroll Spreadsheet`}
                     </button>
                     {uploadRow && (
                       <button
-                        onClick={() => handleRemoveCombinedUpload(code)}
-                        title={`Remove ${code}'s upload`}
+                        onClick={() => handleRemoveCombinedUpload(slot)}
+                        title={`Remove ${label}'s upload`}
                         className="shrink-0 flex items-center justify-center rounded-md border border-dashed px-3 text-red-600 hover:bg-red-50 transition-colors"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -735,15 +788,16 @@ export default function BursPage() {
                     <p className="text-xs text-muted-foreground mt-1 pl-1">
                       {taxpayers.matched.length} taxpayer{taxpayers.matched.length === 1 ? '' : 's'} found
                       {taxpayers.unmatched.length > 0 && `, ${taxpayers.unmatched.length} unmatched`}
+                      {isFtcSlot && ` — ${(uploadRow.parsed_data as ParsedPayroll | undefined)?.lines.length ?? 0} on the sheet, only those with PAYE are used`}
                     </p>
                   )}
                   {missing.length > 0 && (
                     <button
-                      onClick={() => createMissingEmployees(code)}
+                      onClick={() => createMissingEmployees(code, slot)}
                       disabled={isCreating}
                       className="mt-1 w-full text-left pl-1 text-xs text-amber-700 hover:text-amber-900 underline disabled:opacity-50 transition-colors"
                     >
-                      {isCreating ? `Creating…` : `${missing.length} employee${missing.length === 1 ? '' : 's'} not on file for ${code} — already included in the export; create from this upload to add Omang and speed up next month's matching`}
+                      {isCreating ? `Creating…` : `${missing.length} taxpayer${missing.length === 1 ? '' : 's'} not on file for ${label} — already included in the export; create from this upload to add Omang and speed up next month's matching`}
                     </button>
                   )}
                 </div>
@@ -845,12 +899,15 @@ export default function BursPage() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {activeTaxpayerRows.map(({ line, employee, hotel }, i) => {
+              {activeTaxpayerRows.map(({ line, employee, hotel, ftc }, i) => {
                 const idNumber = employee?.id_number || line.idNumber || '';
                 const { bonusCommission, otherPayments, severancePayGratuity } = itw8DerivedFields(line);
                 return (
                   <tr key={`${employee?.id ?? line.empCode}-${i}`} className={!employee ? 'bg-amber-50/50' : undefined}>
-                    <td className="px-5 py-2.5 text-muted-foreground">{hotel?.short_code ?? '—'}</td>
+                    <td className="px-5 py-2.5 text-muted-foreground">
+                      {hotel?.short_code ?? '—'}
+                      {ftc && <span className="ml-1.5 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">FTC</span>}
+                    </td>
                     <td className="px-5 py-2.5 font-medium">
                       {/* Unmatched rows: use the payroll file's own split name when the
                           parser captured one (Pom Pom's Last Name/First Name columns);

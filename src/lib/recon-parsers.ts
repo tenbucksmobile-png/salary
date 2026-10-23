@@ -51,7 +51,8 @@ export interface PayrollLine {
   nettPay: number;
   // BURS ITW8 fields — explicit sums from named CSL/NL payroll columns, set
   // ONLY by the Code-anchored parsePayrollXlsx shape (confirmed against real
-  // CSL/NL files). Left undefined by every other parser (ILG's report,
+  // CSL/NL files) and by parseFtcPayrollXls (FTC overtime/tip/public-holiday
+  // and Commission columns). Left undefined by every other parser (ILG's report,
   // Pom Pom, CFEM's RPRT739), which have no equivalent granular columns —
   // buildItw8Csv() falls back to its incomeTotal-basic derivation for those.
   otherPayments?: number;       // 1000 - Overtime PPHoliday, 1003 - General Staff Tip, 1004 - Notice pay, 5321/5323 - Overtime — NOT 1001 (Maternity Leave-NegativeIncome, confirmed a different item despite the similar numbering)
@@ -1325,13 +1326,16 @@ function findFtcHeader(
 ): {
   found: boolean; nameCol: number; totalCol: number; nettCol: number; basicCol: number;
   furnmartCol: number; boduloCol: number; medAidCol: number; afritecLoanCol: number;
+  payeCol: number; commissionCol: number; otherPayCols: number[];
   rowIdx: number;
 } {
   for (let i = startRow; i < Math.min(startRow + 15, rows.length); i++) {
     let nameCol = -1, totalCol = -1, nettCol = -1, basicCol = -1;
     let furnmartCol = -1, boduloCol = -1, medAidCol = -1, afritecLoanCol = -1;
+    let payeCol = -1, commissionCol = -1;
+    const otherPayCols: number[] = [];
     rows[i].forEach((cell: any, j: number) => {
-      const s = String(cell ?? '').trim().toLowerCase();
+      const s = String(cell ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
       // "Employee Name" added after a real CSL FTC export used that header instead of
       // a bare "Name"/"Full Name" — the same silent-zero-rows failure mode as the
       // "NETT PAY" fix below.
@@ -1342,7 +1346,9 @@ function findFtcHeader(
       // Bare "Amount" (anchored, so it never matches e.g. "Loan Amount") covers a
       // minimal two-column CSL FTC export (Employee Name / Amount, no other columns
       // at all) confirmed live.
-      if (/total.+pay|gross.+salary|^amount$/.test(s)) totalCol = j;
+      // "Income Total" — the full monthly FTC payroll workbooks ("FIXED SERVICE PAY …",
+      // "NL FTC …") carry it alongside Salary(P)/AMOUNT (P) and NETT PAY.
+      if (/total.+pay|gross.+salary|^amount$|^income total$/.test(s)) totalCol = j;
       // Net pay has its own column so it can sit ALONGSIDE an Amount column — confirmed
       // live on NL's Sept 2026 FTC file (Name / Amount / Nett, e.g. 3570 vs 3618.93),
       // where lumping "Nett" into totalCol left net pay reading the Amount figure and
@@ -1356,7 +1362,18 @@ function findFtcHeader(
       // tab's Basic Salary Mismatch comparison and any other consumer expecting genuine
       // basic salary. Anchored (^...$) so it never matches "GROSS SALARY" (already
       // claimed by totalCol above) or any other multi-word phrase containing "salary".
-      if (/^(basic\s+)?salary$/.test(s)) basicCol = j;
+      // Also "Salary(P)" (CSL's full FTC workbook), "AMOUNT (P)" (NL's) and the
+      // "Basicc Salary" typo seen on NL's Oct 2026 sheet.
+      if (/^(basic+ )?salary( ?\(p\))?$|^amount ?\(p\)$/.test(s)) basicCol = j;
+      // BURS-only fields (ignored by Reconciliation). OtherPayments mirrors the
+      // CSL/NL permanent-payroll rule (overtime, public-holiday overtime, staff
+      // tips) — leave pay, short pay/severance, bonus/back pay and night
+      // allowance are left out, as they are for permanent staff. The Aug/Sep 2026
+      // CSL sheets have one combined "OvertimeCommission" column, treated as
+      // overtime; later sheets split it into "Overtime" and "Commission".
+      if (/^paye/.test(s)) payeCol = j;
+      if (/^commission$/.test(s)) commissionCol = j;
+      if (/over ?time|public holiday|^ph$|staff tip/.test(s)) otherPayCols.push(j);
       // Vendor-deduction columns — present on some FTC exports (a real CSL FTC file has
       // Funeral Cover/Afritec loan/Furnmart/Medical aid columns alongside Salary/NETT
       // PAY), absent on others (the original bespoke multi-sheet format, and the simpler
@@ -1368,10 +1385,10 @@ function findFtcHeader(
       if (/afritec/.test(s)) afritecLoanCol = j;
     });
     if (nameCol >= 0 && (totalCol >= 0 || nettCol >= 0)) {
-      return { found: true, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, rowIdx: i };
+      return { found: true, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, rowIdx: i };
     }
   }
-  return { found: false, nameCol: 0, totalCol: -1, nettCol: -1, basicCol: -1, furnmartCol: -1, boduloCol: -1, medAidCol: -1, afritecLoanCol: -1, rowIdx: startRow };
+  return { found: false, nameCol: 0, totalCol: -1, nettCol: -1, basicCol: -1, furnmartCol: -1, boduloCol: -1, medAidCol: -1, afritecLoanCol: -1, payeCol: -1, commissionCol: -1, otherPayCols: [], rowIdx: startRow };
 }
 
 export async function parseFtcPayrollXls(
@@ -1379,16 +1396,27 @@ export async function parseFtcPayrollXls(
   fileName: string,
   targetMonth = 0,
   targetYear = 0,
+  // BURS passes true: a multi-sheet workbook with no sheet for the target
+  // month must fail loudly rather than fall back to the latest sheet, which
+  // would submit another month's PAYE.
+  requireMonthSheet = false,
 ): Promise<ParsedPayroll> {
   const XLSX = await getXLSX();
   const wb = XLSX.read(buf, { type: 'array' });
 
   const sheetName = pickFtcSheet(wb.SheetNames, targetMonth, targetYear);
+  if (requireMonthSheet && wb.SheetNames.length > 1) {
+    const lower = sheetName.toLowerCase().replace(/\s+/g, '');
+    const yStr = String(targetYear);
+    if (!lower.includes(FTC_MONTH_NAMES[targetMonth - 1]) || !(lower.includes(yStr) || lower.includes(yStr.slice(2)))) {
+      throw new Error(`No sheet for ${FTC_MONTH_NAMES[targetMonth - 1]} ${targetYear} in ${fileName}`);
+    }
+  }
   const ws = wb.Sheets[sheetName];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
   // Locate first header row to determine column positions for the whole sheet
-  const { found, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, rowIdx: headerIdx } =
+  const { found, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, rowIdx: headerIdx } =
     findFtcHeader(rows, 0);
   if (!found) return { lines: [], totals: {}, fileName };
 
@@ -1420,6 +1448,9 @@ export async function parseFtcPayrollXls(
     const bodulo = boduloCol >= 0 ? Number(row[boduloCol]) || 0 : 0;
     const medAidEe = medAidCol >= 0 ? Number(row[medAidCol]) || 0 : 0;
     const afritecLoans = afritecLoanCol >= 0 ? Number(row[afritecLoanCol]) || 0 : 0;
+    const paye = payeCol >= 0 ? Number(row[payeCol]) || 0 : 0;
+    const bonusCommission = commissionCol >= 0 ? Number(row[commissionCol]) || 0 : 0;
+    const otherPayments = otherPayCols.reduce((s, c) => s + (Number(row[c]) || 0), 0);
 
     const key = nameKey(rawName);
     const existing = lines.find(l => l.empCode === key);
@@ -1433,6 +1464,9 @@ export async function parseFtcPayrollXls(
       existing.medAidEe += medAidEe;
       existing.afritecLoans += afritecLoans;
       existing.staffLoans += afritecLoans;
+      existing.paye += paye;
+      existing.bonusCommission = (existing.bonusCommission ?? 0) + bonusCommission;
+      existing.otherPayments = (existing.otherPayments ?? 0) + otherPayments;
     } else {
       lines.push({
         empCode: key, // nameKey-format; display as "—" in the UI
@@ -1441,10 +1475,12 @@ export async function parseFtcPayrollXls(
         basic,
         incomeTotal: total,
         furnmart, cbStores: 0, bodulo,
-        pensionEe: 0, paye: 0, medAidEe,
+        pensionEe: 0, paye, medAidEe,
         afritecLoans, toplineLoans: 0, staffLoans: afritecLoans,
         deductionTotal: 0,
         nettPay: nett,
+        bonusCommission,
+        otherPayments,
       });
     }
     grandTotal += total;
@@ -1466,6 +1502,7 @@ export async function parseFtcPayrollXls(
       basic: grandBasic, incomeTotal: grandTotal, nettPay: grandNett,
       furnmart: grandFurnmart, bodulo: grandBodulo,
       afritecLoans: grandAfritecLoans, staffLoans: grandAfritecLoans,
+      paye: lines.reduce((s, l) => s + l.paye, 0),
     },
     fileName,
     ftcColumnsFound: {
