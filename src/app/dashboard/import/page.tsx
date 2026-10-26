@@ -52,6 +52,8 @@ interface ImportRow {
   // HR List only: a 'add' row whose name (order-agnostic) matches an
   // existing employee under a different code — likely a duplicate.
   possibleMatch?: string;
+  // HR List: blank fields on the matched record that the file fills in (never overwrites)
+  fills?: { employee_code?: string; id_number?: string };
 }
 
 // Case/punctuation-insensitive name comparison for the HR List diff, so
@@ -501,7 +503,18 @@ export default function ImportPage() {
       const importRows: ImportRow[] = emps.map(emp => {
         const exactNameKey = `${emp.surname.toLowerCase()}|${emp.firstName.toLowerCase()}`;
         const codeKey = emp.employeeCode ? emp.employeeCode.toUpperCase() : '';
-        const existingId = (codeKey ? existingCodeMap.get(codeKey) : undefined) ?? existingNameMap.get(exactNameKey);
+        // Last resort: same surname and same first given name, when the file
+        // drops a middle name the record has (NL FTC: file "Ogomoditse" vs
+        // record "Ogomoditse Letshwao"). Only a single candidate whose code is
+        // blank or equal to the file's — never guessed between two people.
+        const firstToken = (s: string | null | undefined) => normName(s).split(' ')[0] ?? '';
+        const looseCandidates = (existing ?? []).filter((e: any) =>
+          normName(e.surname) === normName(emp.surname) &&
+          firstToken(e.first_name) !== '' && firstToken(e.first_name) === firstToken(emp.firstName) &&
+          (!e.employee_code || !codeKey || String(e.employee_code).toUpperCase() === codeKey));
+        const existingId = (codeKey ? existingCodeMap.get(codeKey) : undefined)
+          ?? existingNameMap.get(exactNameKey)
+          ?? (looseCandidates.length === 1 ? looseCandidates[0].id as string : undefined);
         // A file carrying separate Structure + Basic Salary columns alongside
         // Gross (Basic Salary = Total Earnings − Structure, same relationship
         // the employee detail page enforces) splits basic_salary out of the
@@ -516,15 +529,23 @@ export default function ImportPage() {
         // never overwrites them. Differences are collected for highlighting.
         const changes: { field: string; current: string; incoming: string }[] = [];
         let possibleMatch: string | undefined;
+        const fills: { employee_code?: string; id_number?: string } = {};
         const cur = existingId ? existingById.get(existingId) : undefined;
         if (cur) {
+          // Blank code / Omang on the record are filled from the file; a value
+          // already on record is never overwritten. A code another employee
+          // already holds is skipped.
+          if (!cur.employee_code && emp.employeeCode && !existingCodeMap.has(codeKey))
+            fills.employee_code = emp.employeeCode;
           if (emp.surname && normName(emp.surname) !== normName(cur.surname))
             changes.push({ field: 'Surname', current: cur.surname ?? '', incoming: emp.surname });
           if (emp.firstName && normName(emp.firstName) !== normName(cur.first_name))
             changes.push({ field: 'First Name', current: cur.first_name ?? '', incoming: emp.firstName });
           const fileId = emp.idNumber.replace(/\s/g, '');
           const dbId = String(cur.id_number ?? '').replace(/\s/g, '');
-          if (fileId && fileId !== dbId)
+          if (fileId && !dbId)
+            fills.id_number = fileId;
+          else if (fileId && fileId !== dbId)
             changes.push({ field: 'Omang', current: dbId || '—', incoming: fileId });
           const curBasic = latestBasic.get(existingId!);
           if (basicSalary > 0 && (curBasic === undefined || Math.abs(curBasic - basicSalary) > 0.5))
@@ -540,6 +561,7 @@ export default function ImportPage() {
           importType: 'employee' as const,
           changes,
           possibleMatch,
+          fills: Object.keys(fills).length ? fills : undefined,
           action: existingId ? 'update' as const : 'add' as const,
           existing_employee_id: existingId,
           employeeCode: emp.employeeCode || (existingId ? '' : makeSyntheticCode(emp.surname, emp.firstName, existingCodes)),
@@ -1066,6 +1088,7 @@ export default function ImportPage() {
           // full-roster upload means they're currently employed (see the
           // ILG ANO incident in CLAUDE.md).
           await sb2.from('employees').update({
+            ...(row.fills ?? {}),
             status: 'active',
             last_seen_at: seenAt,
             updated_at: new Date().toISOString(),
@@ -1198,7 +1221,7 @@ export default function ImportPage() {
   // HR List preview defaults to only the rows that need attention (new
   // employees + matched rows whose file values differ from the record).
   const previewRows = importType === 'employee' && !hrShowAll
-    ? rows.filter(r => r.action === 'add' || (r.changes?.length ?? 0) > 0)
+    ? rows.filter(r => r.action === 'add' || (r.changes?.length ?? 0) > 0 || !!r.fills)
     : rows;
   const selectedHotelImport = hotels.find(h => h.id === hotelId);
   const selectedCountry = selectedHotelImport?.country ?? '';
@@ -1866,13 +1889,23 @@ export default function ImportPage() {
                           </span>
                         )}
                         <div className="flex flex-wrap gap-1">
+                          {r.fills?.employee_code && (
+                            <span className="inline-block rounded bg-green-50 border border-green-200 text-green-800 px-1.5 py-0.5">
+                              <strong>Emp Code:</strong> blank → {r.fills.employee_code}
+                            </span>
+                          )}
+                          {r.fills?.id_number && (
+                            <span className="inline-block rounded bg-green-50 border border-green-200 text-green-800 px-1.5 py-0.5">
+                              <strong>Omang:</strong> blank → {r.fills.id_number}
+                            </span>
+                          )}
                           {r.changes?.map((c, j) => (
                             <span key={j} className="inline-block rounded bg-amber-100 text-amber-900 px-1.5 py-0.5">
                               <strong>{c.field}:</strong> {c.current} → {c.incoming}
                             </span>
                           ))}
                         </div>
-                        {!r.possibleMatch && !hasChanges && <span className="text-muted-foreground">—</span>}
+                        {!r.possibleMatch && !hasChanges && !r.fills && <span className="text-muted-foreground">—</span>}
                       </td>
                     )}
                   </tr>
