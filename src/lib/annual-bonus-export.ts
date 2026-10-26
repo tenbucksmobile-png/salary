@@ -109,18 +109,46 @@ const COLS = [
 ];
 // A    B    C    D    E    F    G    H    I    J    K    L    M    N    O
 
+// CSL and NL list their Fixed Term Contract staff separately, below permanents.
+const FTC_SPLIT_CODES = new Set(['CSL', 'NL']);
+
 function buildHotelSheet(XLSX: any, hotel: AnnualBonusExportHotel, year: number) {
   const rows = hotel.rows.filter(r => r.gradeLabel !== 'ANO');
   const aoa: any[][] = [COLS.map(h => hdr(h, h === 'Rate (% / ×)' || h === 'Flat' || h === 'Comments'))];
 
+  const bonusOf = (r: AnnualBonusExportRow) => {
+    const months = r.startDate ? monthsAtDec(r.startDate, year) : null;
+    const factor = factorFor(months);
+    return r.isExcluded ? 0 : r2(r.baseGross * factor * r.rate + r.flat * factor);
+  };
+  const isIncentive = (r: AnnualBonusExportRow) => r.isIncentive && !r.isExcluded;
+  // Incentive-scheme employees first, highest bonus first; everyone else keeps
+  // the incoming (surname) order.
+  const incentiveFirst = (list: AnnualBonusExportRow[]) => [
+    ...list.filter(isIncentive).sort((a, b) => bonusOf(b) - bonusOf(a)),
+    ...list.filter(r => !isIncentive(r)),
+  ];
+
+  const splitFtc  = FTC_SPLIT_CODES.has(hotel.shortCode);
+  const ftcRows   = splitFtc ? rows.filter(r => r.gradeLabel === 'Fixed Term') : [];
+  const permRows  = splitFtc ? rows.filter(r => r.gradeLabel !== 'Fixed Term') : rows;
+  const ordered: (AnnualBonusExportRow | string)[] = [...incentiveFirst(permRows)];
+  if (ftcRows.length) ordered.push(`Fixed Term Contract (${ftcRows.length})`, ...incentiveFirst(ftcRows));
+
+  const merges: any[] = [];
   let bonusTotal = 0;
-  rows.forEach((r, i) => {
+  ordered.forEach((r, i) => {
     const xr = i + 2; // Excel row
+    if (typeof r === 'string') {
+      aoa.push([txt(r, true, LGRAY), ...Array.from({ length: COLS.length - 1 }, () => txt('', true, LGRAY))]);
+      merges.push({ s: { r: xr - 1, c: 0 }, e: { r: xr - 1, c: COLS.length - 1 } });
+      return;
+    }
     const months = r.startDate ? monthsAtDec(r.startDate, year) : null;
     const factor = factorFor(months);
     const rate   = r.isExcluded ? 0 : r.rate;
     const flat   = r.isExcluded ? 0 : r.flat;
-    const bonus  = r2(r.baseGross * factor * rate + flat * factor);
+    const bonus  = bonusOf(r);
     bonusTotal  += bonus;
 
     aoa.push([
@@ -145,7 +173,7 @@ function buildHotelSheet(XLSX: any, hotel: AnnualBonusExportHotel, year: number)
     ]);
   });
 
-  const last = rows.length + 1;
+  const last = ordered.length + 1;
   const tot  = last + 2; // one blank row between data and totals keeps the totals out of the filter
   aoa.push([]);
   const sum = (col: string) => (rows.length ? `SUM(${col}2:${col}${last})` : '0');
@@ -167,6 +195,7 @@ function buildHotelSheet(XLSX: any, hotel: AnnualBonusExportHotel, year: number)
     { wch: 11 }, { wch: 11 }, { wch: 15 }, { wch: 40 },
   ];
   ws['!rows'] = [{ hpt: 32 }];
+  if (merges.length) ws['!merges'] = merges;
   ws['!autofilter'] = { ref: `A1:O${Math.max(last, 1)}` };
   ws['!freeze'] = { xSplit: 0, ySplit: 1 };
 

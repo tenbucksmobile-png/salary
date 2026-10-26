@@ -131,6 +131,32 @@ function computeRows(
       a.employee.first_name.localeCompare(b.employee.first_name));
 }
 
+// Latest salary record per employee, and latest on or before July of the bonus
+// year (the incentive base — see INCENTIVE_BASE_MONTH).
+function latestSalaryMap(salList: SalaryRecord[]): Map<string, SalaryRecord> {
+  const m = new Map<string, SalaryRecord>();
+  for (const sr of salList) {
+    const ex = m.get(sr.employee_id);
+    if (!ex || sr.period_year > ex.period_year ||
+      (sr.period_year === ex.period_year && sr.period_month > ex.period_month)) {
+      m.set(sr.employee_id, sr);
+    }
+  }
+  return m;
+}
+
+function julySalaryMap(salList: SalaryRecord[], bonusYear: number): Map<string, SalaryRecord> {
+  const cutoff = bonusYear * 12 + INCENTIVE_BASE_MONTH;
+  const m = new Map<string, SalaryRecord>();
+  for (const sr of salList) {
+    const key = sr.period_year * 12 + sr.period_month;
+    if (key > cutoff) continue;
+    const ex = m.get(sr.employee_id);
+    if (!ex || key > ex.period_year * 12 + ex.period_month) m.set(sr.employee_id, sr);
+  }
+  return m;
+}
+
 function settingsFromJson(s2: Record<string, unknown>): HotelSettings {
   return {
     pct:  (s2.pct  as string) ?? '',
@@ -178,18 +204,9 @@ export default function AnnualBonusPage() {
       ]);
       const hotelList = sortHotels((h ?? []) as Hotel[]);
 
-      const salMap = new Map<string, SalaryRecord>();
-      for (const sr of salList) {
-        const ex = salMap.get(sr.employee_id);
-        if (!ex || sr.period_year > ex.period_year ||
-          (sr.period_year === ex.period_year && sr.period_month > ex.period_month)) {
-          salMap.set(sr.employee_id, sr);
-        }
-      }
-
       setHotels(hotelList);
       setEmployees(empList);
-      setLatestSalary(salMap);
+      setLatestSalary(latestSalaryMap(salList));
       setSalaryList(salList);
       if (hotelList.length > 0) setHotelFilter(prev => prev || hotelList[0].id);
     }
@@ -234,17 +251,7 @@ export default function AnnualBonusPage() {
   }, [hotelFilter, draftsLoadedFor]);
 
   // Latest salary record per employee on or before July of the bonus year
-  const julySalary = useMemo(() => {
-    const cutoff = bonusYear * 12 + INCENTIVE_BASE_MONTH;
-    const m = new Map<string, SalaryRecord>();
-    for (const sr of salaryList) {
-      const key = sr.period_year * 12 + sr.period_month;
-      if (key > cutoff) continue;
-      const ex = m.get(sr.employee_id);
-      if (!ex || key > ex.period_year * 12 + ex.period_month) m.set(sr.employee_id, sr);
-    }
-    return m;
-  }, [salaryList, bonusYear]);
+  const julySalary = useMemo(() => julySalaryMap(salaryList, bonusYear), [salaryList, bonusYear]);
 
   const hotelMap = useMemo(() => new Map(hotels.map(h => [h.id, h])), [hotels]);
 
@@ -377,8 +384,20 @@ export default function AnnualBonusPage() {
     }
     setExporting(true);
     try {
+      // Re-read the roster and salary records now, so the export reflects the
+      // current employee lists even if an HR List import ran after this page loaded.
+      const [empList, salList] = await Promise.all([
+        fetchAllRows<Employee>(() => sb.from('employees').select('*').eq('status', 'active')),
+        fetchAllRows<SalaryRecord>(() => sb.from('salary_records').select('*')),
+      ]);
+      setEmployees(empList);
+      setSalaryList(salList);
+      const latest = latestSalaryMap(salList);
+      setLatestSalary(latest);
+      const july = julySalaryMap(salList, bonusYear);
+
       const exportHotels: AnnualBonusExportHotel[] = savedSummary.map(s => {
-        const rows = computeRows(s.hotel.id, hotelSettings.get(s.hotel.id)!, employees, hotelMap, latestSalary, julySalary, bonusYear);
+        const rows = computeRows(s.hotel.id, hotelSettings.get(s.hotel.id)!, empList, hotelMap, latest, july, bonusYear);
         return {
           name:      s.hotel.name,
           shortCode: s.hotel.short_code ?? s.hotel.name,
