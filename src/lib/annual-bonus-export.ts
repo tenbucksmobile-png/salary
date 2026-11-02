@@ -109,8 +109,14 @@ const COLS = [
 ];
 // A    B    C    D    E    F    G    H    I    J    K    L    M    N    O
 
-// CSL and NL list their Fixed Term Contract staff separately, below permanents.
-const FTC_SPLIT_CODES = new Set(['CSL', 'NL']);
+// CSL and NL list their Fixed Term Contract staff separately, below permanents;
+// ILRB does the same for its Flexible staff (mirrors the Employees page's
+// SECONDARY_GRADE_TABS split).
+const SECONDARY_SECTIONS: Record<string, { grade: string; label: string }> = {
+  CSL:  { grade: 'Fixed Term', label: 'Fixed Term Contract' },
+  NL:   { grade: 'Fixed Term', label: 'Fixed Term Contract' },
+  ILRB: { grade: 'Flexible',   label: 'Flexible Staff' },
+};
 
 function buildHotelSheet(XLSX: any, hotel: AnnualBonusExportHotel, year: number) {
   const rows = hotel.rows.filter(r => r.gradeLabel !== 'ANO');
@@ -129,11 +135,11 @@ function buildHotelSheet(XLSX: any, hotel: AnnualBonusExportHotel, year: number)
     ...list.filter(r => !isIncentive(r)),
   ];
 
-  const splitFtc  = FTC_SPLIT_CODES.has(hotel.shortCode);
-  const ftcRows   = splitFtc ? rows.filter(r => r.gradeLabel === 'Fixed Term') : [];
-  const permRows  = splitFtc ? rows.filter(r => r.gradeLabel !== 'Fixed Term') : rows;
+  const section  = SECONDARY_SECTIONS[hotel.shortCode];
+  const secRows  = section ? rows.filter(r => r.gradeLabel === section.grade) : [];
+  const permRows = section ? rows.filter(r => r.gradeLabel !== section.grade) : rows;
   const ordered: (AnnualBonusExportRow | string)[] = [...incentiveFirst(permRows)];
-  if (ftcRows.length) ordered.push(`Fixed Term Contract (${ftcRows.length})`, ...incentiveFirst(ftcRows));
+  if (section && secRows.length) ordered.push(`${section.label} (${secRows.length})`, ...incentiveFirst(secRows));
 
   const merges: any[] = [];
   let bonusTotal = 0;
