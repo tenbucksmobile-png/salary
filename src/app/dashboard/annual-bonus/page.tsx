@@ -125,7 +125,10 @@ function computeRows(
         hasOverride: !!ov && !isExcluded, isExcluded,
       };
     })
-    .filter((r): r is BonusRow => r !== null && r.currentGross > 0)
+    // Flexible staff (ILRB) carry 0 gross on their salary record but must still be
+    // listed, so a flat/override bonus can be entered and they reach the export's
+    // "Flexible Staff" section.
+    .filter((r): r is BonusRow => r !== null && (r.currentGross > 0 || r.employee.grade_label === 'Flexible'))
     .sort((a, b) =>
       a.employee.surname.localeCompare(b.employee.surname) ||
       a.employee.first_name.localeCompare(b.employee.first_name));
