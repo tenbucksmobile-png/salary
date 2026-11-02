@@ -1327,12 +1327,14 @@ function findFtcHeader(
   found: boolean; nameCol: number; totalCol: number; nettCol: number; basicCol: number;
   furnmartCol: number; boduloCol: number; medAidCol: number; afritecLoanCol: number;
   payeCol: number; commissionCol: number; otherPayCols: number[];
+  otherPayDirectCol: number; severanceCol: number; omangCol: number;
   rowIdx: number;
 } {
   for (let i = startRow; i < Math.min(startRow + 15, rows.length); i++) {
     let nameCol = -1, totalCol = -1, nettCol = -1, basicCol = -1;
     let furnmartCol = -1, boduloCol = -1, medAidCol = -1, afritecLoanCol = -1;
     let payeCol = -1, commissionCol = -1;
+    let otherPayDirectCol = -1, severanceCol = -1, omangCol = -1;
     const otherPayCols: number[] = [];
     rows[i].forEach((cell: any, j: number) => {
       const s = String(cell ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -1374,6 +1376,13 @@ function findFtcHeader(
       if (/^paye/.test(s)) payeCol = j;
       if (/^commission$/.test(s)) commissionCol = j;
       if (/over ?time|public holiday|^ph$|staff tip/.test(s)) otherPayCols.push(j);
+      // BURS-prepped CSL FTC PAYE sheet (CSL_FTC_PAYE.xlsx, Oct 2026): NAME / Omang /
+      // Salary / Severance pay / Commission / Other Payments / PAYE — no total or nett
+      // column at all. "Other Payments" is already the ITW8 figure, used as-is.
+      // Severance anchored so the full workbook's "Short pay/Severance" stays excluded.
+      if (/^other (payments?|income)$/.test(s)) otherPayDirectCol = j;
+      if (/^severance( pay)?$/.test(s)) severanceCol = j;
+      if (/^omang|national id|^id (no|number)/.test(s)) omangCol = j;
       // Vendor-deduction columns — present on some FTC exports (a real CSL FTC file has
       // Funeral Cover/Afritec loan/Furnmart/Medical aid columns alongside Salary/NETT
       // PAY), absent on others (the original bespoke multi-sheet format, and the simpler
@@ -1384,11 +1393,13 @@ function findFtcHeader(
       if (/medical/.test(s)) medAidCol = j;
       if (/afritec/.test(s)) afritecLoanCol = j;
     });
-    if (nameCol >= 0 && (totalCol >= 0 || nettCol >= 0)) {
-      return { found: true, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, rowIdx: i };
+    // A sheet with no total/nett column still qualifies when it has Salary + PAYE
+    // (the BURS-prepped PAYE sheet above); income is then summed from its parts.
+    if (nameCol >= 0 && (totalCol >= 0 || nettCol >= 0 || (basicCol >= 0 && payeCol >= 0))) {
+      return { found: true, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, otherPayDirectCol, severanceCol, omangCol, rowIdx: i };
     }
   }
-  return { found: false, nameCol: 0, totalCol: -1, nettCol: -1, basicCol: -1, furnmartCol: -1, boduloCol: -1, medAidCol: -1, afritecLoanCol: -1, payeCol: -1, commissionCol: -1, otherPayCols: [], rowIdx: startRow };
+  return { found: false, nameCol: 0, totalCol: -1, nettCol: -1, basicCol: -1, furnmartCol: -1, boduloCol: -1, medAidCol: -1, afritecLoanCol: -1, payeCol: -1, commissionCol: -1, otherPayCols: [], otherPayDirectCol: -1, severanceCol: -1, omangCol: -1, rowIdx: startRow };
 }
 
 export async function parseFtcPayrollXls(
@@ -1416,7 +1427,7 @@ export async function parseFtcPayrollXls(
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
   // Locate first header row to determine column positions for the whole sheet
-  const { found, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, rowIdx: headerIdx } =
+  const { found, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, otherPayDirectCol, severanceCol, omangCol, rowIdx: headerIdx } =
     findFtcHeader(rows, 0);
   if (!found) return { lines: [], totals: {}, fileName };
 
@@ -1436,21 +1447,29 @@ export async function parseFtcPayrollXls(
 
     // With only one of Amount/Total and Nett present, it stands in for both (unchanged
     // prior behaviour); with both, Nett is net pay and Amount/Total is the income figure.
+    const paye = payeCol >= 0 ? Number(row[payeCol]) || 0 : 0;
+    const bonusCommission = commissionCol >= 0 ? Number(row[commissionCol]) || 0 : 0;
+    const otherPayments = otherPayDirectCol >= 0
+      ? Number(row[otherPayDirectCol]) || 0
+      : otherPayCols.reduce((s, c) => s + (Number(row[c]) || 0), 0);
+    const severance = severanceCol >= 0 ? Number(row[severanceCol]) || 0 : 0;
+    const basicFile = basicCol >= 0 ? Number(row[basicCol]) || 0 : 0;
+    const noTotalCols = totalCol < 0 && nettCol < 0;
     const nettVal = nettCol >= 0 ? Number(row[nettCol]) || 0 : 0;
-    const total = totalCol >= 0 ? Number(row[totalCol]) || 0 : nettVal;
+    const total = totalCol >= 0 ? Number(row[totalCol]) || 0
+      : noTotalCols ? basicFile + otherPayments + bonusCommission + severance
+      : nettVal;
     const nett = nettCol >= 0 ? nettVal : total;
     // Second header rows (when two blocks share a sheet) have a non-numeric total
     if (total <= 0 && nett <= 0) continue;
     // Falls back to total (unchanged prior behaviour) for FTC formats with no distinct
     // basic-pay column — the original bespoke multi-sheet format this parser targets.
-    const basic = basicCol >= 0 ? Number(row[basicCol]) || 0 : total;
+    const basic = basicCol >= 0 ? basicFile : total;
+    const idNumber = omangCol >= 0 ? String(row[omangCol] ?? '').replace(/\D/g, '') : '';
     const furnmart = furnmartCol >= 0 ? Number(row[furnmartCol]) || 0 : 0;
     const bodulo = boduloCol >= 0 ? Number(row[boduloCol]) || 0 : 0;
     const medAidEe = medAidCol >= 0 ? Number(row[medAidCol]) || 0 : 0;
     const afritecLoans = afritecLoanCol >= 0 ? Number(row[afritecLoanCol]) || 0 : 0;
-    const paye = payeCol >= 0 ? Number(row[payeCol]) || 0 : 0;
-    const bonusCommission = commissionCol >= 0 ? Number(row[commissionCol]) || 0 : 0;
-    const otherPayments = otherPayCols.reduce((s, c) => s + (Number(row[c]) || 0), 0);
 
     const key = nameKey(rawName);
     const existing = lines.find(l => l.empCode === key);
@@ -1467,11 +1486,13 @@ export async function parseFtcPayrollXls(
       existing.paye += paye;
       existing.bonusCommission = (existing.bonusCommission ?? 0) + bonusCommission;
       existing.otherPayments = (existing.otherPayments ?? 0) + otherPayments;
+      if (severanceCol >= 0) existing.severanceNonTaxable = (existing.severanceNonTaxable ?? 0) + severance;
+      if (!existing.idNumber) existing.idNumber = idNumber;
     } else {
       lines.push({
         empCode: key, // nameKey-format; display as "—" in the UI
         name: rawName,
-        idNumber: '',
+        idNumber,
         basic,
         incomeTotal: total,
         furnmart, cbStores: 0, bodulo,
@@ -1481,6 +1502,7 @@ export async function parseFtcPayrollXls(
         nettPay: nett,
         bonusCommission,
         otherPayments,
+        ...(severanceCol >= 0 ? { severanceNonTaxable: severance } : {}),
       });
     }
     grandTotal += total;
