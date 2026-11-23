@@ -1547,6 +1547,23 @@ export default function ReconciliationPage() {
     return l.empCode ? cfeCodeIndex.get(l.empCode.toUpperCase()) : undefined;
   }
 
+  // For CFE lines embedded in CSL's/NL's OWN vendor statements. Name first; then the
+  // line's code against the CFE roster, but only when the line also shares at least one
+  // name token (surname or first name) with that CFE employee. A bare code match is unsafe
+  // because CSL's own codes coincidentally collide with CFEM's (SAN001 Sanyumba, MAK001
+  // Makina, THA001 Thapelo, BAA001 Baani share no name with their CFE namesakes). Needed
+  // for Nov 2026 Bodulo: NL's file gives surnames only ("PHOFU", "MOJEWA", "TSHEKEDI" —
+  // no initial to check), and CSL lists MIL001 as "Neo Glendah Mpofu" (roster: Neo Millan).
+  function resolveEmbeddedCfeLine(l: ReconLine): Employee | undefined {
+    const byName = matchCfeEmployee(l.name);
+    if (byName) return byName;
+    const emp = l.empCode ? cfeCodeIndex.get(l.empCode.toUpperCase()) : undefined;
+    if (!emp) return undefined;
+    const lineTokens = nameTokens(l.name);
+    const empTokens = [...nameTokens(emp.surname), ...nameTokens(emp.first_name ?? '')];
+    return empTokens.some(t => lineTokens.includes(t)) ? emp : undefined;
+  }
+
   // Reverse lookup for the Management (CFE) section on CSL's/NL's own tab: given an
   // already-resolved CFE employee and a vendor, find their amount on CFEM's OWN report
   // (cfemForMgt, loaded for the same period) — same resolveCfemLine matching, just
@@ -1616,7 +1633,7 @@ export default function ReconciliationPage() {
         const stmt = csnStmtsForCfe[code][type];
         if (!stmt) return;
         [...stmt.lines, ...stmt.unmatchedLines].forEach(l => {
-          if (matchCfeEmployee(l.name)) embeddedLines.push(l);
+          if (resolveEmbeddedCfeLine(l)) embeddedLines.push(l);
         });
       });
       // Resolve each line to the CFE employee it represents (via the same token-overlap
@@ -1626,7 +1643,7 @@ export default function ReconciliationPage() {
       const cfemByEmp = new Map<string, ReconLine>();
       cfemLines.forEach(l => { const emp = resolveCfemLine(l); if (emp) cfemByEmp.set(emp.id, l); });
       const embeddedByEmp = new Map<string, ReconLine>();
-      embeddedLines.forEach(l => { const emp = matchCfeEmployee(l.name); if (emp) embeddedByEmp.set(emp.id, l); });
+      embeddedLines.forEach(l => { const emp = resolveEmbeddedCfeLine(l); if (emp) embeddedByEmp.set(emp.id, l); });
 
       // Every CFE employee appearing on either side, for a full side-by-side table.
       const allEmpIds = new Set([...cfemByEmp.keys(), ...embeddedByEmp.keys()]);
