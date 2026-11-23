@@ -218,7 +218,7 @@ export async function parseAfritecXls(
   // files ("Emp No", "Staff No", "Payroll No", "Employee #"), and simpler exports that
   // just use a bare "Code" column (e.g. a plain Code/Name/Amount statement with no
   // title rows above it).
-  const empColPattern = /employee.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|staff\.?\s*no\.?|payroll\.?\s*no\.?|^\s*code\s*$/i;
+  const empColPattern = /e+m+p+l+o*y+e+.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|staff\.?\s*no\.?|payroll\.?\s*no\.?|^\s*code\s*$/i;
   const headerIdx = rows.findIndex(r =>
     r.some((c: any) => empColPattern.test(String(c || ''))),
   );
@@ -320,7 +320,9 @@ export async function parseFurnmart(buf: ArrayBuffer, fileName: string): Promise
   // "EMPLOYEE NUMBER" too (CSL's Oct 2026 export). Missing it dropped to the legacy
   // fallback below, which read the first-name column as the code and skipped the
   // first 7 employees — splitting BAA001/NKW001 into duplicate Management rows.
-  const empColPattern = /emp(?:loyee)?\.?\s*(?:no\.?|number|#)|^\s*code\s*$/i;
+  // Tolerates a misspelt "employee" too — NL's Nov 2026 file is headed "EMMPLOYEE NUMBER",
+  // which used to drop to the legacy layout (first names read as codes, amounts read as 0).
+  const empColPattern = /(?:e+m+p+l+o*y+e+|emp)\.?\s*(?:no\.?|number|#)|^\s*code\s*$/i;
   const headerIdx = rows.findIndex(r =>
     r.some((c: any) => empColPattern.test(String(c || '').trim())),
   );
@@ -412,7 +414,7 @@ export async function parseBodulo(buf: ArrayBuffer, fileName: string): Promise<P
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-  const codeColPattern = /custom|policy.?id|employee.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|staff\.?\s*no\.?|payroll\.?\s*no\.?|^\s*code\s*$/i;
+  const codeColPattern = /custom|policy.?id|e+m+p+l+o*y+e+.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|staff\.?\s*no\.?|payroll\.?\s*no\.?|^\s*code\s*$/i;
   // Some products on this slot carry no employee code column at all — just a
   // plain Name/Surname/Amount sheet (confirmed live: an "Afritec Bodulo NL"
   // export with exactly those three headers, nothing else). The header row
@@ -573,7 +575,7 @@ export async function parsePensionSchedule(
   const ws = wb.Sheets[sheetName];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
-  const codeColPattern = /employee.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|^\s*code\s*$/i;
+  const codeColPattern = /e+m+p+l+o*y+e+.?n(?:umber|o\.?)|emp(?:loyee)?\.?\s*(?:no\.?|#)|^\s*code\s*$/i;
   const headerIdx = rows.findIndex(r =>
     r.some((c: any) => codeColPattern.test(String(c || '').trim())),
   );

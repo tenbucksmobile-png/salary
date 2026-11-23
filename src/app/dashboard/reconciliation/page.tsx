@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, Fragment } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, fetchAllRows } from '@/lib/supabase/client';
 import { MONTH_NAMES, sortHotels, fmtCurrency } from '@/lib/utils';
 import type { Hotel, Employee } from '@/types/database';
 import type {
@@ -222,8 +222,13 @@ export default function ReconciliationPage() {
 
   // Current + previous period's payroll lines per hotel — the sole basis for the
   // Employees tab's three sections. Never compared against the DB employee list.
-  type TermPayrollState = { current: PayrollLine[]; previous: PayrollLine[]; loaded: boolean };
-  const emptyTermPayroll: TermPayrollState = { current: [], previous: [], loaded: false };
+  // employeesOnRecord: the hotel's CURRENT employee list (active, excluding ANO vacancies)
+  // with each person's latest basic salary on record as at the viewed period. The
+  // Employees tab cross-checks this period's payroll against this list — never against
+  // last month's payroll file.
+  type EmployeeOnRecord = { emp: Employee; basic: number | null };
+  type TermPayrollState = { current: PayrollLine[]; employeesOnRecord: EmployeeOnRecord[]; loaded: boolean };
+  const emptyTermPayroll: TermPayrollState = { current: [], employeesOnRecord: [], loaded: false };
   const [termPayrollByHotel, setTermPayrollByHotel] = useState<Record<PayrollReconHotel, TermPayrollState>>({ CSL: emptyTermPayroll, NL: emptyTermPayroll });
 
   // Increase List cross-reference (Employees tab, CSL/NL only) — a salary-review workbook
@@ -393,24 +398,50 @@ export default function ReconciliationPage() {
     });
   }
 
-  // Employees tab: compare the current period's payroll upload against the PREVIOUS
-  // period's payroll upload only, for CSL and NL — never against the DB employee list,
-  // which stays static regardless of how many payroll-only months are uploaded and would
-  // just re-flag the same people every month. Triggered when the Employees tab opens or
-  // year/month/hotels changes.
+  // Employees tab: cross-check the current period's payroll upload (permanent + FTC)
+  // against the CURRENT employee list, for CSL and NL. Approved changes are committed
+  // directly to the employee list, so it always stands in for "prior month".
   useEffect(() => {
     if (tab !== 'crossref' || !hotels.length) return;
-    const prevMonth = month === 1 ? 12 : month - 1;
-    const prevYear  = month === 1 ? year - 1 : year;
 
     async function load(shortCode: PayrollReconHotel): Promise<TermPayrollState> {
       const hotel = hotels.find(h => h.short_code === shortCode);
       if (!hotel) return { ...emptyTermPayroll, loaded: true };
-      const [current, previous] = await Promise.all([
+      const [current, employeesOnRecord] = await Promise.all([
         loadPeriodPayrollLines(hotel.id, year, month),
-        loadPeriodPayrollLines(hotel.id, prevYear, prevMonth),
+        loadEmployeesOnRecord(hotel.id),
       ]);
-      return { current, previous, loaded: true };
+      return { current, employeesOnRecord, loaded: true };
+    }
+
+    // Active employees (ANO vacancies excluded) + the basic salary from each one's latest
+    // salary record on or before the viewed period. Salary records are fetched in id
+    // batches (URL length) and paged (PostgREST 1000-row cap).
+    async function loadEmployeesOnRecord(hotelId: string): Promise<EmployeeOnRecord[]> {
+      const emps = await fetchAllRows<Employee>(() => supabase.from('employees').select('*')
+        .eq('hotel_id', hotelId).eq('status', 'active'));
+      const list = emps.filter(e => e.grade_label !== 'ANO');
+      if (list.length === 0) return [];
+      type SalRow = { employee_id: string; period_year: number; period_month: number; basic_salary: number };
+      const sals: SalRow[] = [];
+      const ids = list.map(e => e.id);
+      for (let i = 0; i < ids.length; i += 100) {
+        const batch = ids.slice(i, i + 100);
+        sals.push(...await fetchAllRows<SalRow>(() => supabase.from('salary_records')
+          .select('employee_id, period_year, period_month, basic_salary')
+          .in('employee_id', batch)));
+      }
+      const latest = new Map<string, SalRow>();
+      for (const r of sals) {
+        const k = r.period_year * 100 + r.period_month;
+        if (k > year * 100 + month) continue;
+        const cur = latest.get(r.employee_id);
+        if (!cur || k > cur.period_year * 100 + cur.period_month) latest.set(r.employee_id, r);
+      }
+      return list.map(emp => {
+        const r = latest.get(emp.id);
+        return { emp, basic: r ? Number(r.basic_salary) || 0 : null };
+      });
     }
 
     setTermPayrollByHotel(prev => Object.fromEntries(PAYROLL_RECON_HOTELS.map(h => [h, { ...prev[h], loaded: false }])) as Record<PayrollReconHotel, TermPayrollState>);
@@ -1807,35 +1838,73 @@ export default function ReconciliationPage() {
     balances: boolean;
     reason: 'new' | 'missing' | 'amount_changed' | null;
   }
-  function buildNlEmployeesTable(state: TermPayrollState): NlEmployeeRow[] {
-    const prevByKey = new Map(state.previous.map(l => [nameKey(l.name), l]));
-    const currByKey = new Map(state.current.map(l => [nameKey(l.name), l]));
-    const allKeys = new Set([...prevByKey.keys(), ...currByKey.keys()]);
-
-    const rows: NlEmployeeRow[] = [];
-    allKeys.forEach(k => {
-      const prev = prevByKey.get(k);
-      const curr = currByKey.get(k);
-      const base = curr ?? prev!;
-      let category: ReconApprovalCategory;
-      let reason: NlEmployeeRow['reason'];
-      let balances: boolean;
-      if (!prev) { category = 'new_appointment'; reason = 'new'; balances = false; }
-      else if (!curr) { category = 'termination'; reason = 'missing'; balances = false; }
-      else if (Math.abs(curr.basic - prev.basic) > 0.5) { category = 'basic_mismatch'; reason = 'amount_changed'; balances = false; }
-      else { category = 'basic_mismatch'; reason = null; balances = true; }
-      // splitNameForNewEmployee() strips any salutation (Mr/Mrs/…) and splits the
-      // payroll file's one combined name field into { surname, firstName } — same
-      // convention used for the new-appointment confirmation popup.
-      const { surname, firstName } = splitNameForNewEmployee(base.name);
-      const isFtc = isFtcPayrollLine(base);
-      rows.push({
-        name: base.name, surname, firstName, empCode: isFtc ? '' : base.empCode, isFtc,
-        prevBasic: prev?.basic ?? null, currBasic: curr?.basic ?? null,
-        category, balances, reason,
-      });
+  // RULE: the Employees tab always cross-checks this period's payroll upload against the
+  // CURRENT employee list (active employees + their latest basic salary on record) — never
+  // against last month's payroll file. Approved changes are committed straight to the
+  // employee list, so the list on record IS the prior month for next period's check.
+  //
+  // Matching: employee code first (permanent lines only — FTC lines carry nameKey(name)
+  // as a placeholder code), then exact name, then same surname + a shared first-name
+  // token (single candidate only) so an added/dropped middle name still matches.
+  function matchEmployeeOnRecord(line: PayrollLine, pool: EmployeeOnRecord[]): EmployeeOnRecord | undefined {
+    if (!isFtcPayrollLine(line)) {
+      const code = line.empCode.toUpperCase();
+      const byCode = pool.find(p => p.emp.employee_code?.toUpperCase() === code);
+      if (byCode) return byCode;
+    }
+    const k = nameKey(line.name);
+    const exact = pool.find(p => nameKey(`${p.emp.surname} ${p.emp.first_name ?? ''}`) === k);
+    if (exact) return exact;
+    const tokens = nameTokens(line.name);
+    const candidates = pool.filter(p => {
+      const sur = nameTokens(p.emp.surname);
+      if (!sur.length || !sur.every(t => tokens.includes(t))) return false;
+      const rest = tokens.filter(t => !sur.includes(t));
+      return nameTokens(p.emp.first_name ?? '').some(t => rest.includes(t));
     });
-    return permanentThenFtc(bySurname(rows));
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
+  function buildNlEmployeesTable(state: TermPayrollState): NlEmployeeRow[] {
+    const pool = [...state.employeesOnRecord];
+    const rows: NlEmployeeRow[] = [];
+    const recordRow = (p: EmployeeOnRecord) => ({
+      name: `${p.emp.surname} ${p.emp.first_name ?? ''}`.trim(),
+      surname: p.emp.surname, firstName: p.emp.first_name ?? '',
+      empCode: p.emp.employee_code ?? '', isFtc: p.emp.grade_label === 'Fixed Term',
+    });
+    for (const line of state.current) {
+      const m = matchEmployeeOnRecord(line, pool);
+      if (m) {
+        pool.splice(pool.indexOf(m), 1);
+        const balances = m.basic != null && Math.abs(line.basic - m.basic) <= 0.5;
+        rows.push({
+          ...recordRow(m),
+          prevBasic: m.basic, currBasic: line.basic,
+          category: 'basic_mismatch', balances, reason: balances ? null : 'amount_changed',
+        });
+      } else {
+        // Not on the employee list — a new appointment. splitNameForNewEmployee() strips
+        // any salutation and splits the payroll file's combined name field.
+        const { surname, firstName } = splitNameForNewEmployee(line.name);
+        const isFtc = isFtcPayrollLine(line);
+        rows.push({
+          name: line.name, surname, firstName, empCode: isFtc ? '' : line.empCode, isFtc,
+          prevBasic: null, currBasic: line.basic,
+          category: 'new_appointment', balances: false, reason: 'new',
+        });
+      }
+    }
+    // On the employee list but not on this period's payroll — possible termination.
+    for (const p of pool) {
+      rows.push({
+        ...recordRow(p),
+        prevBasic: p.basic, currBasic: null,
+        category: 'termination', balances: false, reason: 'missing',
+      });
+    }
+    rows.sort((a, b) => a.surname.localeCompare(b.surname));
+    return permanentThenFtc(rows);
   }
 
   // Permanent staff (real employee code) first, Fixed Term below — each group keeps
@@ -1898,7 +1967,7 @@ export default function ReconciliationPage() {
         ? activeNlEmployeesTable.map(r => ({
             category: r.category, name: r.name, code: r.empCode,
             detail: r.category === 'new_appointment'
-              ? { basic: r.currBasic ?? 0 }
+              ? { basic: r.currBasic ?? 0, isFtc: r.isFtc ? 1 : 0 }
               : r.category === 'termination'
               ? { basic: r.prevBasic ?? 0 }
               : { prevBasic: r.prevBasic ?? 0, currBasic: r.currBasic ?? 0, diff: (r.currBasic ?? 0) - (r.prevBasic ?? 0), listNew: r.currBasic ?? 0 },
@@ -1991,6 +2060,7 @@ export default function ReconciliationPage() {
               surname,
               first_name: firstName,
               status: 'active',
+              ...(a.detail?.isFtc ? { grade_label: 'Fixed Term' } : {}),
             }).select().single();
             const empId = (newEmp as any)?.id;
             if (empId && a.detail?.basic != null) {
@@ -2058,12 +2128,9 @@ export default function ReconciliationPage() {
   // Month-over-month discrepancies only (new / missing / amount changed) — balancing
   // rows are left out. Permanent first, then Fixed Term, same order as on screen.
   async function handleExportEmployeeDiscrepancies() {
-    const prevMonth = month === 1 ? 12 : month - 1;
-    const prevYear  = month === 1 ? year - 1 : year;
-    const prevLabel = `${MONTH_NAMES[prevMonth - 1]} ${prevYear}`;
     const currLabel = `${MONTH_NAMES[month - 1]} ${year}`;
     const reasonLabel: Record<NonNullable<NlEmployeeRow['reason']>, string> = {
-      new: 'New appointment', missing: 'Missing this period', amount_changed: 'Amount changed',
+      new: 'New appointment (not on employee list)', missing: 'On employee list, missing from payroll', amount_changed: 'Amount changed',
     };
     const discrepancies = activeNlEmployeesTable.filter(r => !r.balances);
     const rows: Array<Array<string | number | null>> = discrepancies.map(r => [
@@ -2079,7 +2146,7 @@ export default function ReconciliationPage() {
       name: `${employeesActiveHotel} Discrepancies`,
       headers: [
         'Code', 'Surname', 'First Name', 'Type',
-        `Basic Salary — ${prevLabel}`, `Basic Salary — ${currLabel}`, 'Difference', 'Reason',
+        'Basic Salary — Employee List', `Basic Salary — Payroll ${currLabel}`, 'Difference', 'Reason',
       ],
       rows,
       isTotalsRow: rows.map((_, i) => i === rows.length - 1),
@@ -3156,24 +3223,25 @@ export default function ReconciliationPage() {
             {isNlEmployeesView && (
               <>
                 <p className="text-sm text-muted-foreground max-w-3xl">
-                  Lists every {employeesActiveHotel} employee on either this period&apos;s uploaded Payroll Spreadsheet or the <strong>previous
-                  period&apos;s</strong> — never against the HR List (employees table). A tick means Current and New Basic
-                  Salary agree; <strong>Mismatch</strong> covers a genuine amount change, a new appointment (no prior-period
-                  line), or someone missing this period (a termination). Approve + Submit stages a row; the admin-only
-                  Commit button (top of page) writes it to the employees table.
+                  This period&apos;s Payroll Spreadsheet and FTC upload, cross-checked against the <strong>current employee
+                  list</strong> (active employees and their latest basic salary on record). A tick means the two Basic Salary
+                  figures agree; <strong>Mismatch</strong> covers an amount change, a new appointment (not on the employee
+                  list), or someone on the list missing from this period&apos;s payroll (a possible termination). Approve +
+                  Submit stages a row; the admin-only Commit button (top of page) writes it to the employee list, which then
+                  becomes the baseline for next month.
                 </p>
 
                 {!activeTermPayrollForEmployees.loaded ? (
                   <p className="text-sm text-muted-foreground">Loading…</p>
-                ) : activeTermPayrollForEmployees.previous.length === 0 ? (
+                ) : activeTermPayrollForEmployees.employeesOnRecord.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
-                    No payroll uploaded for {employeesActiveHotel}&apos;s previous period — nothing to compare against yet.
+                    No active employees on record for {employeesActiveHotel} — nothing to compare against yet.
                   </p>
                 ) : (
                   <div>
                     <div className="flex items-center gap-3 mb-2 max-w-4xl">
                       <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-                        Employees — Prior Month vs Payroll Upload ({activeNlEmployeesTable.length})
+                        Employees — Employee List vs Payroll Upload ({activeNlEmployeesTable.length})
                       </h2>
                       <button
                         onClick={handleExportEmployeeDiscrepancies}
@@ -3193,7 +3261,7 @@ export default function ReconciliationPage() {
                             <th className="px-3 py-2 text-left">Code</th>
                             <th className="px-3 py-2 text-left">Surname</th>
                             <th className="px-3 py-2 text-left">Name</th>
-                            <th className="px-3 py-2 text-right">Current Basic Salary (Prior Month)</th>
+                            <th className="px-3 py-2 text-right">Basic Salary on Record (Employee List)</th>
                             <th className="px-3 py-2 text-right">New Payroll Upload — Basic Salary</th>
                             <th className="px-3 py-2 text-left">Status</th>
                           </tr>
@@ -3207,7 +3275,7 @@ export default function ReconciliationPage() {
                               {startsFtc && (
                                 <tr className="border-t bg-muted/40">
                                   <td colSpan={7} className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                                    Fixed Term Contract ({arr.filter(x => x.isFtc).length})
+                                    Fixed Term Contract ({arr.filter(x => x.isFtc).length}) — matched against current Fixed Term employees
                                   </td>
                                 </tr>
                               )}
@@ -3234,9 +3302,9 @@ export default function ReconciliationPage() {
                                     <span className="text-green-700">✓ Balances</span>
                                   ) : (
                                     <span className="text-amber-700" title={
-                                      r.reason === 'new' ? 'New appointment — no prior-period line' :
-                                      r.reason === 'missing' ? 'Missing this period — possible termination' :
-                                      'Basic Salary changed from prior month'
+                                      r.reason === 'new' ? 'New appointment — not on the employee list' :
+                                      r.reason === 'missing' ? 'On the employee list but missing from this payroll — possible termination' :
+                                      'Basic Salary differs from the employee list'
                                     }>
                                       Mismatch ⚠ {r.reason === 'new' ? '(New)' : r.reason === 'missing' ? '(Missing)' : '(Amount changed)'}
                                     </span>
