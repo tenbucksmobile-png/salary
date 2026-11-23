@@ -1702,7 +1702,14 @@ export default function ReconciliationPage() {
         };
       }).sort((a, b) => a.name.localeCompare(b.name));
     })() : [];
-  const pensionScheduleTotal = (pensionStmt?.total ?? 0) + embeddedScheduleLines.reduce((s, l) => s + l.amount, 0);
+  // EE-only on both sides (Member + AVC vs the report's EMP.AMOUNT). Embedded CSL/NL lines
+  // are added ONLY for codes not already on CFEM's own schedule — the same de-duplication the
+  // detail table uses. CFEM's Nov 2026 schedule lists every CFE employee itself, so adding
+  // the embedded lines unconditionally double-counted ~P13,817 against the report.
+  const cfemScheduleCodes = new Set((pensionStmt?.lines ?? []).map(l => l.empCode));
+  const pensionScheduleTotal = (pensionStmt?.total ?? 0) + embeddedScheduleLines
+    .filter((l, i, arr) => !cfemScheduleCodes.has(l.empCode) && arr.findIndex(x => x.empCode === l.empCode) === i)
+    .reduce((s, l) => s + l.amount, 0);
 
   // ── Employees tab: Increase List cross-referenced against this period's Payroll
   // Spreadsheet upload (CSL only — NL's reconciliation was completed in August 2026) ──
