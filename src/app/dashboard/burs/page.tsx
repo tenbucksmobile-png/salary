@@ -111,15 +111,38 @@ interface TaxpayerRow {
 // that reach the ITW8, so non-taxed staff are never offered for creation.
 function findMissingLines(parsed: ParsedPayroll | null, roster: Employee[]): PayrollLine[] {
   if (!parsed) return [];
-  const codeSet = new Set(roster.filter(e => e.employee_code).map(e => e.employee_code!.toUpperCase()));
-  const nameSet = new Set(roster.map(e => nameKey(`${e.surname} ${e.first_name}`)));
-  return parsed.lines.filter(line => {
-    if (!(line.paye > 0)) return false;
-    const code = line.empCode?.trim().toUpperCase();
-    if (code && codeSet.has(code)) return false;
-    if (nameSet.has(nameKey(line.name))) return false;
-    return true;
-  });
+  const find = makeEmployeeMatcher(roster);
+  return parsed.lines.filter(line => line.paye > 0 && !find(line));
+}
+
+// Codes compared alphanumerics-only, upper case — CSL's Nov 2026 FTC sheet has
+// "FTCPHI003" for the roster's "FTC-PHI003".
+const normCode = (c: string | null | undefined) => (c ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+// Resolves a payroll line against the current employee list: file code (FTC
+// sheets' own Employee Number, else the line's empCode) → exact name → same
+// surname + a shared first-name token, single candidate only. The last pass
+// catches a file dropping a middle name/initial ("Rudolf" vs "Rudolf L") or a
+// code that drifted ("FTC-RUN002" vs the roster's FTC-RUN001).
+function makeEmployeeMatcher(roster: Employee[]): (line: PayrollLine) => Employee | null {
+  const codeMap = new Map(roster.filter(e => e.employee_code).map(e => [normCode(e.employee_code), e]));
+  const nameMap = new Map(roster.map(e => [nameKey(`${e.surname} ${e.first_name}`), e]));
+  const tokens = (s: string) => nameKey(s).split('|').filter(Boolean);
+  return line => {
+    for (const c of [line.fileCode, line.empCode]) {
+      const hit = c ? codeMap.get(normCode(c)) : undefined;
+      if (hit) return hit;
+    }
+    const byName = nameMap.get(nameKey(line.name));
+    if (byName) return byName;
+    const lineTokens = new Set(tokens(line.surname && line.firstName ? `${line.firstName} ${line.surname}` : line.name));
+    const candidates = roster.filter(e => {
+      const sur = tokens(e.surname);
+      if (!sur.length || !sur.every(t => lineTokens.has(t))) return false;
+      return tokens(e.first_name).some(t => lineTokens.has(t) && !sur.includes(t));
+    });
+    return candidates.length === 1 ? candidates[0] : null;
+  };
 }
 
 // Matches payroll lines to a roster by employee code first (CFEM/PomPom may
@@ -142,15 +165,13 @@ function matchTaxpayers(
   hotelForEmployee: () => Hotel | undefined,
 ): { matched: TaxpayerRow[]; unmatched: TaxpayerRow[] } {
   if (!parsed) return { matched: [], unmatched: [] };
-  const codeMap = new Map(roster.filter(e => e.employee_code).map(e => [e.employee_code!.toUpperCase(), e]));
-  const nameMap = new Map(roster.map(e => [nameKey(`${e.surname} ${e.first_name}`), e]));
+  const find = makeEmployeeMatcher(roster);
 
   const matched: TaxpayerRow[] = [];
   const unmatched: TaxpayerRow[] = [];
   for (const line of parsed.lines) {
     if (!(line.paye > 0)) continue;
-    const code = line.empCode?.trim().toUpperCase();
-    const employee = (code ? codeMap.get(code) : undefined) ?? nameMap.get(nameKey(line.name)) ?? null;
+    const employee = find(line);
     const row: TaxpayerRow = { line, employee, hotel: hotelForEmployee() };
     matched.push(row);
     if (!employee) unmatched.push(row);
@@ -539,7 +560,7 @@ export default function BursPage() {
         }
         return {
           hotel_id: hotel.id,
-          employee_code: ftc ? null : line.empCode || null,
+          employee_code: ftc ? (line.fileCode || null) : line.empCode || null,
           surname: surname || line.name || '(unknown)',
           first_name: firstName || '',
           id_number: line.idNumber || null,

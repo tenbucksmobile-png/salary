@@ -35,6 +35,7 @@ export interface PayrollLine {
   name: string;
   firstName?: string;    // set only when the source has separate name columns (avoids a lossy re-split of `name`)
   surname?: string;
+  fileCode?: string;     // FTC sheets only: the file's own Employee Number (e.g. "FTC-BAT001"); empCode stays nameKey(name) for Reconciliation
   idNumber: string;      // Omang/National ID, when the payroll source carries one (blank otherwise)
   basic: number;
   incomeTotal: number;
@@ -1330,6 +1331,7 @@ function findFtcHeader(
   furnmartCol: number; boduloCol: number; medAidCol: number; afritecLoanCol: number;
   payeCol: number; commissionCol: number; otherPayCols: number[];
   otherPayDirectCol: number; severanceCol: number; omangCol: number;
+  surnameCol: number; codeCol: number;
   rowIdx: number;
 } {
   for (let i = startRow; i < Math.min(startRow + 15, rows.length); i++) {
@@ -1337,9 +1339,15 @@ function findFtcHeader(
     let furnmartCol = -1, boduloCol = -1, medAidCol = -1, afritecLoanCol = -1;
     let payeCol = -1, commissionCol = -1;
     let otherPayDirectCol = -1, severanceCol = -1, omangCol = -1;
+    let surnameCol = -1, codeCol = -1;
     const otherPayCols: number[] = [];
     rows[i].forEach((cell: any, j: number) => {
       const s = String(cell ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+      // CSL_FTC Nov26.xlsx (2026-11): Employee Number / Surname / Name — "Name" is the
+      // first name only, so the surname column must be joined back on, and the
+      // file's own FTC-xxx code is kept for BURS matching.
+      if (/^(surname|last name)$/.test(s)) surnameCol = j;
+      if (/^e+m+p+l+o*y+e+e?\s*(number|no\.?|code)$|^emp\.?\s*(no|code|#)$|^code$/.test(s)) codeCol = j;
       // "Employee Name" added after a real CSL FTC export used that header instead of
       // a bare "Name"/"Full Name" — the same silent-zero-rows failure mode as the
       // "NETT PAY" fix below.
@@ -1398,10 +1406,10 @@ function findFtcHeader(
     // A sheet with no total/nett column still qualifies when it has Salary + PAYE
     // (the BURS-prepped PAYE sheet above); income is then summed from its parts.
     if (nameCol >= 0 && (totalCol >= 0 || nettCol >= 0 || (basicCol >= 0 && payeCol >= 0))) {
-      return { found: true, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, otherPayDirectCol, severanceCol, omangCol, rowIdx: i };
+      return { found: true, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, otherPayDirectCol, severanceCol, omangCol, surnameCol, codeCol, rowIdx: i };
     }
   }
-  return { found: false, nameCol: 0, totalCol: -1, nettCol: -1, basicCol: -1, furnmartCol: -1, boduloCol: -1, medAidCol: -1, afritecLoanCol: -1, payeCol: -1, commissionCol: -1, otherPayCols: [], otherPayDirectCol: -1, severanceCol: -1, omangCol: -1, rowIdx: startRow };
+  return { found: false, nameCol: 0, totalCol: -1, nettCol: -1, basicCol: -1, furnmartCol: -1, boduloCol: -1, medAidCol: -1, afritecLoanCol: -1, payeCol: -1, commissionCol: -1, otherPayCols: [], otherPayDirectCol: -1, severanceCol: -1, omangCol: -1, surnameCol: -1, codeCol: -1, rowIdx: startRow };
 }
 
 export async function parseFtcPayrollXls(
@@ -1429,7 +1437,7 @@ export async function parseFtcPayrollXls(
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
   // Locate first header row to determine column positions for the whole sheet
-  const { found, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, otherPayDirectCol, severanceCol, omangCol, rowIdx: headerIdx } =
+  const { found, nameCol, totalCol, nettCol, basicCol, furnmartCol, boduloCol, medAidCol, afritecLoanCol, payeCol, commissionCol, otherPayCols, otherPayDirectCol, severanceCol, omangCol, surnameCol, codeCol, rowIdx: headerIdx } =
     findFtcHeader(rows, 0);
   if (!found) return { lines: [], totals: {}, fileName };
 
@@ -1443,9 +1451,12 @@ export async function parseFtcPayrollXls(
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i];
-    const rawName = String(row[nameCol] ?? '').trim();
+    const firstPart = String(row[nameCol] ?? '').trim();
+    const surnamePart = surnameCol >= 0 ? String(row[surnameCol] ?? '').trim() : '';
+    const rawName = [firstPart, surnamePart].filter(Boolean).join(' ');
     if (!rawName) continue;
     if (/^(prepared|checked|authorised|total)/i.test(rawName)) continue;
+    const fileCode = codeCol >= 0 ? String(row[codeCol] ?? '').trim() : '';
 
     // With only one of Amount/Total and Nett present, it stands in for both (unchanged
     // prior behaviour); with both, Nett is net pay and Amount/Total is the income figure.
@@ -1494,6 +1505,8 @@ export async function parseFtcPayrollXls(
       lines.push({
         empCode: key, // nameKey-format; display as "—" in the UI
         name: rawName,
+        ...(surnameCol >= 0 ? { firstName: firstPart, surname: surnamePart } : {}),
+        ...(fileCode ? { fileCode } : {}),
         idNumber,
         basic,
         incomeTotal: total,
